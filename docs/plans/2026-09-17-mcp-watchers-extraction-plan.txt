@@ -3,7 +3,8 @@ MCP WATCHERS EXTRACTION - PLAN AND EXECUTION RECORD
 Date: 2026-09-17
 Source repo: J:\audio\VAD
 Target repo: J:\audio\MCP Watchers
-Status: EXTRACTION COMPLETE (commits 1 of 2). MULTI-REPO PATCH PENDING.
+Status: EXTRACTION COMPLETE AND COMMITTED (2 commits).
+        MULTI-REPO PATCH PENDING. CUTOVER PENDING.
 ================================================================
 
 0. RESULT SUMMARY
@@ -15,6 +16,12 @@ Status: EXTRACTION COMPLETE (commits 1 of 2). MULTI-REPO PATCH PENDING.
              "chore: extract watcher launcher from VAD as a standalone repo"
              authored 2026-09-17 05:13:21 +1200
              68 tracked files
+  Commit 2 : 6f1ace6e790dfcda6919fda1015d5ea35fd6c291
+             "docs: add extraction plan and pin line endings to CRLF"
+             authored 2026-09-17 05:25:27 +1200
+             70 tracked files
+  HEAD     : 6f1ace6e790dfcda6919fda1015d5ea35fd6c291
+  Tree     : clean. No stray artifacts.
 
   Verified byte-identical:
     8 of 8  runtime files (launcher, wrapper, proxy, 5 modules)
@@ -313,9 +320,14 @@ Status: EXTRACTION COMPLETE (commits 1 of 2). MULTI-REPO PATCH PENDING.
                                launcher and paneModule both found.
   E5  Commit 1               : 837587822bc196045fb33d28a62db8b653d48c67,
                                2026-09-17 05:13:21 +1200, 68 files.
-  E6  Working tree           : clean after commit 1. No stray artifacts.
-  E7  Pester gate            : BLOCKED. Pester 3.4.0 not installed.
+  E6  Commit 2 and HEAD      : 6f1ace6e790dfcda6919fda1015d5ea35fd6c291,
+                               2026-09-17 05:25:27 +1200, 70 files.
+  E7  Working tree           : clean after both commits. No stray artifacts.
+  E8  Pester gate            : BLOCKED. Pester 3.4.0 not installed.
                                Installed: 6.0.0, 6.0.1, 6.1.0.
+  E9  Line endings           : .gitattributes pins '* -text'. Re-normalized
+                               38 blobs so the index holds the real CRLF
+                               bytes. Working tree unchanged.
 
 ================================================================
 END OF PLAN

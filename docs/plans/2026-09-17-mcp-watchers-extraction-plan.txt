@@ -20,7 +20,11 @@ Status: EXTRACTION COMPLETE AND COMMITTED (2 commits).
              "docs: add extraction plan and pin line endings to CRLF"
              authored 2026-09-17 05:25:27 +1200
              70 tracked files
-  HEAD     : 6f1ace6e790dfcda6919fda1015d5ea35fd6c291
+  Commit 3 : ae8ce8f
+             "docs: record both commit SHAs and the line-ending evidence in
+             the plan"
+             authored 2026-09-17 05:32:46 +1200
+  HEAD     : ae8ce8f (the docs commits after this one only refine this file)
   Tree     : clean. No stray artifacts.
 
   Verified byte-identical:

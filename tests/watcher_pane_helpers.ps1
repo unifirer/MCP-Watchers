@@ -13,10 +13,20 @@ function New-IsolatedPaneBlock {
     $block = $PaneBlock
     # 1) window name: vadwatchers -> t8_<guid>  (never collides with ###1)
     $block = $block.Replace('$wtWindowName = "vadwatchers"', '$wtWindowName = "t8_' + $Guid + '"')
-    # 2) pane dir: vad-watchers\panes -> t8_<guid>\panes  (unique tailer path)
-    #    The search string is single-quoted so its backslash stays literal and
-    #    matches the one backslash present in the extracted source text.
-    $block = $block.Replace('$wtPaneDir = Join-Path $scratchRoot "vad-watchers\panes"', '$wtPaneDir = Join-Path $scratchRoot "t8_' + $Guid + '\panes"')
+    # 2) pane dir: <scratch>\vad-watchers\<workspaceKey>\panes -> <scratch>\t8_<guid>\panes
+    #    A REGEX, not a literal replace. The launcher inserts a per-workspace key
+    #    (beads mcpw-ybs.2) between 'vad-watchers' and 'panes', and that key is
+    #    different for every repository, so an exact-literal search would silently
+    #    no-op - and T8 would then drive the USER'S live pane dir. The guard below
+    #    converts that silent no-op into a loud failure.
+    $paneDirPattern = '\$wtPaneDir = Join-Path \$scratchRoot "vad-watchers\\[^"]*\\panes"'
+    $block = [regex]::Replace($block, $paneDirPattern, {
+        param($m)
+        '$wtPaneDir = Join-Path $scratchRoot "t8_' + $Guid + '\panes"'
+    })
+    if ($block -notmatch [regex]::Escape('t8_' + $Guid + '\panes')) {
+        throw "New-IsolatedPaneBlock: the pane-dir isolation transform did NOT apply (pattern '$paneDirPattern' not found). Refusing to run against the user's live pane dir."
+    }
     # 3) the PRE-GRID RESET's tailer matcher must be scoped to the unique dir,
     #    else it still matches (and kills) the user's vad-watchers\panes tailers.
     #    Double-quoted search/replace strings: backslash is literal in PSH

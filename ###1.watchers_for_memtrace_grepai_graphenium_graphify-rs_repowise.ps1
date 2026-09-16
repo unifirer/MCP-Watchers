@@ -3,9 +3,48 @@ $scriptDir = $PSScriptRoot
 if (-not $scriptDir) {
     $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 }
+
+# --- Workspace identity (beads mcpw-ybs.2) -----------------------------------
+# Capture the INVOCATION directory BEFORE the Set-Location below. That directory
+# is the repository the user meant, and it keys every machine-global resource
+# this launcher owns: the teardown state file and the pane + log scratch dirs.
+# Without this key a launcher started for repo B reads repo A's teardown state
+# and kills repo A's watchers.
+# $scriptDir stays a SEPARATE concept: it locates the Modules\watcher_*.ps1
+# siblings and must never become the watched workspace.
+$watchersWorkspaceRoot = (Get-Location).ProviderPath
+if (-not $watchersWorkspaceRoot) { $watchersWorkspaceRoot = (Get-Location).Path }
+if ($watchersWorkspaceRoot) { $watchersWorkspaceRoot = $watchersWorkspaceRoot.TrimEnd('\', '/') }
+
 if ($scriptDir) {
     Set-Location -LiteralPath $scriptDir
 }
+
+# Workspace key derivation (beads mcpw-ybs.2). Dot-sourced BEFORE the teardown
+# module so Get-WatchersWorkspaceKey is defined for every consumer. The key comes
+# from ONE canonical implementation, so the launcher, the teardown module and the
+# tests can never disagree about it.
+$watcherWorkspaceModule = Join-Path $scriptDir 'Modules\watcher_workspace.ps1'
+if (Test-Path -LiteralPath $watcherWorkspaceModule) { . $watcherWorkspaceModule }
+if (-not (Get-Command Get-WatchersWorkspaceKey -ErrorAction SilentlyContinue)) {
+    # Inline fallback. A missing module must never silently UN-KEY the guard: an
+    # un-keyed teardown state file makes one repo tear down another repo.
+    function Get-WatchersWorkspaceKey {
+        param([string]$Path)
+        if (-not $Path) { $Path = (Get-Location).ProviderPath }
+        $n = $Path.TrimEnd('\', '/').ToLowerInvariant()
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $b = [System.Text.Encoding]::UTF8.GetBytes($n)
+            return ([System.BitConverter]::ToString($sha.ComputeHash($b)) -replace '-', '').Substring(0, 8).ToLowerInvariant()
+        } finally { $sha.Dispose() }
+    }
+}
+$workspaceKey = Get-WatchersWorkspaceKey -Path $watchersWorkspaceRoot
+# Export for the child pane tailers and for dot-sourced modules that run on a
+# path with no script scope, such as the PowerShell.Exiting handler.
+$env:VAD_WATCHERS_WORKSPACE_KEY = $workspaceKey
+$env:VAD_WATCHERS_WORKSPACE_ROOT = $watchersWorkspaceRoot
 
 # Shared watcher teardown (tree-kill + sweep). Safe to dot-source: no
 # top-level side effects. Provides Stop-WatcherTree / Stop-AllWatchers.
@@ -911,7 +950,10 @@ try {
 $scratchRoot = $null
 if (Test-Path -LiteralPath "C:\Temp") { $scratchRoot = "C:\Temp" }
 else { $scratchRoot = Join-Path $env:TEMP "vad-watchers" }
-$logsDir = Join-Path $scratchRoot "vad-watchers\watchers"
+# mcpw-ybs.2: the logs dir carries the WORKSPACE KEY, so two repositories never
+# share a log file. Without the key repo B's grepai pane tails repo A's log and
+# both launchers write the same grepai-launch.log.err.
+$logsDir = Join-Path $scratchRoot "vad-watchers\$workspaceKey\watchers"
 try { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null } catch {}
 $grepaiLaunchLog = Join-Path $logsDir "grepai-launch.log"
 $grepaiLaunchErr = Join-Path $logsDir "grepai-launch.log.err"
@@ -3702,7 +3744,11 @@ Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action $teardownActio
 # Modules/watcher_teardown.ps1 matches 'panes\tail_' on the pane powershell's
 # CommandLine, so moving the dir keeps that sweep working as long as the path
 # still contains '\panes\tail_'. See change log 2026-07-12.
-$wtPaneDir = Join-Path $scratchRoot "vad-watchers\panes"
+# mcpw-ybs.2: the keyed workspace segment sits BETWEEN 'vad-watchers' and
+# 'panes', so the 'panes\tail_' substring that the teardown sweep matches is
+# preserved while two repositories stop sharing one pane dir. The tailer path is
+# also what makes a pane process ATTRIBUTABLE to its workspace during a sweep.
+$wtPaneDir = Join-Path $scratchRoot "vad-watchers\$workspaceKey\panes"
 try { New-Item -ItemType Directory -Path $wtPaneDir -Force | Out-Null } catch {}
 
 # Auto health check for grepai - detects a dead/missing grepai watch daemon and
@@ -4135,7 +4181,11 @@ try {
         WtWindowName       = $wtWindowName
         GrepaiPid          = [int]($script:GrepaiPid)
     } | ConvertTo-Json -Compress
-    $tdDir  = Join-Path $env:LOCALAPPDATA 'watchers'
+    # mcpw-ybs.2: the state file is keyed by workspace. It carries THIS
+    # launcher's tracked root PIDs, so a shared file would let a takeover in repo
+    # A tear down repo B's watchers (Stop-AllWatchers reads this path when it is
+    # called with no arguments, which is the PowerShell.Exiting path).
+    $tdDir  = Join-Path $env:LOCALAPPDATA "watchers\$workspaceKey"
     $tdFile = Join-Path $tdDir 'teardown-state.json'
     New-Item -ItemType Directory -Path $tdDir -Force | Out-Null
     Set-Content -LiteralPath $tdFile -Value $tdState -Encoding UTF8

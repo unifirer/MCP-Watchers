@@ -1,4 +1,11 @@
-Import-Module Pester -ErrorAction Stop
+# Pin any installed Pester 3.x explicitly BEFORE the first Describe: some hosts
+# leak pwsh7 module dirs onto PSModulePath, and 5.1 auto-load then picks Pester
+# 6.x, whose Should does not bind the legacy positional form used here. Without
+# this pin the suite silently registers ZERO tests and reports a false green.
+$pesterLegacy = Get-Module -ListAvailable Pester |
+    Where-Object { $_.Version.Major -lt 4 } |
+    Sort-Object Version -Descending | Select-Object -First 1
+if ($pesterLegacy) { Import-Module $pesterLegacy.Path -DisableNameChecking }
 
 # Regression guard for the final split window bug (2026-08-21):
 # The repowise pane (BR, final Build-GridStep) closed when its WatchPid was stale
@@ -6,8 +13,8 @@ Import-Module Pester -ErrorAction Stop
 # The fix adds per-label any-watch probes and fallback, so final window keeps
 # correct repowise info and does not show grepai or stay empty.
 
-$launcher = 'J:\audio\VAD\###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1'
-$paneModule = 'J:\audio\VAD\Modules\watcher_pane_scripts.ps1'
+$launcher = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')).Path '###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1'
+$paneModule = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')).Path 'Modules\watcher_pane_scripts.ps1'
 
 function Get-LauncherCode {
     (Get-Content -LiteralPath $launcher) |
@@ -31,72 +38,72 @@ Describe 'final split window (repowise BR) shows correct info, not grepai' {
 
     It 'four pane tailers map label to correct log variable (grepai->logFile, repowise->repowiseLog)' {
         $code = Get-LauncherCode | Out-String
-        $code | Should -Match 'New-WatcherPaneScript -Label "grepai".*-LogPath \$logFile'
-        $code | Should -Match 'New-WatcherPaneScript -Label "repowise".*-LogPath \$repowiseLog'
-        $code | Should -Match 'New-WatcherPaneScript -Label "graphenium".*-LogPath \$gmLog'
-        $code | Should -Match 'New-WatcherPaneScript -Label "graphify-rs".*-LogPath \$graphifyLog'
+        $code | Should Match 'New-WatcherPaneScript -Label "grepai".*-LogPath \$logFile'
+        $code | Should Match 'New-WatcherPaneScript -Label "repowise".*-LogPath \$repowiseLog'
+        $code | Should Match 'New-WatcherPaneScript -Label "graphenium".*-LogPath \$gmLog'
+        $code | Should Match 'New-WatcherPaneScript -Label "graphify-rs".*-LogPath \$graphifyLog'
     }
 
     It 'final Build-GridStep is repowise BR with title repowise and file tailRepowise' {
         $code = Get-LauncherCode | Out-String
         $titleSteps = [regex]::Matches($code, "Build-GridStep @\('-w',.*?'--title', '(.*?)'")
-        $titleSteps.Count | Should -Be 4
+        $titleSteps.Count | Should Be 4
         $last = $titleSteps[$titleSteps.Count - 1]
-        $last.Groups[1].Value | Should -Be 'repowise'
+        $last.Groups[1].Value | Should Be 'repowise'
         $first = $titleSteps[0]
-        $first.Groups[1].Value | Should -Be 'grepai'
+        $first.Groups[1].Value | Should Be 'grepai'
         # Total Build-GridStep calls is 6 (3 pane splits + 2 focus + 1 new-tab)
         $allSteps = [regex]::Matches($code, "Build-GridStep @\(")
-        $allSteps.Count | Should -Be 6
+        $allSteps.Count | Should Be 6
     }
 
     It 'tailer template defines any-watch probes for all four watchers' {
         $tpl = Get-TailerTemplateBody
-        $tpl | Should -Not -Be $null
-        $tpl | Should -Match 'function Test-GrepaiWatcherAlive'
-        $tpl | Should -Match 'function Test-GrapheniumWatcherAlive'
-        $tpl | Should -Match 'function Test-GraphifyRsWatcherAlive'
-        $tpl | Should -Match 'function Test-RepowiseWatcherAlive'
-        $tpl | Should -Match "Name='gm.exe'"
-        $tpl | Should -Match "Name='repowise.exe'"
-        $tpl | Should -Match "graphify-watch-wrapper"
-        $tpl | Should -Match "WatchMode"
+        $tpl | Should Not Be $null
+        $tpl | Should Match 'function Test-GrepaiWatcherAlive'
+        $tpl | Should Match 'function Test-GrapheniumWatcherAlive'
+        $tpl | Should Match 'function Test-GraphifyRsWatcherAlive'
+        $tpl | Should Match 'function Test-RepowiseWatcherAlive'
+        $tpl | Should Match "Name='gm.exe'"
+        $tpl | Should Match "Name='repowise.exe'"
+        $tpl | Should Match "graphify-watch-wrapper"
+        $tpl | Should Match "WatchMode"
     }
 
     It 'liveness guard falls back to any-watch probe when PID is stale or empty (keeps final window alive on PID rotation)' {
         $tpl = Get-TailerTemplateBody
-        $tpl | Should -Not -Be $null
-        $tpl | Should -Match 'Test-WatcherAlive'
-        $tpl | Should -Match "Test-RepowiseWatcherAlive"
-        $tpl | Should -Match "Test-GrapheniumWatcherAlive"
-        $tpl | Should -Match "Test-GraphifyRsWatcherAlive"
-        $tpl | Should -Match "Test-GrepaiWatcherAlive"
-        $tpl | Should -Not -Match 'else \{ \$alive = \$false \}   # tracked pane with no watcher PID: close immediately'
+        $tpl | Should Not Be $null
+        $tpl | Should Match 'Test-WatcherAlive'
+        $tpl | Should Match "Test-RepowiseWatcherAlive"
+        $tpl | Should Match "Test-GrapheniumWatcherAlive"
+        $tpl | Should Match "Test-GraphifyRsWatcherAlive"
+        $tpl | Should Match "Test-GrepaiWatcherAlive"
+        $tpl | Should Not Match 'else \{ \$alive = \$false \}   # tracked pane with no watcher PID: close immediately'
     }
 
     It 'generated repowise tail would keep correct label and log path (no grepai leak)' {
         $tpl = Get-TailerTemplateBody
-        $tpl | Should -Not -Be $null
+        $tpl | Should Not Be $null
         $fakeLog = 'C:\Temp\vad-watchers\watchers\repowise.log'
         $body = $tpl.Replace('__LABEL__', 'repowise').Replace('__LOG__', $fakeLog)
-        $body | Should -Match "\[repowise\]"
-        $body | Should -Match ([regex]::Escape($fakeLog))
-        $body | Should -Match "Test-RepowiseWatcherAlive"
-        $body | Should -Not -Match "__LABEL__"
-        $body | Should -Not -Match "__LOG__"
+        $body | Should Match "\[repowise\]"
+        $body | Should Match ([regex]::Escape($fakeLog))
+        $body | Should Match "Test-RepowiseWatcherAlive"
+        $body | Should Not Match "__LABEL__"
+        $body | Should Not Match "__LOG__"
     }
 }
 
 Describe 'repowise pane survives PID rotation (dynamic)' {
     It 'template keeps any-watch fallback so stale PID does not kill final window' {
         $tpl = Get-TailerTemplateBody
-        $tpl | Should -Not -Be $null
-        $tpl | Should -Match 'Test-RepowiseWatcherAlive'
-        $tpl | Should -Match 'Test-GrapheniumWatcherAlive'
-        $tpl | Should -Match 'Test-GraphifyRsWatcherAlive'
+        $tpl | Should Not Be $null
+        $tpl | Should Match 'Test-RepowiseWatcherAlive'
+        $tpl | Should Match 'Test-GrapheniumWatcherAlive'
+        $tpl | Should Match 'Test-GraphifyRsWatcherAlive'
         # The liveness block must contain fallback for stale PID case
-        $tpl | Should -Match 'if \(-not \$alive\)'
-        $tpl | Should -Match "Test-RepowiseWatcherAlive"
+        $tpl | Should Match 'if \(-not \$alive\)'
+        $tpl | Should Match "Test-RepowiseWatcherAlive"
     }
 }
 

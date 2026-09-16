@@ -282,7 +282,7 @@ try {
     # counts ONLY the files this run wrote (never ###1's).
     $panesDir = Join-Path $scratchRoot ('t8_' + $t8Guid + '\panes'); New-Item -ItemType Directory -Path $panesDir -Force | Out-Null
     $gmLog = Join-Path $env:TEMP 'gm.log'; $graphifyLog = Join-Path $env:TEMP 'graphify-rs.log'; $repowiseLog = Join-Path $env:TEMP 'repowise.log'
-    $psiIdx = $src.IndexOf('$wtPaneDir = Join-Path $scratchRoot "vad-watchers\panes"')
+    $psiIdx = $src.IndexOf('$wtPaneDir = Join-Path $scratchRoot "vad-watchers')
     $peiIdx = $src.IndexOf('# Controller loop (WT panes open)')
     $paneBlock = $src.Substring($psiIdx, $peiIdx - $psiIdx)
     # Rewrite the extracted block into a test-isolated copy: t8_<guid> window
@@ -962,7 +962,7 @@ function Find-InOrder {
     }
     return $idxs
 }
-$t15psi = $src.IndexOf('$wtPaneDir = Join-Path $scratchRoot "vad-watchers\panes"')
+$t15psi = $src.IndexOf('$wtPaneDir = Join-Path $scratchRoot "vad-watchers')
 $t15pei = $src.IndexOf('# Controller loop (WT panes open)')
 $t15block = $src.Substring($t15psi, $t15pei - $t15psi)
 # Counts: exactly one horizontal split, exactly two vertical splits, exactly

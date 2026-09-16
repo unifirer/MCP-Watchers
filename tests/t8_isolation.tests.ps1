@@ -12,9 +12,18 @@
 # literals are built from [char]92 so '\p' never appears raw in source.
 Describe 'T8 pane block is fully isolated from the user''s ###1 window' {
     It 'rewrites window name + pane dir + scopes the reset matcher to a unique t8 sandbox (RED: still shared)' {
-        $repoRoot = "J:\audio\VAD"
+        # Repo root is RESOLVED, never hardcoded. This suite was extracted from
+        # J:\audio\VAD into the standalone MCP-Watchers repo (2026-09-17); a
+        # hardcoded path made it silently assert against the WRONG launcher.
+        $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
         $BS = [char]92
-        $vadPanes   = 'vad-watchers' + $BS + 'panes'
+        # Keyed pane dir (beads mcpw-ybs.2): the launcher writes
+        # <scratch>\vad-watchers\<workspaceKey>\panes\tail_<label>.ps1, where the
+        # key is an 8-character lowercase hex SHA-256 prefix that differs per
+        # repository. The live matcher below is therefore a REGEX, and the shared
+        # dir is detected by its literal ASSIGNMENT PREFIX, not by a full path.
+        $vadPanes   = 'vad-watchers' + $BS + '[0-9a-f]{8}' + $BS + 'panes'
+        $sharedPaneDirLiteral = '$wtPaneDir = Join-Path $scratchRoot "vad-watchers'
         $tailMarker = 'panes' + $BS + 'tail_'
 
         # Bind to the REAL implementation under test. Dot-sourced INSIDE the It
@@ -51,13 +60,13 @@ Describe 'T8 pane block is fully isolated from the user''s ###1 window' {
         # --- guarded live-run (skips unless the block is isolated, so RED is safe) ---
         if (-not $scoped) { return }
         $before = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
-            Where-Object { $_.CommandLine -and $_.CommandLine -match [regex]::Escape($vadPanes + $BS + 'tail_') } |
+            Where-Object { $_.CommandLine -and $_.CommandLine -match ($vadPanes + $BS + 'tail_') } |
             Select-Object -ExpandProperty CommandLine)
         $null = New-Item -ItemType Directory -Path (Join-Path $env:TEMP ('t8_' + $guid)) -Force -ErrorAction SilentlyContinue
         try { Invoke-Expression $isolated } catch { }
         Start-Sleep -Seconds 2
         $after = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
-            Where-Object { $_.CommandLine -and $_.CommandLine -match [regex]::Escape($vadPanes + $BS + 'tail_') } |
+            Where-Object { $_.CommandLine -and $_.CommandLine -match ($vadPanes + $BS + 'tail_') } |
             Select-Object -ExpandProperty CommandLine)
         Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
             Where-Object { $_.CommandLine -and $_.CommandLine -match [regex]::Escape(('t8_' + $guid + $BS + 'panes' + $BS + 'tail_')) } |

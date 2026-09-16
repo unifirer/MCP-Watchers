@@ -111,7 +111,19 @@ function Stop-AllWatchers {
     )
     # Backing state file written by the launcher (covers the Exiting-event
     # call path that has no script scope).
-    $stateFile = Join-Path $env:LOCALAPPDATA 'watchers\teardown-state.json'
+    # mcpw-ybs.2: the file is keyed by WORKSPACE so two repositories never share
+    # one teardown record. VAD_WATCHERS_WORKSPACE_KEY is exported by the launcher,
+    # so it is present on the Exiting path and in every child process. When the
+    # variable is absent - an older launcher, or a consumer that never sourced
+    # Modules\watcher_workspace.ps1 - fall back to the legacy un-keyed path rather
+    # than guessing a key, because a WRONG key reads a nonexistent file and would
+    # silently disable teardown instead of failing loudly.
+    $wsKey = $env:VAD_WATCHERS_WORKSPACE_KEY
+    if ($wsKey) {
+        $stateFile = Join-Path $env:LOCALAPPDATA "watchers\$wsKey\teardown-state.json"
+    } else {
+        $stateFile = Join-Path $env:LOCALAPPDATA 'watchers\teardown-state.json'
+    }
     if (($RootPids.Count -eq 0) -and (Test-Path -LiteralPath $stateFile)) {
         try {
             $st = Get-Content -LiteralPath $stateFile -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json

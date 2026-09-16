@@ -1,0 +1,27 @@
+Watcher launcher beads fix sequence — 2026-09-11
+Parent: VAD-v14z (epic, close last)
+Target: ###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1 (3792 lines, 45 functions)
+
+Order (priority):
+1. VAD-v14z.1 P0 — Remove LLM_PROXY_API_KEY from --api-key ArgumentList (L1414-1423). Skill: security-and-hardening. Agent: security-reviewer + code-implementer. Fix: env file or stdin, never ArgumentList. Verify: CIM Win32_Process.CommandLine query.
+2. VAD-v14z.8 P1 — Fix FIRST-WINS vs LAST-WINS contradiction (L150-222). Skill: debugging-and-error-recovery / systematic-debugging. Agent: code-implementer. Fix: choose one model, delete Stop-Prior call for true FIRST-WINS or rename to LAST-WINS and drop first-wins exits.
+3. VAD-v14z.3 P1 — Dedupe grepai heal loops (L930-1124 vs L3154-3220). Skill: code-simplification. Agent: code-implementer. Fix: single healer or gate pane heal behind supervisor liveness with mutex.
+4. VAD-v14z.4 P1 — Track background daemons in PID-scoped teardown (L1302,1886,2145+). Skill: debugging-and-error-recovery. Agent: code-implementer. Fix: persist all daemon PIDs in teardown-state.json or document persistence.
+5. VAD-v14z.6 P2 — Fix Ollama port-fix no-op (L423-469). Skill: debugging-and-error-recovery. Agent: code-implementer. Fix: start Ollama on target or redirect to known-good port, correct log text.
+6. VAD-v14z.7 P3 — Replace hardcoded J:/audio/VAD, C:/Users/yuni paths (L2679,3657,1502-1504,2323-2324,2510). Skill: code-simplification. Agent: code-implementer. Fix: resolve from scriptDir, env APPDATA, or config.
+7. VAD-v14z.5 P3 — Split 3801-line monolith, dedupe job helpers (L900-928,936-947,1559-1571). Skill: code-simplification. Agent: code-implementer. Fix: extract to modules/ file dot-sourced via literal path.
+8. VAD-v14z.2 P3 — Quote git worktree args, reduce empty catch (L488-494,702-747). Skill: security-and-hardening + code-review-and-quality. Agent: code-implementer. Fix: quote paths, log Exception.Message in heal paths.
+
+Execution protocol (1 at a time):
+- bd update <id> --claim before each
+- dispatch single Task subagent with skill + file/line refs
+- verify: syntax check + python run_tests_isolated.py + targeted test file if present
+- stage only own paths: git add <launcher> <tests touched>
+- commit: git commit -m "fix(<id>): <short>" -m "<body>"
+- bd close <id> --reason="Completed"
+- close VAD-v14z epic last after all children verified
+- Branch: titan/gauntlet-remediation (ahead 18, dirty — stage only own paths)
+
+Overrides disclosed:
+- opentoken wrap rtk wrapper broken (unknown verb wrap) — using bare bd/git commands.
+- jCodeMunch used for exploration; Read only before edit per policy.

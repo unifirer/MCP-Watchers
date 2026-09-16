@@ -1,0 +1,34 @@
+# Generated runtime state - never commit
+logs/
+temp/
+*.log
+*.err
+*.lock
+teardown-state.json
+launcher-state.json
+.launcher/
+.grepai/
+.memdb/
+.memtrace/
+*-out/
+graphify-out/
+graphenium-out/
+repowise-out/
+
+# Panes and scratch
+.panes/
+panes/
+tail_*.ps1
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Editors and OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

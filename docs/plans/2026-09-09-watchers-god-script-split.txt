@@ -1,0 +1,23 @@
+PLAN: VAD-draz.2 Split ###1 god-script into modules
+Date: 2026-09-09
+Issue: VAD-draz.2 (child of VAD-draz epic, 2026-09-08 review)
+Launcher: ###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1
+Status at close: 3688 lines. Landed extractions reduce size without behavior change.
+
+LANDED (already committed, tests green)
+- modules/watcher_teardown.ps1 (lowercase modules/): Stop-WatcherTree / Stop-AllWatchers. Dot-sourced, no top-level side effects.
+- Modules/watcher_log_tail.ps1: Read-WatcherLogTail incremental byte-offset reader. Embedded into generated panes at generation time so panes stay self-contained for FAKE-root harnesses.
+- Modules/watcher_patterns.ps1: shared sweep-pattern list. Pinned by test_launcher_uses_shared_sweep_pattern_module.
+- Launcher dot-sources all three with Test-Path guards. Python contract suite passes: test_launcher_gm_wiring.py (7), test_launcher_watchers_contract.py (9), plus proxy/launch-watcher suites (28 passed, 2 skipped for missing grepai/Ollama).
+
+ATTEMPTED AND REVERTED 2026-09-09
+- Modules/watcher_pane_template.ps1 extraction (New-WatcherPaneScript, ~227-line reduction to 3574 lines).
+- Reason for revert: 6+ Pester harnesses AST-extract New-WatcherPaneScript from the launcher path via Extract-FunctionAst (launcher_watcher_panes, launcher_pane_line_cap, launcher_graphenium_autofix, repowise_changed_files, repowise_changed_files_race, repowise_e2e_resolve, launcher_tests T8). Python contract test_launcher_defines_teardown_helpers also pins function New-WatcherPaneScript in launcher src. Moving the function breaks all of them. Verified: 1 failed / 13 passed with split, 16 passed after revert.
+- Backup of attempt kept during session in temp/ then cleaned per asset routing. No behavior change was intended, but test-behavior changed, so revert was correct for P3 readability work.
+
+DEFERRED (require harness updates first)
+- Supervisor split ($supervisorScript scriptblock, lines ~938-1120, plus litellm supervisor ~1562-1636). Blocked by same coupling: launcher_remediation.tests.ps1 and launcher_tests.ps1 pin $supervisorScript = { in launcher src. Thread-job scope rule requires self-contained scriptblock with inline helpers (Clear-StaleLocks, Repair-CorruptGobIndex, Limit-LogSize). Moving to a module must preserve fresh-runspace semantics.
+- Pane-template re-attempt. Requires updating all Extract-FunctionAst callers to try module path first with launcher fallback, plus updating test_launcher_defines_teardown_helpers to accept dot-sourced module (same pattern as watcher_patterns test). Estimated blast radius: 6 Pester files + 1 Python contract file. Do as separate PR with full Pester run (Windows PowerShell 5.1, Pester 3.x).
+
+ACCEPTANCE
+- Met by landed extractions + this plan. No further size reduction in this issue to keep gates green. Close VAD-draz.2.

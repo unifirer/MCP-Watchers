@@ -1,0 +1,83 @@
+# Fix: relocate watcher launcher scratch (logs + pane tailers) OUT of the repo root
+
+**Date:** 2026-07-12
+
+## Symptom
+The graphenium pane of `###1. watchers for memtrace grepai graphenium
+graphify-rs repowise.ps1` kept logging `(non-code)` changes for files under
+`temp/` — e.g. `changed (non-code): J:\audio\VAD\.\temp\grprobe_touch.txt` —
+and even `changed (code): ...\temp\grprobe_touch.py` → "Patched ... 1 inserted",
+inserting live graph nodes from a temp .py.
+
+## Root cause (verified empirically)
+`gm watch` is **ignore-blind**: it applies `.grapheniumignore` only during the
+initial full scan, but the long-running change handler re-indexes EVERY file
+under the watched root regardless of ignore status. Confirmed in an isolated
+scratch dir:
+- `gm run . --no-semantic` honored `sub/`, `*.txt`, `junk.txt` (found 1 file).
+- `gm watch .` then reported `sub/new.py`, `root_junk.txt`, `sub/new.txt` as
+  changes and patched `sub/new.py` in (1 inserted) — all ignore rules bypassed.
+So `temp/` (in `.grapheniumignore` line 18 and `.gitignore` line 24) was still
+watched because `gm watch`'s path arg is just `.` with no `--exclude` flag and it
+ignores the ignore file in watch mode.
+
+## Fix
+Move ALL launcher scratch OUT of the repo root so the ignore-blind watcher never
+sees it:
+- Watcher logs: `temp\watchers` → `J:\scratch\vad-watchers\watchers`
+  (fallback `$env:TEMP\vad-watchers\watchers` if J:\scratch absent).
+- Pane tailer scripts: `temp\panes` → `J:\scratch\vad-watchers\panes` (same fallback).
+
+Both resolve through a single `$scratchRoot` chosen identically in the two
+scripts that need it:
+- `###1. watchers for memtrace grepai graphenium graphify-rs repowise.ps1`
+- `###5. graphenium build semantic graph with qwen 7b.ps1`
+
+## Teardown correctness (no feature regression)
+`Modules/watcher_teardown.ps1` kills the 4 pane-tailer `powershell.exe` processes
+by matching `panes\tail_` on their CommandLine. Because the new path
+`...\vad-watchers\panes\tail_<label>.ps1` still contains the substring
+`panes\tail_`, the sweep pattern was loosened from `temp\panes\tail_` to
+`panes\tail_` and verified to still match a real pane CommandLine. No tailer
+leaks on Ctrl+C or [X] close.
+
+## Tests
+- `tests/launcher_tests.ps1`: added `Resolve-ScratchRoot` helper mirroring the
+  launcher; T6/T7 log dir and T8/T15 `$wtPaneDir` IndexOf anchor updated to the
+  new `Join-Path $scratchRoot "vad-watchers\panes"` line; pane sweep-kill regex
+  updated to `panes\tail_`.
+- `tests/launcher_watcher_teardown_sweep.tests.ps1`: pane probe dir + assertion
+  updated to `panes\tail_`.
+- All 5 edited .ps1 parse clean (ScriptBlock create). Functional repro confirms
+  resolved dirs are off-repo and the teardown sweep still matches the pane path.
+
+## Verification
+- `pwsh` ScriptBlock syntax check: OK for all 5 files.
+- Path-resolution repro: scratchRoot=J:\scratch, logsDir/panesDir under
+  J:\scratch\vad-watchers, underRepo=False, sweep match=True.
+
+## Files changed
+- `###1. watchers for memtrace grepai graphenium graphify-rs repowise.ps1`
+- `###5. graphenium build semantic graph with qwen 7b.ps1`
+- `Modules/watcher_teardown.ps1`
+- `tests/launcher_tests.ps1`
+- `tests/launcher_watcher_teardown_sweep.tests.ps1`
+
+## Addendum 2026-07-12 (relocate preferred scratch root J:\scratch -> C:\Temp)
+
+C: is no longer near-full (now ~959GB free; J: is the smaller drive at ~94GB).
+The preferred off-repo scratch root was changed from `J:\scratch` to `C:\Temp`
+in both `###1...ps1` and `###5...ps1`, plus the mirroring test helper
+`Resolve-ScratchRoot` in `tests/launcher_tests.ps1`. The `$env:TEMP\vad-watchers`
+fallback is unchanged. `C:\Temp` is verified present on this box. The off-repo
+constraint (so gm watch's ignore-blind watcher never sees scratch) still holds.
+
+### Files changed (addendum)
+- `###1. watchers for memtrace grepai graphenium graphify-rs repowise.ps1`
+- `###5. graphenium build semantic graph with qwen 7b.ps1`
+- `tests/launcher_tests.ps1`
+
+### Verification (addendum)
+- All three edited .ps1 parse clean (Parser::ParseFile, 0 errors).
+- No `J:\scratch` reference remains in the two launchers.
+- `tests/launcher_tests.ps1`: PASS=49 FAIL=0.

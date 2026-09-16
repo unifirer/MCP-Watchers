@@ -1,0 +1,107 @@
+PLAN: vad-br2 File split plan for ###1 watcher launcher
+Date: 2026-09-12
+Issue: vad-br2. Supersedes the deferred items of plans/2026-09-09-watchers-god-script-split.txt.
+Launcher: ###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1
+
+== CURRENT METRICS (recomputed 2026-09-12, not the stale review metrics) ==
+
+- Size: 3999 lines (git working tree, wc -l).
+- Churn: 56 commits in 30 days (git log --since 2026-08-13). Latest: d2fc50ca.
+- STALE REVIEW CLAIM CORRECTED: New-WatcherPaneScript is no longer cyclomatic
+  240. It is ~63 lines (2783-2841) and is pinned by launcher_watcher_panes and
+  launcher_pane_line_cap. Do not prioritize it for extraction.
+
+Section map (line ranges from the current file):
+
+  R1   1-391     header, env, launcher-lock functions            (~391 lines)
+  R2   391-618   grepai health check functions + checks          (~227)
+  R3   618-832   prerequisites + grepai daemon detection         (~214)
+  R4   832-957   log dirs + grepai background launch             (~125)
+  R5   957-979   grepai crash-restart supervisor                 (~22)
+  R6   979-1228  shared job-scope helpers (dot-sourced)          (~249)
+  R7   1228-1267 combined watcher launcher                       (~39)
+  R8   1267-1444 gm semantic build (Invoke-GmSemanticBuild)      (~177)
+  R9   1444-1618 graphenium semantic inline build                (~174)
+  R10  1618-1842 LiteLLM proxy + supervisor + Ensure-LlmProxy    (~224)
+  R11  1842-2026 graphenium live semantic build                  (~184)
+  R12  2026-2404 memtrace index + auto-heal supervisor           (~378)
+  R13  2404-2498 cerememory backend                             (~94)
+  R14  2498-2603 Claude MCP server                              (~105)
+  R15  2603-2715 MCP Agent Mail                                 (~112)
+  R16  2715-2911 pane grid + alive checks                        (~196)
+  R17  2911-3999 autofix, heartbeat, log cleaning,
+        changed files, main orchestration tail                  (~1088)
+
+Key structural fact: R11-R15 (1842-2715, ~873 lines) contain NO function
+definitions pinned by any Pester harness. They are inline top-level
+scriptblocks for service backends. Extracting them cannot break
+Extract-FunctionAst-based tests.
+
+== HARD CONSTRAINT (learned 2026-09-09, plans/2026-09-09-watchers-god-script-split.txt) ==
+
+Six Pester harnesses AST-extract named functions from the launcher path via
+Extract-FunctionAst. Moving a pinned function to a module breaks all of them
+(this caused the reverted pane-template attempt). Harnesses must be updated to
+"try module path first, launcher fallback" before any pinned function moves.
+
+== TESTS PINNING EACH SECTION ==
+
+  R1/R3   launcher_port_autheal (Test-PortHeldByLauncherDaemon,
+          Exit-IfPortHeldByLauncherDaemon)
+  R2      launcher_remediation (Get-GrepaiStatusText, Invoke-GrepaiHealthCheck)
+  R6      launcher_wrapper_stack (job-scope helpers)
+  R7/R4   launcher_graphify_wiring, launch_watcher_for_grepai (Start-WatcherDetached)
+  R8      launcher_gm_semantic_build, _concurrency, _threadjob, launcher_proxy_wiring,
+          launcher_remediation (Invoke-GmSemanticBuild, Test-LlmProxyReady,
+          Stop-GmSemanticLive)
+  R10     launcher_proxy_wiring (Ensure-LlmProxyRunning)
+  R12-R15 none (inline scriptblocks only)
+  R16     launcher_watcher_panes, launcher_pane_line_cap, launcher_final_window,
+          launcher_graphenium_autofix, launcher_equal_quarters (New-WatcherPaneScript,
+          CleanLogLine, Test-WatcherAlive)
+  R17     launcher_graphenium_autofix (Invoke-GrapheniumAutoFix), launcher_remediation
+          (Invoke-GrepaiHealthCheck), launcher_pane_line_cap + launcher_watcher_panes
+          (CleanLogLine at 3105)
+  teardown watcher_teardown, watcher_teardown_sweep, wrapper_stack, equal_quarters
+          (Modules/watcher_teardown.ps1, already landed)
+
+== EXTRACTION ORDER (by layer: inline service backends first, pinned functions last) ==
+
+WAVE 1 - Service backends, no function coupling (removes ~873 lines, 22%)
+  Extract R11-R15 into modules/ backends, one module per backend, each
+  dot-sourced with a Test-Path guard (same pattern as Modules/watcher_patterns.ps1):
+    - modules/watcher_backend_memtrace.ps1     (R12, 378 lines)
+    - modules/watcher_backend_graphenium_live.ps1 (R11, 184)
+    - modules/watcher_backend_litellm...       keep R10 for Wave 3 (has Ensure-LlmProxyRunning)
+    - modules/watcher_backend_cerememory.ps1   (R13, 94)
+    - modules/watcher_backend_claude_mcp.ps1   (R14, 105)
+    - modules/watcher_backend_agent_mail.ps1   (R15, 112)
+  Rule: each module has NO top-level side effects beyond defining scriptblocks;
+  the launcher dot-sources and invokes. Fresh-runspace semantics of supervisor
+  scriptblocks must be preserved (inline helpers stay inside the scriptblock).
+  Tests affected: none directly. Run full Pester suite + python contract suite.
+
+WAVE 2 - Grepai health check layer (removes ~441 lines)
+  Extract R2+R3 functions to modules/watcher_grepai_health.ps1.
+  PREREQUISITE: update launcher_remediation.tests.ps1 Extract-FunctionAst to
+  accept the module path first with launcher fallback (pattern of the
+  test_launcher_uses_shared_sweep_pattern_module pin).
+
+WAVE 3 - Log-line helpers + LiteLLM (removes ~360 lines)
+  Extract CleanLogLine/Convert-GrepaiLogLine/ScrubNulBytes to
+  modules/watcher_log_cleaning.ps1. PREREQUISITE: same harness update in
+  launcher_pane_line_cap + launcher_watcher_panes (2 files).
+  Then Ensure-LlmProxyRunning/Test-LlmProxyReady to
+  modules/watcher_llm_proxy.ps1 with launcher_proxy_wiring harness update.
+
+WAVE 4 - Supervisor scriptblocks (deferred from 2026-09-09, still gated)
+  launcher_remediation + launcher_tests pin $supervisorScript = { in launcher
+  src. Same harness-fallback update applies. Do last, one supervisor per PR.
+
+== EXECUTION RULES ==
+
+- One wave per PR. Full Pester suite (Windows PowerShell 5.1, Pester 3.x) plus
+  python run_tests_isolated.py contract suite green before each merge.
+- No behavior change. Target after Waves 1-3: ~2325 lines (3999 - 1674).
+- Recompute section map from the live file before each wave; line numbers above
+  are current as of 2026-09-12 commit 0cbaee2.

@@ -7,6 +7,17 @@ Status: EXTRACTION COMPLETE AND COMMITTED (2 commits).
         MULTI-REPO PATCH PENDING. CUTOVER PENDING.
 ================================================================
 
+NOTE ON PATHS IN THIS DOCUMENT
+
+  The target folder was renamed from "J:\audio\MCP Watchers" to
+  "J:\audio\MCP-Watchers" on 2026-09-17, after the extraction. Every path
+  below that reads "J:\audio\MCP Watchers" refers to that same repo and now
+  resolves at "J:\audio\MCP-Watchers". The document is left as written so the
+  record of what was actually done stays accurate.
+
+  The repo also gained its own beads tracker on 2026-09-17: database "mcpw",
+  server mode on 127.0.0.1:43413, issue prefix mcpw.
+
 0. RESULT SUMMARY
 
   The extraction ran on 2026-09-17. The new repository exists and is

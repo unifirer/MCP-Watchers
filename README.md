@@ -1,7 +1,11 @@
-# MCP Watchers
+# MCP-Watchers
 
 Standalone repository for the watcher launcher. Extracted from `J:\audio\VAD`
-on 2026-09-17.
+on 2026-09-17. Renamed from `MCP Watchers` to `MCP-Watchers` the same day.
+
+Repo: `J:\audio\MCP-Watchers`
+Issue tracker: beads, database `mcpw`, server mode on `127.0.0.1:43413`.
+Issues are named `mcpw-<hash>`.
 
 The launcher opens a four-pane Windows Terminal grid. Each pane tails the live
 log of one MCP service:

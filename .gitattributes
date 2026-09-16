@@ -1,0 +1,9 @@
+# Windows-only tooling repository.
+#
+# Disable all end-of-line conversion. These files were extracted byte-for-byte
+# from J:\audio\VAD, where they are stored with CRLF endings. PowerShell,
+# cmd.exe, and the pane scripts all expect CRLF. Normalizing them would change
+# the bytes and break the byte-identity guarantee against the source.
+#
+# Do not add "text=auto" here.
+* -text

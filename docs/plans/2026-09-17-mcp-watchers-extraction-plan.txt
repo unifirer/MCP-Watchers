@@ -1,0 +1,322 @@
+================================================================
+MCP WATCHERS EXTRACTION - PLAN AND EXECUTION RECORD
+Date: 2026-09-17
+Source repo: J:\audio\VAD
+Target repo: J:\audio\MCP Watchers
+Status: EXTRACTION COMPLETE (commits 1 of 2). MULTI-REPO PATCH PENDING.
+================================================================
+
+0. RESULT SUMMARY
+
+  The extraction ran on 2026-09-17. The new repository exists and is
+  committed. All 53 copied files are byte-identical to their VAD originals.
+
+  Commit 1 : 837587822bc196045fb33d28a62db8b653d48c67
+             "chore: extract watcher launcher from VAD as a standalone repo"
+             authored 2026-09-17 05:13:21 +1200
+             68 tracked files
+
+  Verified byte-identical:
+    8 of 8  runtime files (launcher, wrapper, proxy, 5 modules)
+    45 of 45 test files
+    Proof: SHA-256 comparison of every file pair. 0 differences.
+
+  Verified syntax:
+    6 of 6 PowerShell files parse with 0 errors (AST parser).
+    The 4093-line launcher, the wrapper, and all 5 modules.
+
+  Verified path contract:
+    The tests' own resolution rule resolves to the new root.
+    resolved repoRoot = J:\audio\MCP Watchers
+    launcher exists   = True
+    paneModule exists = True
+
+  Not yet done: the live run, the Startup shortcut repoint, and the
+  multi-repo patch. See sections 5 and 6.
+
+  Decisions taken by the operator:
+    D1 Cutover          : copy now, retire the VAD originals later
+    D2 Tier B           : exclude. ###1 does NOT call ###2. Verified: the
+                          launcher contains zero references to
+                          launch_watcher_for_grepai.
+    D3 Tests            : include all
+    D4 Workspace root   : the launcher must work from the current working
+                          directory, so that a shortcut copied into any repo
+                          makes the tool watch that repo
+
+
+1. WHY THE SET IS SELF-CONTAINED
+
+  Every sibling path is script-relative. The launcher resolves its modules
+  from $PSScriptRoot:
+
+    line 2   : $scriptDir = $PSScriptRoot
+    line 12  : Join-Path $scriptDir 'Modules\watcher_teardown.ps1'
+    line 20  : Join-Path $scriptDir 'Modules\watcher_job_helpers.ps1'
+    line 23  : Join-Path $scriptDir 'Modules\watcher_patterns.ps1'
+    line 29  : Join-Path $scriptDir 'Modules\watcher_pane_scripts.ps1'
+    line 2196: Join-Path $scriptDir "###2.llm_fallback_proxy.py"
+
+  The wrapper resolves the launcher with %~dp0.
+
+  Consequence: the move needs no path edits. The byte-identical diff proves
+  this. Only the working directory rule must change, and only to satisfy D4.
+
+
+2. WHAT MOVED
+
+  Tier A - runtime (8 files, 216 KB)
+    ###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1
+    ###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.bat
+    ###2.llm_fallback_proxy.py
+    Modules\watcher_job_helpers.ps1
+    Modules\watcher_log_tail.ps1
+    Modules\watcher_pane_scripts.ps1
+    Modules\watcher_patterns.ps1
+    Modules\watcher_teardown.ps1
+
+  Tier B - excluded by decision D2
+    ###2.launch_watcher_for_grepai.ps1
+    ###2.required_for_launch_watcher_for_grepai.bat
+    These stay in VAD. They read the same Modules\watcher_*.ps1 files, so
+    the VAD Modules copy must stay too. Do not delete the VAD Modules folder
+    while Tier B remains in VAD.
+
+  Tier C - tests (45 files)
+    25 Pester suites, 3 helpers/runners, 17 Python tests.
+
+  Tier D - docs (12 files)
+    docs\guides\launchers-and-watchers.md
+    docs\CODE_REVIEWS\  4 files
+    docs\plans\         3 files
+    docs\changelogs\    4 files
+    Note: CODE_REVIEWS\2026-09-17-grepai-watcher-debug.md no longer exists in
+    VAD. It was consolidated into 2026-09-17-grepai-watcher-dies-debug.md.
+
+  New files created (not copies)
+    README.md
+    .gitignore
+    tests\pytest.ini
+    docs\plans\2026-09-17-mcp-watchers-extraction-plan.txt
+
+
+3. WHAT DID NOT MOVE
+
+  External tools. They resolve from PATH, %LOCALAPPDATA%, or %USERPROFILE%:
+  memtrace, grepai, gm (graphenium), repowise, litellm, cerememory, ollama,
+  node, python, wt.exe, npm, cmd, powershell.
+
+  VAD application code. Modules\VAD.py, Modules\vad_stages.py, and the audio
+  modules. The watcher set does not import them. Only the folder name
+  "Modules\" is shared. Do not confuse the two.
+
+  VAD's tests\conftest.py and the VAD root pytest.ini. Both target the audio
+  suite. conftest.py imports numpy and Modules.VAD, so it would break
+  collection in the new repo. The new repo has a minimal tests\pytest.ini
+  instead.
+
+
+4. TARGET LAYOUT (as built)
+
+  J:\audio\MCP Watchers\
+  ├── ###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1
+  ├── ###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.bat
+  ├── ###2.llm_fallback_proxy.py
+  ├── README.md
+  ├── .gitignore
+  ├── Modules\                                 5 watcher modules
+  ├── tests\                                   45 files + pytest.ini
+  ├── docs\guides|CODE_REVIEWS|plans|changelogs
+  └── .git\
+
+
+5. VERIFICATION BLOCKER - THE PESTER GATE CANNOT RUN YET
+
+  The Pester suites pin an exact version:
+
+    tests\watcher_patterns.tests.ps1 line 5:
+      Import-Module Pester -RequiredVersion 3.4.0 -Force
+
+  Installed on this box:
+    Pester 6.0.0, 6.0.1, 6.1.0
+
+  Pester 3.4.0 is NOT installed. The probe returned:
+
+    Pester run failed : The specified module 'Pester' with version '3.4.0'
+    was not loaded because no valid module file was found in any module
+    directory.
+
+  This is a PRE-EXISTING environment gap. It is not caused by the move. The
+  same command fails against the VAD copy.
+
+  To unblock the gate, install the pinned version into Windows PowerShell:
+
+    Install-Module Pester -RequiredVersion 3.4.0 -Scope CurrentUser -Force
+
+  Do this only with operator consent. It is a machine-level package change.
+  Until then, the extraction is proven by byte-identity and by the AST parse
+  check, not by a passing test run.
+
+  The Python tests also need a virtual environment. The managed interpreter
+  has neither pytest nor numpy:
+
+    pytest MISSING
+    numpy  MISSING
+
+  Create a venv for the new repo, or skip the Python shims.
+
+
+6. MULTI-REPO PATCH - REQUIRED BY DECISION D4
+
+  The operator wants to copy a shortcut of the launcher into other repos and
+  use one tool for all of them. The launcher does not support that today.
+  Four behaviours block it. All four are in the launcher, not in the modules.
+
+  6.1 The launcher forces the working directory (BLOCKER)
+      Lines 6 to 8:
+        if ($scriptDir) { Set-Location -LiteralPath $scriptDir }
+      Effect: the CWD is always the folder that holds the .ps1.
+      But the Windows Terminal panes open with `-d .` (lines 4002, 4009,
+      4016, 4022). So the panes, the log paths, and every indexer resolve
+      against the launcher folder, never against the caller's repo.
+      Fix: remove the Set-Location, or gate it behind an explicit switch.
+      Keep $scriptDir for locating Modules\. The two roles are different and
+      must be split.
+
+  6.2 The single-instance guard is global (BLOCKER)
+      Line 49: $lockFile  = %LOCALAPPDATA%\watchers\###1-launcher.lock
+      Line 75: $mutexName = 'Global\VAD_Watchers_Launcher'
+      Effect: the guard is FIRST-WINS across the whole machine. A shortcut in
+      repo B exits silently while repo A runs. This defeats D4 completely.
+      Fix: derive a short workspace key from the resolved CWD, for example a
+      SHA-256 prefix, and append it to both names:
+        ###1-launcher-<key>.lock
+        Global\VAD_Watchers_Launcher_<key>
+      The key must be a stable function of the normalized absolute CWD.
+
+  6.3 The process sweep is workspace-agnostic (BLOCKER)
+      Modules\watcher_patterns.ps1 holds one shared list. The patterns match
+      on command-line substrings only:
+        powershell.exe + 'panes\tail_'
+        powershell.exe + 'graphify-watch-wrapper'
+        pwsh.exe       + 'vad-grepai-sup'
+        grepai.exe     + 'watch'
+        gm.exe         + 'watch'
+        repowise.exe   + 'watch'
+      Stop-PriorLauncherInstances runs this sweep at startup.
+      Stop-AllWatchers runs it at exit.
+      Effect: a launcher in repo B kills the watchers of repo A. Teardown in
+      one repo tears down all repos.
+      Fix: add a workspace token to every generated command line, and require
+      that token in the pattern. The pane tailers already live under a
+      per-workspace path (C:\Temp\vad-watchers\panes\tail_*.ps1), so the
+      natural token is the workspace key from 6.2. Until this is fixed, run
+      the tool in ONE repo at a time.
+
+  6.4 The terminal window name is global
+      Line 3806: $wtWindowName = "vadwatchers"
+      Effect: two repos share one window name, so the pane grid collides.
+      Fix: append the workspace key, or take a -WindowName parameter.
+
+  6.5 Other global mutexes to review
+      Line 191 : Global\VAD_Watchers_Takeover
+      Line 1303: Global\VAD_Grepai_Heal
+      Line 1727: Global\VAD_GmSemanticBuild_$BuildKey   (already keyed)
+
+  Recommended sequence for the patch:
+    Step 1  Split $scriptDir from $workspaceRoot. Add a $workspaceKey.
+    Step 2  Key the lock file, the mutex, and the window name.
+    Step 3  Add the workspace token to the sweep patterns and the generated
+            command lines. This step is the risky one. It touches teardown,
+            so a mistake leaves orphaned processes.
+    Step 4  Set $env:VAD_WORKSPACE_ROOT to the resolved workspace root when
+            it is unset, so downstream tools agree on the target.
+    Step 5  Verify each step with a live run in a scratch repository before
+            trusting it in VAD.
+
+  Do not apply 6.1 without 6.2 and 6.3. Removing Set-Location alone would
+  make two repos fight over one lock, one window, and one sweep list.
+
+
+7. REMAINING STEPS
+
+  Step A  Review commit 8375878 in J:\audio\MCP Watchers.
+  Step B  Install Pester 3.4.0, or accept the byte-identity proof and skip
+          the gate. Then run tests\run_launcher_tests.ps1 from the new root.
+          WARNING: the full gate includes T20, an end-to-end check that
+          launches the real launcher. It opens Windows Terminal panes and
+          starts the backend daemons. Run it only when you intend to start
+          the watchers.
+  Step C  Apply the multi-repo patch from section 6, in the order given.
+          Commit it separately. Message it as a behaviour change, not a move.
+  Step D  Repoint the Startup shortcut:
+            C:\Users\yuni\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\VAD-Watchers-###1.lnk
+            TargetPath : J:\audio\VAD\###1.watchers_..._repowise.bat
+            WorkingDir : J:\audio\VAD
+          New target : J:\audio\MCP Watchers\###1.watchers_..._repowise.bat
+          New start-in: the repo to watch, for example J:\audio\VAD
+          The Start-in field is now load-bearing. It decides what the tool
+          watches. Without it the panes open in the launcher folder.
+  Step E  Stop any running ###1 instance, then launch from the new repo.
+          Confirm 4 panes and the backends on 8420, 4000, 8765, 8080, 3030.
+          Two live instances fight over the shared state. Stop one first.
+  Step F  Reboot once. This proves the Startup path works.
+  Step G  After the new repo proves stable, delete the Tier A copies from
+          VAD. Keep the Tier B files and the VAD Modules folder, because
+          Tier B still lives there.
+  Step H  Update VAD-side references:
+            almanac\guides\launchers-and-watchers.md
+            the 3 plans and 4 CODE_REVIEWS files
+            AGENTS.md, if it names the watcher path
+          Then add a changelog entry in VAD.
+
+
+8. RISKS
+
+  R1  Two live launcher instances fight over shared state. Stop the old one
+      before the cutover. This becomes safe only after patch 6.2 and 6.3.
+  R2  The sweep patterns are workspace-agnostic. Until patch 6.3, run the
+      tool in one repo at a time. A second repo's launcher kills the first
+      repo's watchers.
+  R3  The Startup shortcut points at the old path. Repoint it in the same
+      session as the cutover. Otherwise a reboot launches the old copy.
+  R4  Pester 3.4.0 is missing. The Pester gate cannot run until it is
+      installed. See section 5.
+  R5  Removing Set-Location alone, without 6.2 and 6.3, creates a worse bug
+      than the one it fixes. Apply the whole set, or none of it.
+  R6  VAD commit hooks take 2 to 3 minutes. The Bash tool default timeout is
+      120 seconds and reports a false failure. Use a long explicit timeout
+      and confirm with the reflog, not the exit code. The new repo has no
+      hook, so its commits are instant.
+  R7  The new repo is not self-contained for the watchers themselves. The
+      external tools stay installed. README.md lists them as prerequisites.
+  R8  Generated state must not be committed. .gitignore covers logs\,
+      temp\, teardown-state.json, .grepai\, .memdb\, and *-out\. It was
+      written before the first commit.
+  R9  git autocrlf is enabled. Git normalized line endings on add, so a
+      fresh clone on Windows gets CRLF. The .bat file needs CRLF. The .ps1
+      files tolerate either. Add a .gitattributes if you want this pinned.
+
+
+9. EVIDENCE LOG
+
+  E1  Byte-identity, runtime : 8 identical, 0 differing (SHA-256).
+  E2  Byte-identity, tests   : 45 identical, 0 differing (SHA-256).
+  E3  AST parse check        : 6 files, 0 errors.
+      ###1...repowise.ps1   4093 lines  PARSE OK
+      watcher_job_helpers.ps1  531 lines  PARSE OK
+      watcher_log_tail.ps1      83 lines  PARSE OK
+      watcher_pane_scripts.ps1 753 lines  PARSE OK
+      watcher_patterns.ps1      39 lines  PARSE OK
+      watcher_teardown.ps1     202 lines  PARSE OK
+  E4  Path contract probe    : repoRoot = J:\audio\MCP Watchers;
+                               launcher and paneModule both found.
+  E5  Commit 1               : 837587822bc196045fb33d28a62db8b653d48c67,
+                               2026-09-17 05:13:21 +1200, 68 files.
+  E6  Working tree           : clean after commit 1. No stray artifacts.
+  E7  Pester gate            : BLOCKED. Pester 3.4.0 not installed.
+                               Installed: 6.0.0, 6.0.1, 6.1.0.
+
+================================================================
+END OF PLAN
+================================================================

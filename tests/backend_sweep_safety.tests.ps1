@@ -19,13 +19,15 @@ Describe 'backend sweep safety (vad-10m.3)' {
         . $patternsModule
         $cerememory = @($script:WatcherSweepPatterns | Where-Object { $_.Name -eq 'cerememory.exe' })[0]
         # Select by Pattern, not by index: python.exe now carries several
-        # token-scoped entries (mail :8765, embed :8003, mcp_proxy :8002) and
+        # token-scoped entries (mail :8765, embed :8003) and
         # index order is not part of the contract.
         $mail = @($script:WatcherSweepPatterns | Where-Object { $_.Name -eq 'python.exe' -and $_.Pattern -eq 'mcp_agent_mail' })[0]
         $claude = @($script:WatcherSweepPatterns | Where-Object { $_.Name -eq 'node.exe' })[0]
         @($script:WatcherSweepPatterns | Where-Object { $_.Name -eq 'cerememory.exe' }).Count | Should Be 1
         # Each token-scoped python.exe pattern must be declared exactly once.
-        foreach ($pat in @('mcp_agent_mail', 'embed_server', 'mcp_proxy')) {
+        # graphiti-mcp (:8002) is a Docker container now, not a python.exe, so
+        # only mail + embed remain here.
+        foreach ($pat in @('mcp_agent_mail', 'embed_server')) {
             @($script:WatcherSweepPatterns | Where-Object { $_.Name -eq 'python.exe' -and $_.Pattern -eq $pat }).Count | Should Be 1
         }
         $cerememoryCmd = 'C:\ProgramData\cerememory\cerememory.exe serve --config C:\ProgramData\cerememory\cerememory.toml'
@@ -41,7 +43,7 @@ Describe 'backend sweep safety (vad-10m.3)' {
         $backendEntries = @($script:WatcherSweepPatterns | Where-Object {
             $_.Name -eq 'cerememory.exe' -or $_.Name -eq 'python.exe' -or $_.Name -eq 'node.exe' })
         # Do not pin the entry count: new token-scoped backends get added over
-        # time (mail :8765, embed :8003, mcp_proxy :8002). What matters is that
+        # time (mail :8765, embed :8003). What matters is that
         # every backend image name is represented, so the decoy loop below is
         # never vacuously true.
         foreach ($name in @('cerememory.exe', 'python.exe', 'node.exe')) {

@@ -27,14 +27,12 @@ The launcher also supervises the backends:
 | claude-mcp | 8080 |
 | memtrace | 3030 |
 | graphiti embed proxy | 8003 |
-| graphiti MCP proxy | 8002 |
 
-The two graphiti services are port-singleton backends. `graphiti-mcp` (:8002)
-is what Toolport reaches at `http://127.0.0.1:8002/mcp`; it is an HTTP wrapper
-around graphiti's stdio-only MCP server. It depends on the embed proxy (:8003),
-litellm (:4000) and FalkorDB (:6379). Its cold start is slow (roughly 2 minutes,
-while graphiti builds FalkorDB indices), so the launcher gates only on the HTTP
-listener and lets the stdio handshake warm in the background.
+`graphiti-mcp` (:8002) is a Docker container (`restart: always`, native HTTP
+container :8000 -> host :8002). Toolport reaches it at
+`http://127.0.0.1:8002/mcp`. The launcher does not spawn or supervise it.
+It still depends on the host embed proxy (:8003), litellm (:4000) and
+FalkorDB (:6379) via `host.docker.internal`.
 
 ## Layout
 
@@ -47,9 +45,7 @@ Modules\watcher_log_tail.ps1                                           increment
 Modules\watcher_pane_scripts.ps1                                       pane script builder
 Modules\watcher_patterns.ps1                                           regex patterns
 Modules\watcher_teardown.ps1                                           tree-kill and sweep
-Modules\graphiti\mcp_proxy.py                                          graphiti HTTP proxy (:8002)
-Modules\graphiti\embed_server.py                                       graphiti embeddings proxy (:8003)
-Modules\graphiti\config-litellm.yaml                                   graphiti config
+Modules\graphiti\embed_server.py                                       graphiti embeddings proxy (:8003, still host-run for Docker)
 Modules\graphiti\README.md                                             graphiti glue notes
 tests\                                                                 25 Pester suites, 17 Python tests
 docs\                                                                  guides, reviews, plans, changelogs

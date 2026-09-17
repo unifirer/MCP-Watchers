@@ -423,14 +423,16 @@ if ($null -eq $global:LauncherLock) { exit 0 }
 #   teardown-state.json MemtraceStatePath (Stop-AllWatchers step 4 kills by
 #   recorded pid). Start-job handle kept in $script:memtraceStartJob.
 # - cerememory (:8420), claude-mcp-server (:8080), mail (:8765),
-#   graphiti-embed (:8003), graphiti-mcp (:8002): port-singleton
+#   graphiti-embed (:8003): port-singleton
 #   persistent services, deduped by in-job port probe and REUSED across
 #   launchers/logon sessions. They PERSIST after launcher exit and are
 #   intentionally NOT added to $global:WatcherChildren / teardown (same rule
 #   as the mail block below). Start-job handles kept in
 #   $script:cerememoryStartJob / $script:claudeMcpStartJob / $script:mailMcpStartJob
-#   / $script:graphitiEmbedStartJob / $script:graphitiMcpStartJob
+#   / $script:graphitiEmbedStartJob
 #   so no daemon job is fire-and-forget (Out-Null discarded).
+#   graphiti-mcp (:8002) is a Docker container (restart: always), NOT a
+#   launcher child - never spawned or supervised here.
 # - litellm (:4000): tracked detached child ($script:litellmProc via
 #   Start-WatcherDetached, in WatcherChildren/RootPids); its readiness probe
 #   ($script:litellmProbeJob) and crash-restart supervisor
@@ -442,7 +444,6 @@ $script:cerememoryStartJob = $null
 $script:claudeMcpStartJob = $null
 $script:mailMcpStartJob = $null
 $script:graphitiEmbedStartJob = $null
-$script:graphitiMcpStartJob = $null
 
 # PORT CONFLICT FAIL-FAST: before starting memtrace/cerememory, check whether the
 # port is held by a launcher-owned process (a memtrace/cerememory daemon). If a
@@ -3332,7 +3333,7 @@ if (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue) {
 }
 
 # --- Graphiti embed proxy (persistent OpenAI-compatible :8003) -----
-# graphiti config-litellm.yaml embedder points at http://127.0.0.1:8003/v1
+# The graphiti Docker container's embedder points at http://host.docker.internal:8003/v1
 # (embed_server.py, all-MiniLM-L6-v2, 384 dims). Without it the Graphiti MCP
 # (:8002) has no embeddings and exposes 0 tools. Deduped by in-job port probe
 # and REUSED across launchers. PERSISTS after launcher exit, NOT in
@@ -3424,121 +3425,32 @@ if (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue) {
     $script:graphitiEmbedStartJob = Start-Job -ScriptBlock $graphitiEmbedJobScript -ArgumentList $scriptDir
 }
 
-# --- Graphiti MCP proxy (persistent HTTP JSON-RPC :8002) ------
-# mcp_proxy.py bridges HTTP JSON-RPC on :8002 to graphiti's real MCP server,
-# which is stdio-only (main.py --transport stdio --config
-# config\config-litellm.yaml). Clients attach to :8002; with no :8002 listener
-# graphiti is unreachable and exposes 0 tools. Ordering: the embed proxy
-# (:8003) must answer before graphiti can build embeddings, so this block
-# waits (bounded, 30s) for :8003 first and then continues regardless - it
-# never blocks the launcher. Deduped by in-job port probe and REUSED across
-# launchers. PERSISTS after launcher exit, NOT in $global:WatcherChildren /
-# teardown. NOT covered by Exit-IfPortHeldByLauncherDaemon (python.exe too
-# broad); in-job dedup suffices.
-$graphitiMcpJobScript = {
-    param($ScriptDir)
-    $backendPort = 8002
-    $embedPort   = 8003
-    $launchLog   = Join-Path $env:LOCALAPPDATA "graphiti-mcp\mcp-8002.log"
-    $launchErr   = Join-Path $env:LOCALAPPDATA "graphiti-mcp\mcp-8002.log.err"
-    try { New-Item -ItemType Directory -Path (Split-Path $launchLog) -Force | Out-Null } catch {}
-
-    function Test-GraphitiPort {
-        param([int]$Port)
-        $s = $null
-        try {
-            $s = New-Object System.Net.Sockets.TcpClient
-            $iar = $s.BeginConnect("127.0.0.1", $Port, $null, $null)
-            if ($iar.AsyncWaitHandle.WaitOne(1000) -and $s.Connected) { $s.EndConnect($iar); return $true }
-            return $false
-        } catch { return $false } finally { if ($s) { try { $s.Close() } catch {} } }
+# --- Graphiti MCP (:8002, Docker) -------------------------------------
+# graphiti-mcp runs as a Docker container (restart: always, native HTTP on
+# container :8000 -> host :8002). The old Windows python bridge
+# (Modules\graphiti\mcp_proxy.py, stdio main.py) is deleted. The launcher
+# never spawns or supervises :8002; it only reports. Docker owns restarts.
+# The container still needs host :8003 (embed proxy above), :4000 (litellm)
+# and :6379 (FalkorDB) via host.docker.internal.
+try {
+    $sock = New-Object System.Net.Sockets.TcpClient
+    $iar = $sock.BeginConnect("127.0.0.1", 8002, $null, $null)
+    $mcpUp = ($iar.AsyncWaitHandle.WaitOne(2000) -and $sock.Connected)
+    try { $sock.Close() } catch {}
+    if ($mcpUp) {
+        Write-Host "Graphiti MCP (:8002, Docker container) is listening - reusing it."
+    } else {
+        Write-Warning "Graphiti MCP :8002 not listening - start the Docker container (docker start graphiti-mcp). The launcher no longer spawns it."
     }
-
-    # Dedup: reuse an already-listening :8002 (manual start or prior ###1 run).
-    if (Test-GraphitiPort -Port $backendPort) {
-        Write-Host "Graphiti MCP proxy already listening on 127.0.0.1:$backendPort - reusing it."
-        return
-    }
-
-    # Dependency gate: embeddings first, else tools/list comes back empty.
-    $embedDeadline = (Get-Date).AddSeconds(30)
-    $embedUp = $false
-    while ((Get-Date) -lt $embedDeadline) {
-        if (Test-GraphitiPort -Port $embedPort) { $embedUp = $true; break }
-        Start-Sleep -Milliseconds 750
-    }
-    if (-not $embedUp) {
-        Write-Warning "Graphiti embed proxy (:8003) not listening yet - starting MCP proxy anyway; tools may stay empty until embeddings are up."
-    }
-
-    # Glue resolution: repo copy first (Modules\graphiti), install second. See
-    # the embed block above for why the venv python stays install-resident.
-    $mcpPy = Join-Path $env:LOCALAPPDATA "Programs\graphiti-mcp\mcp_server\.venv\Scripts\python.exe"
-    $mcpScript = $null
-    $mcpCands = @()
-    if ($ScriptDir) { $mcpCands += (Join-Path $ScriptDir 'Modules\graphiti\mcp_proxy.py') }
-    $mcpCands += (Join-Path $env:LOCALAPPDATA 'Programs\graphiti-mcp\mcp_server\mcp_proxy.py')
-    foreach ($cand in $mcpCands) {
-        if (Test-Path -LiteralPath $cand) { $mcpScript = $cand; break }
-    }
-    if (-not (Test-Path -LiteralPath $mcpPy)) {
-        $pyCmd = Get-Command "python.exe" -ErrorAction SilentlyContinue
-        if ($pyCmd) { $mcpPy = $pyCmd.Source }
-    }
-    if (-not (Test-Path -LiteralPath $mcpPy)) {
-        Write-Warning "graphiti MCP python not found (looked at $mcpPy and PATH). Skipping MCP proxy start."
-        return
-    }
-    if (-not $mcpScript) {
-        Write-Warning "mcp_proxy.py not found (looked at $($mcpCands -join '; ')). Skipping MCP proxy start."
-        return
-    }
-    Write-Host "Graphiti MCP proxy script: $mcpScript"
-
-    try {
-        Write-Host "Starting Graphiti MCP proxy (port $backendPort)..."
-        # -WorkingDirectory: mcp_proxy.py spawns main.py with its own cwd, but a
-        # stable cwd keeps relative config resolution predictable.
-        $p = Start-Process -FilePath $mcpPy `
-            -ArgumentList "`"$mcpScript`"", "$backendPort" `
-            -WorkingDirectory (Split-Path -LiteralPath $mcpScript) `
-            -WindowStyle Hidden `
-            -RedirectStandardOutput $launchLog -RedirectStandardError $launchErr -PassThru
-        # Readiness gate: wait until :8002/health answers (up to ~20s).
-        $deadline = (Get-Date).AddSeconds(20)
-        $ready = $false
-        while ((Get-Date) -lt $deadline) {
-            try {
-                $r = Invoke-WebRequest -Uri "http://127.0.0.1:$backendPort/health" -Method Get -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
-                if ($r.StatusCode -eq 200) { $ready = $true }
-            } catch {}
-            if ($ready) { break }
-            if ($p -and $p.HasExited) {
-                Write-Warning "Graphiti MCP proxy exited during startup (exit $($p.ExitCode)) - see $launchErr"
-                break
-            }
-            Start-Sleep -Milliseconds 750
-        }
-        if ($ready) {
-            Write-Host "Graphiti MCP proxy ready on 127.0.0.1:$backendPort - graphiti reachable via HTTP JSON-RPC."
-        } else {
-            Write-Warning "Graphiti MCP proxy did NOT become ready on 127.0.0.1:$backendPort within timeout. See $launchLog / $launchErr."
-        }
-    } catch {
-        Write-Warning "Failed to launch Graphiti MCP proxy: $($_.Exception.Message). Continuing without it."
-    }
-}
-Write-Host "Starting Graphiti MCP proxy (background)..."
-# Persistent singleton: tracked handle, excluded from teardown by design.
-if (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue) {
-    $script:graphitiMcpStartJob = Start-ThreadJob -ScriptBlock $graphitiMcpJobScript -ArgumentList $scriptDir
-} else {
-    $script:graphitiMcpStartJob = Start-Job -ScriptBlock $graphitiMcpJobScript -ArgumentList $scriptDir
+} catch {
+    Write-Warning "Graphiti MCP :8002 probe failed: $($_.Exception.Message). The launcher no longer spawns it (Docker container graphiti-mcp owns :8002)."
 }
 
 # --- Backend auto-heal supervisors (vad-10m.2, Option A) -----
 # One supervisor per persistent singleton (cerememory :8420, mail :8765,
-# claude-mcp :8080, graphiti-embed :8003, graphiti-mcp :8002), modelled on the
+# claude-mcp :8080, graphiti-embed :8003), modelled on the
+# litellm/memtrace supervisors. graphiti-mcp (:8002) is Docker-owned and
+# intentionally NOT supervised here.
 # litellm/memtrace supervisors.
 # Option A (confirmed 2026-09-15): heal ONLY while the launcher lives. Each
 # supervisor exits when Test-LauncherAlive fails and does NOT kill its backend
@@ -3654,31 +3566,6 @@ $backendSupervisorScript = {
             if ($p) { Write-BackendSupLog "relaunched graphiti-embed backend (PID $($p.Id)) on :8003" }
         } catch { Write-BackendSupLog "graphiti-embed relaunch failed: $($_.Exception.Message)" }
     }
-    function Start-GraphitiMcpBackend {
-        $mcpPy = Join-Path $env:LOCALAPPDATA "Programs\graphiti-mcp\mcp_server\.venv\Scripts\python.exe"
-        # Glue resolution: repo copy first (Modules\graphiti), install second.
-        $mcpScript = $null
-        $mcpCands = @()
-        if ($ScriptDir) { $mcpCands += (Join-Path $ScriptDir 'Modules\graphiti\mcp_proxy.py') }
-        $mcpCands += (Join-Path $env:LOCALAPPDATA 'Programs\graphiti-mcp\mcp_server\mcp_proxy.py')
-        foreach ($cand in $mcpCands) {
-            if (Test-Path -LiteralPath $cand) { $mcpScript = $cand; break }
-        }
-        if (-not (Test-Path -LiteralPath $mcpPy)) {
-            $pyCmd = Get-Command "python.exe" -ErrorAction SilentlyContinue
-            if ($pyCmd) { $mcpPy = $pyCmd.Source }
-        }
-        if (-not (Test-Path -LiteralPath $mcpPy)) { Write-BackendSupLog "graphiti mcp python not found - skipping relaunch"; return }
-        if (-not $mcpScript) { Write-BackendSupLog "mcp_proxy.py not found - skipping relaunch"; return }
-        $log = Join-Path $env:LOCALAPPDATA "graphiti-mcp\mcp-8002.log"
-        try { New-Item -ItemType Directory -Path (Split-Path $log) -Force | Out-Null } catch {}
-        try {
-            $p = Start-Process -FilePath $mcpPy -ArgumentList "`"$mcpScript`"", "8002" `
-                -WorkingDirectory (Split-Path -LiteralPath $mcpScript) `
-                -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError "$log.err" -PassThru
-            if ($p) { Write-BackendSupLog "relaunched graphiti-mcp backend (PID $($p.Id)) on :8002" }
-        } catch { Write-BackendSupLog "graphiti-mcp relaunch failed: $($_.Exception.Message)" }
-    }
     Write-BackendSupLog "$BackendName supervisor started (port $Port, Option A: exits with launcher, backend persists)"
     Start-Sleep -Seconds 30
     $fails = 0
@@ -3731,7 +3618,6 @@ $backendSupervisorScript = {
                     elseif ($BackendName -eq 'mail') { Start-MailBackend }
                     elseif ($BackendName -eq 'claude-mcp') { Start-ClaudeBackend }
                     elseif ($BackendName -eq 'graphiti-embed') { Start-GraphitiEmbedBackend }
-                    elseif ($BackendName -eq 'graphiti-mcp') { Start-GraphitiMcpBackend }
                     Start-Sleep 2
                 }
             }
@@ -3746,7 +3632,6 @@ $backendSupervisorScript = {
                     elseif ($BackendName -eq 'mail') { $dupImage = 'python.exe'; $dupToken = 'mcp_agent_mail' }
                     elseif ($BackendName -eq 'claude-mcp') { $dupImage = 'node.exe'; $dupToken = 'claude-mcp-server' }
                     elseif ($BackendName -eq 'graphiti-embed') { $dupImage = 'python.exe'; $dupToken = 'embed_server' }
-                    elseif ($BackendName -eq 'graphiti-mcp') { $dupImage = 'python.exe'; $dupToken = 'mcp_proxy' }
                     if ($dupImage -ne '') {
                         $dups = @(Get-CimInstance Win32_Process -Filter "Name='$dupImage'" -ErrorAction SilentlyContinue |
                             Where-Object { $_.CommandLine -and ($_.CommandLine -like ('*' + $dupToken + '*')) })
@@ -3778,10 +3663,6 @@ $supCerememoryLog = Join-Path $env:LOCALAPPDATA 'cerememory\supervisor.log'
 $supMailLog = Join-Path $env:LOCALAPPDATA 'mcp-agent-mail\supervisor.log'
 $supClaudeLog = Join-Path $env:LOCALAPPDATA 'claude-mcp-server\supervisor.log'
 $supGraphitiEmbedLog = Join-Path $env:LOCALAPPDATA 'graphiti-embed\supervisor.log'
-$supGraphitiMcpLog = Join-Path $env:LOCALAPPDATA 'graphiti-mcp\supervisor.log'
-# Ensure the graphiti-mcp log dir exists before the supervisor thread job tries
-# to append to it (the start job also creates it, but not in a guaranteed order).
-try { New-Item -ItemType Directory -Path (Split-Path $supGraphitiMcpLog) -Force | Out-Null } catch {}
 function Start-BackendSupervisor {
     param($Name, $Port, $Health, $Log)
     if (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue) {
@@ -3796,7 +3677,6 @@ $script:cerememorySupJob = Start-BackendSupervisor -Name 'cerememory' -Port 8420
 $script:mailSupJob = Start-BackendSupervisor -Name 'mail' -Port 8765 -Health '' -Log $supMailLog
 $script:claudeSupJob = Start-BackendSupervisor -Name 'claude-mcp' -Port 8080 -Health '' -Log $supClaudeLog
 $script:graphitiEmbedSupJob = Start-BackendSupervisor -Name 'graphiti-embed' -Port 8003 -Health 'http://127.0.0.1:8003/health' -Log $supGraphitiEmbedLog
-$script:graphitiMcpSupJob = Start-BackendSupervisor -Name 'graphiti-mcp' -Port 8002 -Health 'http://127.0.0.1:8002/health' -Log $supGraphitiMcpLog
 
 # (graphify-rs ignore-aware wrapper is launched detached + logged above, replacing graphify-rs watch)
 
@@ -4344,11 +4224,12 @@ Write-Host "Press Ctrl+C to stop all watchers and close everything."
 # (incl. $script:litellmProc); GrepaiPid carries $script:GrepaiPid;
 # MemtraceStatePath carries the memtrace daemon PID via .memdb/daemon-state.json
 # ($script:memtraceStartJob); cerememory / claude-mcp-server / mail /
-# graphiti-embed / graphiti-mcp are
+# graphiti-embed are
 # intentionally persistent singletons (see blocks above,
 # $script:cerememoryStartJob / $script:claudeMcpStartJob /
-# $script:mailMcpStartJob / $script:graphitiEmbedStartJob /
-# $script:graphitiMcpStartJob) and are excluded from RootPids by design.
+# $script:mailMcpStartJob / $script:graphitiEmbedStartJob)
+# and are excluded from RootPids by design. graphiti-mcp (:8002) is
+# Docker-owned, also excluded by design.
 try {
     $tdState = @{
         RootPids           = @($global:WatcherChildren | ForEach-Object { $_ })

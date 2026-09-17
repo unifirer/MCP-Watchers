@@ -1616,7 +1616,13 @@ if ($SkipSmoke) {
 }
 
 Write-Host "=== T21: second instance resolves FAST instead of stacking (lock gate) ==="
-$lockPath = Join-Path $env:LOCALAPPDATA 'watchers\###1-launcher.lock'
+# mcpw-ybs.4: the lock file is keyed per workspace - watchers\<key>\###1-launcher.lock.
+# Start-T20HeadlessLaunch passes $repoRoot as -WorkingDirectory, so the launcher
+# derives its key from $repoRoot and this is the path it will contend on.
+$wsModule = Join-Path $repoRoot 'Modules\watcher_workspace.ps1'
+if (Test-Path -LiteralPath $wsModule) { . $wsModule }
+$t21Key = Get-WatchersWorkspaceKey -Path $repoRoot
+$lockPath = Join-Path $env:LOCALAPPDATA "watchers\$t21Key\###1-launcher.lock"
 $lockPreExisted = Test-Path -LiteralPath $lockPath
 if ($SkipSmoke) {
     Write-Host '  [SKIP] T21 skipped via -SkipSmoke'
@@ -1645,6 +1651,9 @@ if ($SkipSmoke) {
         # the JSON and kills the sleeper; its own acquire then hits IOException
         # against OUR held stream, sees the recorded PID as dead, exhausts retries,
         # and exits fast. Written WITHOUT BOM: ConvertFrom-Json rejects BOM text.
+        # The keyed parent dir does not exist on a clean box and FileStream does
+        # not create it, so make it first.
+        New-Item -ItemType Directory -Path (Split-Path -Parent $lockPath) -Force | Out-Null
         $holderStream = New-Object System.IO.FileStream($lockPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($lockJson)
         $holderStream.Write($bytes, 0, $bytes.Length)

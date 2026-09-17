@@ -63,8 +63,15 @@ Describe 'launcher relaunch leaves at most one wrapper' {
                 ForEach-Object { try { Invoke-CimMethod -InputObject $_ -MethodName Terminate | Out-Null } catch {} }
             # Remove the launcher's persisted state + lock so they don't linger.
             if ($launched.Count -gt 0) {
-                try { Remove-Item -LiteralPath (Join-Path $env:LOCALAPPDATA 'watchers\teardown-state.json') -Force -ErrorAction SilentlyContinue } catch {}
-                try { Remove-Item -LiteralPath (Join-Path $env:LOCALAPPDATA 'watchers\###1-launcher.lock') -Force -ErrorAction SilentlyContinue } catch {}
+                # mcpw-ybs.4/.2: both files are keyed by workspace. The child
+                # inherits THIS process's working directory, so its key is ours
+                # to compute - do not guess an un-keyed path (that is why this
+                # cleanup silently stopped working when the keying landed).
+                $wsModule = Join-Path $repo 'Modules\watcher_workspace.ps1'
+                if (Test-Path -LiteralPath $wsModule) { . $wsModule }
+                $wsDir = Join-Path $env:LOCALAPPDATA ('watchers\' + (Get-WatchersWorkspaceKey -Path (Get-Location).ProviderPath))
+                try { Remove-Item -LiteralPath (Join-Path $wsDir 'teardown-state.json') -Force -ErrorAction SilentlyContinue } catch {}
+                try { Remove-Item -LiteralPath (Join-Path $wsDir '###1-launcher.lock') -Force -ErrorAction SilentlyContinue } catch {}
             }
         }
     }

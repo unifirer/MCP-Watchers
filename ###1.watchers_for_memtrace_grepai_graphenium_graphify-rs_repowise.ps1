@@ -41,6 +41,11 @@ if (-not (Get-Command Get-WatchersWorkspaceKey -ErrorAction SilentlyContinue)) {
     }
 }
 $workspaceKey = Get-WatchersWorkspaceKey -Path $watchersWorkspaceRoot
+# mcpw-ybs.4: the key is now a PATH COMPONENT (the lock dir) as well as a name
+# suffix (the mutexes). An empty key would make Join-Path throw at startup and
+# would silently recreate ONE machine-global mutex, so degrade to a visible
+# placeholder instead of to the empty string.
+if (-not $workspaceKey) { $workspaceKey = 'default' }
 # Export for the child pane tailers and for dot-sourced modules that run on a
 # path with no script scope, such as the PowerShell.Exiting handler.
 $env:VAD_WATCHERS_WORKSPACE_KEY = $workspaceKey
@@ -69,7 +74,8 @@ $watcherPaneScriptsModule = Join-Path $scriptDir 'Modules\watcher_pane_scripts.p
 if (Test-Path -LiteralPath $watcherPaneScriptsModule) { . $watcherPaneScriptsModule }
 
 # Single-instance guard (FIRST-WINS). Uses BOTH a Windows Named Mutex
-# (Global\VAD_Watchers_Launcher) for kernel-atomic ownership that auto-releases on
+# (Global\VAD_Watchers_Launcher_<workspaceKey>, keyed per repo by mcpw-ybs.4)
+# for kernel-atomic ownership that auto-releases on
 # crash, AND an exclusive FileStream lock on the lock file (FileShare.Read) that
 # holds the launcher PID for observability and stale-lock detection. A second
 # launcher that finds a LIVE holder exits silently (FIRST-WINS); a stale lock (dead
@@ -83,9 +89,22 @@ $launcherName = [System.IO.Path]::GetFileName($MyInvocation.MyCommand.Path)
 # counts as the same instance family.
 if ($launcherName -match '^###1') { $launcherToken = '###1' } else { $launcherToken = $launcherName }
 
-$lockDir = Join-Path $env:LOCALAPPDATA 'watchers'
+# mcpw-ybs.4: the FIRST-WINS lock and BOTH launcher mutexes are keyed PER
+# WORKSPACE. They used to be machine-global, so a launcher started for repo B
+# contended with repo A's live launcher: it either exited 0 and never opened its
+# own pane grid, or (through Stop-PriorLauncherInstances) took over and killed
+# repo A's watchers. FIRST-WINS is preserved WITHIN one workspace.
+# The key is a DIRECTORY component and the file name is unchanged - the same
+# shape as Modules\watcher_teardown.ps1 (watchers\<key>\teardown-state.json) -
+# so the '###1-launcher.lock' literal that the pane tailers and the tests match
+# on still holds.
+$lockDir = Join-Path (Join-Path $env:LOCALAPPDATA 'watchers') $workspaceKey
 try { New-Item -ItemType Directory -Path $lockDir -Force | Out-Null } catch {}
 $lockFile = Join-Path $lockDir '###1-launcher.lock'
+# Canonical mutex names, defined once here so the acquisition path and the
+# PowerShell.Exiting release path cannot drift apart.
+$launcherMutexName = "Global\VAD_Watchers_Launcher_$workspaceKey"
+$takeoverMutexName = "Global\VAD_Watchers_Takeover_$workspaceKey"
 
 # FIRST-WINS single-instance acquisition. Returns a disposable object holding BOTH
 # the named mutex (kept alive for launcher lifetime) and an exclusive FileStream
@@ -109,9 +128,17 @@ $lockFile = Join-Path $lockDir '###1-launcher.lock'
 function Acquire-LauncherLock {
     param(
         [string]$LockFile,
-        [string]$LauncherName
+        [string]$LauncherName,
+        [string]$MutexName
     )
-    $mutexName = 'Global\VAD_Watchers_Launcher'
+    # mcpw-ybs.4: keyed per workspace; see $launcherMutexName above. An absent
+    # name is rebuilt from the environment rather than defaulting to the bare
+    # legacy name, which would silently restore the machine-global hazard.
+    if (-not $MutexName) {
+        $mk = $env:VAD_WATCHERS_WORKSPACE_KEY
+        if (-not $mk) { $mk = 'default' }
+        $MutexName = "Global\VAD_Watchers_Launcher_$mk"
+    }
     $maxRetries = 3
     for ($attempt = 0; $attempt -le $maxRetries; $attempt++) {
         if ($attempt -gt 0) {
@@ -175,7 +202,7 @@ function Acquire-LauncherLock {
         $mutex = $null
         try {
             $createdNew = $false
-            $mutex = New-Object System.Threading.Mutex($true, $mutexName, [ref]$createdNew)
+            $mutex = New-Object System.Threading.Mutex($true, $MutexName, [ref]$createdNew)
         } catch {
             # Could not create the mutex - still hold a valid file lock, so we are
             # the live launcher. Proceed without the mutex (file lock is authoritative).
@@ -220,14 +247,23 @@ function Stop-PriorLauncherInstances {
     param(
         [string]$LockDir,
         [string]$CurrentPid,
-        [int]$MinAgeSec = 30
+        [int]$MinAgeSec = 30,
+        [string]$TakeoverMutexName
     )
-    # Guard 1: serialize the takeover machine-wide. Bounded wait so a slow peer
-    # takeover cannot stall this launch forever.
+    # mcpw-ybs.4: the takeover mutex is keyed per workspace, so two repositories
+    # can each replace their OWN prior launcher without waiting on each other.
+    # Serialisation is only needed between launchers of the SAME workspace.
+    if (-not $TakeoverMutexName) {
+        $tk = $env:VAD_WATCHERS_WORKSPACE_KEY
+        if (-not $tk) { $tk = 'default' }
+        $TakeoverMutexName = "Global\VAD_Watchers_Takeover_$tk"
+    }
+    # Guard 1: serialize the takeover. Bounded wait so a slow peer takeover
+    # cannot stall this launch forever.
     $takeoverMutex = $null
     $takeoverHeld = $false
     try {
-        $takeoverMutex = New-Object System.Threading.Mutex($false, 'Global\VAD_Watchers_Takeover')
+        $takeoverMutex = New-Object System.Threading.Mutex($false, $TakeoverMutexName)
         try { $takeoverHeld = $takeoverMutex.WaitOne(15000) }
         catch [System.Threading.AbandonedMutexException] { $takeoverHeld = $true }
     } catch { $takeoverHeld = $false }
@@ -351,21 +387,22 @@ function Stop-PriorLauncherInstances {
 function Write-LauncherLock {
     param(
         [string]$LockFile,
-        [string]$LauncherName
+        [string]$LauncherName,
+        [string]$MutexName
     )
-    return Acquire-LauncherLock -LockFile $LockFile -LauncherName $LauncherName
+    return Acquire-LauncherLock -LockFile $LockFile -LauncherName $LauncherName -MutexName $MutexName
 }
 
 # LAST-WINS takeover before claiming the lock (restored 2026-09-15): a
 # double-click must ALWAYS bring up the pane grid, so an ESTABLISHED prior ###1
 # launcher is stopped (with its watchers) first. A young prior - the concurrent
 # double-click case - is left alone and loses at Acquire-LauncherLock instead.
-Stop-PriorLauncherInstances -LockDir $lockDir -CurrentPid $PID
+Stop-PriorLauncherInstances -LockDir $lockDir -CurrentPid $PID -TakeoverMutexName $takeoverMutexName
 
 # Claim the launcher lock. If a live launcher still holds it (a concurrent
 # starter, or a takeover that could not complete), report the holder and exit 0.
 # Acquire-LauncherLock writes the "already running" message and returns $null.
-$global:LauncherLock = Write-LauncherLock -LockFile $lockFile -LauncherName $launcherName
+$global:LauncherLock = Write-LauncherLock -LockFile $lockFile -LauncherName $launcherName -MutexName $launcherMutexName
 if ($null -eq $global:LauncherLock) { exit 0 }
 
 # Track child PIDs so teardown is PID-scoped (only kill processes THIS launcher
@@ -1372,6 +1409,12 @@ if ($grepaiOk) {
                     # relaunch `grepai watch`. Serialize the critical section
                     # on a machine-wide mutex (non-blocking); whoever loses
                     # skips this tick instead of double-relaunching.
+                    # mcpw-ybs.4: deliberately NOT keyed by workspace. This mutex
+                    # only serialises a heal; the loser SKIPS a tick rather than
+                    # killing anything, so a cross-repo wait costs a delay at
+                    # most. Whether grepai's index is per-repo or shared is not
+                    # established here, and keying a genuinely shared index would
+                    # allow two concurrent writers.
                     $healMutex = $null
                     $healAcquired = $false
                     try {
@@ -3758,7 +3801,7 @@ $teardownAction = [scriptblock]::Create(@"
 try { Stop-GmSemanticLive } catch {}
 Stop-AllWatchers
 try {
-    `$mutexName = 'Global\VAD_Watchers_Launcher'
+    `$mutexName = '$launcherMutexName'
     `$m = `$null
     try { `$m = [System.Threading.Mutex]::OpenExisting(`$mutexName) } catch {}
     if (`$m) {

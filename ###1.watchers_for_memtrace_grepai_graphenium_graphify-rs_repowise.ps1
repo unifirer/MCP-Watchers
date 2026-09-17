@@ -3911,7 +3911,13 @@ if (-not $logFile) {
     if ($lfLate) { $logFile = $lfLate.FullName }
 }
 if (-not $logFile) { $logFile = $grepaiLaunchLog }
-$tailGrepai      = New-WatcherPaneScript -Label "grepai"      -LogPath $logFile            -ErrPath ""                 -RepoRoot $watchersWorkspaceRoot -HeartbeatPath (Join-Path $hbDir "grepai.hb") -SupervisorLog $supSupervisorLog -LaunchLog $grepaiLaunchLog -LaunchErr $grepaiLaunchErr -LockFile $lockFile
+# grepai heals at the INDEX dir ($scriptDir, where .grepai/ lives and where
+# `grepai watch` + the supervisor run), NOT at $watchersWorkspaceRoot. The pane
+# never resolves paths via FSW for grepai (Show-ChangedFiles is a no-op for this
+# label), so pointing it at the caller workspace only makes `grepai status` /
+# `grepai watch` fail with "no grepai project found" when the caller is not
+# grepai-init'd. The other three panes intentionally stay on $watchersWorkspaceRoot.
+$tailGrepai      = New-WatcherPaneScript -Label "grepai"      -LogPath $logFile            -ErrPath ""                 -RepoRoot $scriptDir -HeartbeatPath (Join-Path $hbDir "grepai.hb") -SupervisorLog $supSupervisorLog -LaunchLog $grepaiLaunchLog -LaunchErr $grepaiLaunchErr -LockFile $lockFile
 $tailGraphenium  = New-WatcherPaneScript -Label "graphenium"  -LogPath $gmLog              -ErrPath "$gmLog.err"      -RepoRoot $watchersWorkspaceRoot -HeartbeatPath (Join-Path $hbDir "graphenium.hb")  -WatchPid $gmWatchPid -LockFile $lockFile
 $tailGraphifyRs  = New-WatcherPaneScript -Label "graphify-rs" -LogPath $graphifyLog        -ErrPath "$graphifyLog.err" -RepoRoot $watchersWorkspaceRoot -HeartbeatPath (Join-Path $hbDir "graphify-rs.hb") -WatchPid $graphifyWatchPid
 $tailRepowise    = New-WatcherPaneScript -Label "repowise"    -LogPath $repowiseLog        -ErrPath "$repowiseLog.err" -RepoRoot $watchersWorkspaceRoot -HeartbeatPath (Join-Path $hbDir "repowise.hb")   -WatchPid $repowiseWatchPid

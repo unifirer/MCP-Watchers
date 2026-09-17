@@ -30,10 +30,10 @@ Describe 'mcpw-ybs.1: panes follow the workspace, modules follow the launcher' {
         ([regex]::Matches($c, "'-d', '\.'")).Count | Should Be 0
     }
 
-    It 'all four pane tailers work at the workspace root' {
+    It 'three non-grepai pane tailers work at the workspace root (grepai heals at its index dir)' {
         $c = Get-Content -LiteralPath $launcher -Raw
-        ([regex]::Matches($c, '-RepoRoot \$watchersWorkspaceRoot')).Count | Should Be 4
-        ([regex]::Matches($c, '-RepoRoot \$scriptDir')).Count | Should Be 0
+        ([regex]::Matches($c, '-RepoRoot \$watchersWorkspaceRoot')).Count | Should Be 3
+        ([regex]::Matches($c, '-RepoRoot \$scriptDir')).Count | Should Be 1
     }
 
     It 'module loads still resolve from the launcher folder' {

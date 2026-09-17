@@ -41,7 +41,15 @@ function Get-SweepBlock {
     $a = $src.IndexOf('    $sweepSkipped = 0')
     $b = $src.IndexOf('# Write the launcher lock (FIRST-WINS entry point).')
     if ($a -lt 0 -or $b -le $a) { return $null }
-    return $src.Substring($a, $b - $a)
+    $raw = $src.Substring($a, $b - $a)
+    # The region stops AFTER Stop-PriorLauncherInstances' own closing brace (a
+    # '}' at column 0). Keeping it gives the fragment one '}' too many and
+    # Invoke-Expression dies with "Unexpected token '}'", so every execution
+    # test below silently no-ops on a ParseException instead of asserting.
+    $lines = @($raw -split "`r?`n")
+    while ($lines.Count -gt 0 -and $lines[-1] -match '^\s*$') { $lines = $lines[0..($lines.Count - 2)] }
+    if ($lines.Count -gt 0 -and $lines[-1] -match '^\}\s*$') { $lines = $lines[0..($lines.Count - 2)] }
+    return ($lines -join "`n")
 }
 
 # Run the extracted sweep against a stubbed process table. Returns the PIDs the
@@ -89,6 +97,10 @@ Describe 'startup orphan sweep attribution (mcpw-ybs.2b)' {
 
     It 'the workspace module defines the attribution helper' {
         Test-Path -LiteralPath $workspaceModule | Should Be $true
+        # Dot-source as a DIRECT statement, not inside the { } handed to Should:
+        # that scriptblock has its own scope, so the function it defines is gone
+        # by the time the assertion below runs (CommandNotFoundException).
+        . $workspaceModule
         { . $workspaceModule } | Should Not Throw
         # Assert FUNCTIONALLY, not with Get-Command: this proves the helper is
         # callable from the test scope, which is what the sweep relies on.

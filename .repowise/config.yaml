@@ -1,0 +1,11 @@
+wiki_style: reference
+provider: openai
+model: poolside/laguna-xs-2.1:free
+embedder: gemini
+reasoning: auto
+distill:
+  commands:
+    enabled: true
+hooks:
+  read_skeleton: true
+  search_digest: true

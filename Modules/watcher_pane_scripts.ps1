@@ -73,6 +73,11 @@ $offErr = -1
 # watcher is still alive; when it dies we exit so Windows Terminal closes the
 # pane (default closeOnExit) instead of leaving an orphaned tailer on a frozen log.
 $watchPid = '__WATCHPID__'
+# mcpw-qfy RC1: the pane-local heal gate below reads $LockFile (supervisor
+# .sup stamp + idle marker). It was never assigned, so it was always empty
+# and the pane always raced the supervisor heal. Bake it like every other
+# placeholder. Empty (grepai-less panes in old harnesses) means unknown.
+$LockFile = '__LOCKFILE__'
 function Test-WatcherAlive {
     param([string]$WatchedPid)
     if (-not $WatchedPid) { return $true }   # no tracked pid: no guard
@@ -126,11 +131,52 @@ function Test-SupervisorAlive {
         return ($age -lt $MaxAgeSeconds)
     } catch { return $false }
 }
+# mcpw-qfy RC1: intentional idle reap is NOT a crash. The grepai supervisor
+# writes <lockfile>.idle when it reaps the watcher after the idle TTL and
+# exits on purpose. While that marker exists the pane stays open, shows
+# IDLE, keeps heartbeating, and must NOT heal (a heal would relaunch the
+# watcher and undo the memory saving). The marker is cleared on the next
+# supervisor start and when the pane sees a live watcher again.
+# An empty or unreadable lock path means unknown -> no idle (pane may heal).
+function Test-GrepaiIdleMarker {
+    param([string]$LockPath)
+    if ([string]::IsNullOrEmpty($LockPath)) { return $false }
+    try {
+        $marker = [System.IO.Path]::ChangeExtension($LockPath, '.idle')
+        return (Test-Path -LiteralPath $marker)
+    } catch { return $false }
+}
 function Test-GrapheniumWatcherAlive {
+    # mcpw-qfy RC2: post-a8107e24 there is no `gm watch` process. Rebuilds
+    # run as full `gm run` one-shots from the launcher's $gmSemJob thread
+    # job, so the old watch-CommandLine probe could never return true and
+    # the pane survived only on the launcher-PID anchor. Probe a live
+    # `gm serve` hot-reload server first, then fall back to the launcher
+    # lock file (the rebuild daemon lives inside the launcher, so a live
+    # launcher means a live daemon owner). Lock check mirrors
+    # Test-LauncherAlive's PID + StartedAt anti-reuse guards.
+    # ponytail: PID + StartTime only; the full helper also checks the
+    # Launcher cmdline token - add it here if PID-reuse false positives
+    # ever keep a dead graphenium pane open.
     try {
         $w = @(Get-CimInstance Win32_Process -Filter "Name='gm.exe'" -ErrorAction SilentlyContinue |
-            Where-Object { $_.CommandLine -and $_.CommandLine -match 'watch' })
-        return ($w.Count -gt 0)
+            Where-Object { $_.CommandLine -and $_.CommandLine -match 'serve' })
+        if ($w.Count -gt 0) { return $true }
+    } catch { }
+    try {
+        if ([string]::IsNullOrEmpty($LockFile)) { return $false }
+        if (-not (Test-Path -LiteralPath $LockFile)) { return $false }
+        $lj = Get-Content -LiteralPath $LockFile -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
+        if (-not $lj -or -not $lj.Pid) { return $false }
+        $lp = Get-Process -Id $lj.Pid -ErrorAction SilentlyContinue
+        if ($null -eq $lp) { return $false }
+        if ($lj.StartedAt) {
+            try {
+                $ls = [datetime]::ParseExact($lj.StartedAt, 'o', $null, [Globalization.DateTimeStyles]::RoundtripKind)
+                if ($lp.StartTime -and [math]::Abs(($lp.StartTime - $ls).TotalSeconds) -gt 5) { return $false }
+            } catch { }
+        }
+        return $true
     } catch { return $false }
 }
 function Test-GraphifyRsWatcherAlive {
@@ -727,25 +773,60 @@ while ($true) {
     if ('__LABEL__' -eq 'graphenium' -and -not $alive -and $script:gmHealUntilTick -and [datetime]::UtcNow.Ticks -lt $script:gmHealUntilTick) { $alive = $true }
     if (-not $alive) {
         if ('__LABEL__' -eq 'grepai') {
-            $script:deadTicks++
-            Write-Host "=== __LABEL__ watcher down (tick $($script:deadTicks)) - supervised restart pending... ==="
-            if ($script:deadTicks -ge 30 -and $script:deadTicks % 30 -eq 0) {
-                Write-Host "[grepai HEALTH] auto-check triggered at tick $($script:deadTicks)..."
-                $healResult = Invoke-GrepaiHealthCheck -RepoRoot '__REPO__' -LaunchLog '__LAUNCHLOG__' -LaunchErr '__LAUNCHERR__' -SupervisorLog '__SUPLOG__' -LockFile '__LOCKFILE__'
-                if ($healResult) { $script:deadTicks = 0; $alive = $true }
+            # mcpw-qfy RC1: an idle-reaped watcher parks on IDLE, it never
+            # heals and never exits. Healing would relaunch the watcher and
+            # undo the supervisor's memory saving; exiting would close the
+            # pane the operator expects to stay up.
+            if (Test-GrepaiIdleMarker -LockPath $LockFile) {
+                if (-not $script:idleShown) {
+                    Write-Host "=== __LABEL__ [IDLE - WAITING FOR QUERIES] (index idle, watcher reaped to save memory) ==="
+                    $script:idleShown = $true
+                }
+                $script:deadTicks = 0
+                $alive = $true
+            } else {
+                $script:idleShown = $false
+                $script:deadTicks++
+                Write-Host "=== __LABEL__ watcher down (tick $($script:deadTicks)) - supervised restart pending... ==="
+                if ($script:deadTicks -ge 30 -and $script:deadTicks % 30 -eq 0) {
+                    Write-Host "[grepai HEALTH] auto-check triggered at tick $($script:deadTicks)..."
+                    $healResult = Invoke-GrepaiHealthCheck -RepoRoot '__REPO__' -LaunchLog '__LAUNCHLOG__' -LaunchErr '__LAUNCHERR__' -SupervisorLog '__SUPLOG__' -LockFile '__LOCKFILE__'
+                    if ($healResult) { $script:deadTicks = 0; $alive = $true }
+                }
+                if ($script:deadTicks -lt 60) { $alive = $true }
             }
-            if ($script:deadTicks -lt 60) { $alive = $true }
+        } elseif ('__LABEL__' -eq 'graphenium' -or '__LABEL__' -eq 'graphify-rs' -or '__LABEL__' -eq 'repowise') {
+            # mcpw-qfy RC3: 60 dead ticks @ 500ms ~= 30s grace, so a transient
+            # CIM / Get-Process hiccup on one tick never closes the pane.
+            # Unknown labels keep the immediate exit below (locked by T18).
+            $script:deadTicks++
+            if ($script:deadTicks -ge 60) {
+                Write-Host "=== __LABEL__ watcher exited - closing pane ==="
+                exit 0
+            }
+            Write-Host "=== __LABEL__ watcher down (tick $($script:deadTicks)) - waiting... ==="
+            $alive = $true
         } else {
             Write-Host "=== __LABEL__ watcher exited - closing pane ==="
             exit 0
         }
     } else {
         $script:deadTicks = 0
+        # A live watcher invalidates a stale idle marker (e.g. a manual
+        # grepai watch while no supervisor runs), so a later crash heals
+        # instead of parking on a stale IDLE state.
+        if ($script:idleShown) {
+            $script:idleShown = $false
+            try {
+                $staleIdle = [System.IO.Path]::ChangeExtension($LockFile, '.idle')
+                if ($staleIdle -and (Test-Path -LiteralPath $staleIdle)) { Remove-Item -LiteralPath $staleIdle -Force -ErrorAction SilentlyContinue }
+            } catch { }
+        }
     }
     Start-Sleep -Milliseconds 500
     # VAD-ltnq (2026-09-06): write the heartbeat every 4th tick (~2s) instead
     # of every 500ms (4 panes x 2 file writes/s churned the same tick files).
-    # The controller's dead-tab timeout is $hbTimeoutSec = 8s, so a 2s cadence
+    # The controller's dead-tab timeout is $hbTimeoutSec = 15s, so a 2s cadence
     # keeps full detection fidelity at 1/4 the churn.
     if (-not $script:hbTick) { $script:hbTick = 0 }
     $script:hbTick++

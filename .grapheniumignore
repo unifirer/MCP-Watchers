@@ -1,0 +1,20 @@
+# Ignore toolchain and build artifacts
+.rust-toolchain/
+.cargo/
+target/
+node_modules/
+__pycache__/
+.venv/
+dist/
+build/
+graphenium-out/
+
+# C++ and C# build artifacts
+obj/
+bin/
+.vs/
+ipch/
+*.user
+*.suo
+*.Designer.cs
+*.g.cs

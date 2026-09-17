@@ -1,0 +1,1608 @@
+{
+  "version": "1.0.0",
+  "schema_version": 1,
+  "project": {
+    "name": "MCP-Watchers",
+    "is_monorepo": false,
+    "total_files": 55,
+    "entry_points": [],
+    "tech_stack": [],
+    "entry_candidates": [],
+    "graph_mode": "flow"
+  },
+  "nodes": [
+    {
+      "id": "file:###2.llm_fallback_proxy.py",
+      "type": "file",
+      "filePath": "###2.llm_fallback_proxy.py",
+      "language": "python",
+      "symbolCount": 51,
+      "lineCount": 591,
+      "complexity": "complex",
+      "pagerank": 0.010753,
+      "communityId": 0,
+      "tags": [],
+      "summary": "Application module ###2.llm_fallback_proxy defining _env_int, _env_float, ModelHealthTracker.",
+      "primaryOwner": "uni.universefire"
+    },
+    {
+      "id": "file:.agents/skills/beads/SKILL.md",
+      "type": "document",
+      "filePath": ".agents/skills/beads/SKILL.md",
+      "language": "markdown",
+      "symbolCount": 0,
+      "lineCount": 53,
+      "complexity": "simple",
+      "pagerank": 0.010753,
+      "communityId": 3,
+      "tags": [
+        "low_signal_summary"
+      ],
+      "summary": "Documentation: SKILL.md."
+    },
+    {
+      "id": "file:.agents/skills/beads/agents/openai.yaml",
+      "type": "config",
+      "filePath": ".agents/skills/beads/agents/openai.yaml",
+      "language": "yaml",
+      "symbolCount": 0,
+      "lineCount": 4,
+      "complexity": "simple",
+      "pagerank": 0.010753,
+      "communityId": 4,
+      "tags": [
+        "config",
+        "low_signal_summary"
+      ],
+      "summary": "Configuration file: openai.yaml."
+    },
+    {
+      "id": "file:.beads/README.md",
+      "type": "document",
+      "filePath": ".beads/README.md",
+      "language": "markdown",
+      "symbolCount": 0,
+      "lineCount": 57,
+      "complexity": "simple",
+      "pagerank": 0.010753,
+      "communityId": 5,
+      "tags": [],
+      "summary": "Project overview and entry point for new readers."
+    },
+    {
+      "id": "file:.beads/config.yaml",
+      "type": "config",
+      "filePath": ".beads/config.yaml",
+      "language": "yaml",
+      "symbolCount": 0,
+      "lineCount": 71,
+      "complexity": "simple",
+      "pagerank": 0.010753,
+      "communityId": 6,
+      "tags": [
+        "config",
+        "low_signal_summary"
+      ],
+      "summary": "Configuration file: config.yaml."
+    },
+    {
+      "id": "file:.beads/hooks/post-checkout",
+      "type": "file",
+      "filePath": ".beads/hooks/post-checkout",
+      "language": "shell",
+      "symbolCount": 0,
+      "lineCount": 52,
+      "complexity": "simple",
+      "pagerank": 0.010753,
+      "communityId": 7,
+      "tags": [],
+      "summary": "Config module post-checkout."
+    },
+    {
+      "id": "file:.beads/hooks/post-merge",
+      "type": "file",
+      "filePath": ".beads/hooks/post-merge",
+      "language": "shell",
+      "symbolCount": 0,
+      "lineCount": 52,
+      "complexity": "simple",
+      "pagerank": 0.010753,
+      "communityId": 8,
+      "tags": [],
+      "summary": "Config module post-merge."
+    },
+    {
+      "id": "file:.beads/hooks/pre-commit",
+      "type": "file",
+      "filePath": ".beads/hooks/pre-commit",
+      "language": "shell",
+      "symbolCount": 0,
+      "lineCount": 52,
+      "complexity": "simple",
+      "pagerank": 0.010753,
+      "communityId": 9,
+      "tags": [],
+      "summary": "Config module pre-commit."
+    },
+    {
+      "id": "file:.beads/hooks/pre-push",
+      "type": "file",
+      "filePath": ".beads/hooks/pre-push",
+      "language": "shell",
+      "symbolCount": 0,
+      "lineCount": 51,
+      "complexity": "simple",
+      "pagerank": 0.010753,
+      "communityId": 10,
+      "tags": [],
+      "summary": "Config module pre-push."
+    },
+    {
+      "id": "file:.beads/hooks/prepare-commit-msg",
+      "type": "file",
+      "filePath": ".beads/hooks/prepare-commit-msg",
+      "language": "shell",
+      "symbolCount": 0,
+      "lineCount": 53,
+      "complexity": "simple",
+      "pagerank": 0.010753,
+      "communityId": 11,
+      "tags": [],
+      "summary": "Config module prepare-commit-msg."
+    },
+    {
+      "id": "file:.beads/metadata.json",
+      "type": "config",
+      "filePath": ".beads/metadata.json",
+      "language": "json",
+      "symbolCount": 0,
+      "lineCount": 4,
+      "complexity": "simple",
+      "pagerank": 0.010753,
+      "communityId": 12,
+      "tags": [
+        "config",
+        "low_signal_summary"
+      ],
+      "summary": "Configuration file: metadata.json."
+    },
+    {
+      "id": "file:.claude/settings.json",
+      "type": "config",
+      "filePath": ".claude/settings.json",
+      "language": "json",
+      "symbolCount": 0,
+      "lineCount": 5,
+      "complexity": "simple",
+      "pagerank": 0.010753,
+      "communityId": 13,
+      "tags": [
+        "config",
+        "low_signal_summary"
+      ],
+      "summary": "Configuration file: settings.json."
+    },
+    {
+      "id": "file:.codex/config.toml",
+      "type": "config",
+      "filePath": ".codex/config.toml",
+      "language": "toml",
+      "symbolCount": 0,
+      "lineCount": 0,
+      "complexity": "simple",
+      "pagerank": 0.010753,
+      "communityId": 14,
+      "tags": [
+        "config",
+        "low_signal_summary"
+      ],
+      "summary": "Configuration file: config.toml."
+    },
+    {
+      "id": "file:.codex/hooks.json",
+      "type": "config",
+      "filePath": ".codex/hooks.json",
+      "language": "json",
+      "symbolCount": 0,
+      "lineCount": 27,
+      "complexity": "simple",
+      "pagerank": 0.010753,
+      "communityId": 15,
+      "tags": [
+        "config"
+      ],
+      "summary": "Plugin lifecycle hook definitions."
+    },
+    {
+      "id": "file:.cursor/hooks.json",
+      "type": "config",
+      "filePath": ".cursor/hooks.json",
+      "language": "json",
+      "symbolCount": 0,
+      "lineCount": 7,
+      "complexity": "simple",
+      "pagerank": 0.010753,
+      "communityId": 16,
+      "tags": [
+        "config"
+      ],
+      "summary": "Plugin lifecycle hook definitions."
+    },
+    {
+      "id": "file:.serena/project.yml",
+      "type": "config",
+      "filePath": ".serena/project.yml",
+      "language": "yaml",
+      "symbolCount": 0,
+      "lineCount": 248,
+      "complexity": "moderate",
+      "pagerank": 0.010753,
+      "communityId": 17,
+      "tags": [
+        "config",
+        "low_signal_summary"
+      ],
+      "summary": "Configuration file: project.yml."
+    },
+    {
+      "id": "file:.workbuddy-ai/memory/2026-09-17.md",
+      "type": "document",
+      "filePath": ".workbuddy-ai/memory/2026-09-17.md",
+      "language": "markdown",
+      "symbolCount": 0,
+      "lineCount": 166,
+      "complexity": "moderate",
+      "pagerank": 0.010753,
+      "communityId": 18,
+      "tags": [
+        "low_signal_summary"
+      ],
+      "summary": "Documentation: 2026-09-17.md."
+    },
+    {
+      "id": "file:2026-09-17-mcp-watchers-workspace-isolation-handover.md",
+      "type": "document",
+      "filePath": "2026-09-17-mcp-watchers-workspace-isolation-handover.md",
+      "language": "markdown",
+      "symbolCount": 0,
+      "lineCount": 766,
+      "complexity": "complex",
+      "pagerank": 0.010753,
+      "communityId": 19,
+      "tags": [
+        "low_signal_summary"
+      ],
+      "summary": "Documentation: 2026-09-17-mcp-watchers-workspace-isolation-handover.md."
+    },
+    {
+      "id": "file:2026-09-17-pane-exit-debug-handover.md",
+      "type": "document",
+      "filePath": "2026-09-17-pane-exit-debug-handover.md",
+      "language": "markdown",
+      "symbolCount": 0,
+      "lineCount": 137,
+      "complexity": "moderate",
+      "pagerank": 0.010753,
+      "communityId": 20,
+      "tags": [
+        "low_signal_summary"
+      ],
+      "summary": "Documentation: 2026-09-17-pane-exit-debug-handover.md."
+    },
+    {
+      "id": "file:AGENTS.md",
+      "type": "document",
+      "filePath": "AGENTS.md",
+      "language": "markdown",
+      "symbolCount": 0,
+      "lineCount": 1099,
+      "complexity": "complex",
+      "pagerank": 0.010753,
+      "communityId": 21,
+      "tags": [
+        "low_signal_summary"
+      ],
+      "summary": "Documentation: AGENTS.md."
+    },
+    {
+      "id": "file:Modules/graphiti/README.md",
+      "type": "document",
+      "filePath": "Modules/graphiti/README.md",
+      "language": "markdown",
+      "symbolCount": 0,
+      "lineCount": 100,
+      "complexity": "moderate",
+      "pagerank": 0.010753,
+      "communityId": 22,
+      "tags": [],
+      "summary": "Project overview and entry point for new readers."
+    },
+    {
+      "id": "file:Modules/graphiti/config-litellm.yaml",
+      "type": "config",
+      "filePath": "Modules/graphiti/config-litellm.yaml",
+      "language": "yaml",
+      "symbolCount": 0,
+      "lineCount": 36,
+      "complexity": "simple",
+      "pagerank": 0.010753,
+      "communityId": 23,
+      "tags": [
+        "config",
+        "low_signal_summary"
+      ],
+      "summary": "Configuration file: config-litellm.yaml."
+    },
+    {
+      "id": "file:Modules/graphiti/embed_server.py",
+      "type": "file",
+      "filePath": "Modules/graphiti/embed_server.py",
+      "language": "python",
+      "symbolCount": 7,
+      "lineCount": 74,
+      "complexity": "moderate",
+      "pagerank": 0.010753,
+      "communityId": 1,
+      "tags": [],
+      "summary": "Application module embed_server defining get_model, Handler, do_POST.",
+      "primaryOwner": "uni.universefire"
+    },
+    {
+      "id": "file:Modules/graphiti/mcp_proxy.py",
+      "type": "file",
+      "filePath": "Modules/graphiti/mcp_proxy.py",
+      "language": "python",
+      "symbolCount": 27,
+      "lineCount": 369,
+      "complexity": "complex",
+      "pagerank": 0.010753,
+      "communityId": 2,
+      "tags": [],
+      "summary": "Application module mcp_proxy defining _resolve_config, MCPBridge, __init__.",
+      "primaryOwner": "uni.universefire"
+    },
+    {
+      "id": "file:README.md",
+      "type": "document",
+      "filePath": "README.md",
+      "language": "markdown",
+      "symbolCount": 0,
+      "lineCount": 112,
+      "complexity": "moderate",
+      "pagerank": 0.010753,
+      "communityId": 24,
+      "tags": [],
+      "summary": "Project overview and entry point for new readers."
+    },
+    {
+      "id": "file:docs/CODE_REVIEWS/2026-09-06-###1-watchers-memory-leak-and-optimization-scan.md",
+      "type": "document",
+      "filePath": "docs/CODE_REVIEWS/2026-09-06-###1-watchers-memory-leak-and-optimization-scan.md",
+      "language": "markdown",
+      "symbolCount": 0,
+      "lineCount": 205,
+      "complexity": "moderate",
+      "pagerank": 0.010753,
+      "communityId": 25,
+      "tags": [
+        "low_signal_summary"
+      ],
+      "summary": "Documentation: 2026-09-06-###1-watchers-memory-leak-and-optimization-scan.md."
+    },
+    {
+      "id": "file:docs/CODE_REVIEWS/2026-09-11-###1-watchers-vad-v14z5-helper-dedupe-review.md",
+      "type": "document",
+      "filePath": "docs/CODE_REVIEWS/2026-09-11-###1-watchers-vad-v14z5-helper-dedupe-review.md",
+      "language": "markdown",
+      "symbolCount": 0,
+      "lineCount": 318,
+      "complexity": "moderate",
+      "pagerank": 0.010753,
+      "communityId": 26,
+      "tags": [
+        "low_signal_summary"
+      ],
+      "summary": "Documentation: 2026-09-11-###1-watchers-vad-v14z5-helper-dedupe-review.md."
+    },
+    {
+      "id": "file:docs/CODE_REVIEWS/2026-09-12-###1-###4-###7-###5-code-review-quality.md",
+      "type": "document",
+      "filePath": "docs/CODE_REVIEWS/2026-09-12-###1-###4-###7-###5-code-review-quality.md",
+      "language": "markdown",
+      "symbolCount": 0,
+      "lineCount": 148,
+      "complexity": "moderate",
+      "pagerank": 0.010753,
+      "communityId": 27,
+      "tags": [
+        "low_signal_summary"
+      ],
+      "summary": "Documentation: 2026-09-12-###1-###4-###7-###5-code-review-quality.md."
+    },
+    {
+      "id": "file:docs/CODE_REVIEWS/2026-09-17-grepai-watcher-dies-debug.md",
+      "type": "document",
+      "filePath": "docs/CODE_REVIEWS/2026-09-17-grepai-watcher-dies-debug.md",
+      "language": "markdown",
+      "symbolCount": 0,
+      "lineCount": 231,
+      "complexity": "moderate",
+      "pagerank": 0.010753,
+      "communityId": 28,
+      "tags": [
+        "low_signal_summary"
+      ],
+      "summary": "Documentation: 2026-09-17-grepai-watcher-dies-debug.md."
+    },
+    {
+      "id": "file:docs/changelogs/2026-08-18-harden-launcher-against-orphaned-watchers.md",
+      "type": "document",
+      "filePath": "docs/changelogs/2026-08-18-harden-launcher-against-orphaned-watchers.md",
+      "language": "markdown",
+      "symbolCount": 0,
+      "lineCount": 52,
+      "complexity": "simple",
+      "pagerank": 0.010753,
+      "communityId": 29,
+      "tags": [
+        "low_signal_summary"
+      ],
+      "summary": "Documentation: 2026-08-18-harden-launcher-against-orphaned-watchers.md."
+    },
+    {
+      "id": "file:docs/changelogs/2026-09-05-llm-fallback-proxy-move-and-ling-swap.md",
+      "type": "document",
+      "filePath": "docs/changelogs/2026-09-05-llm-fallback-proxy-move-and-ling-swap.md",
+      "language": "markdown",
+      "symbolCount": 0,
+      "lineCount": 65,
+      "complexity": "simple",
+      "pagerank": 0.010753,
+      "communityId": 30,
+      "tags": [
+        "low_signal_summary"
+      ],
+      "summary": "Documentation: 2026-09-05-llm-fallback-proxy-move-and-ling-swap.md."
+    },
+    {
+      "id": "file:docs/changelogs/2026-09-06-watcher-leak-fixes.md",
+      "type": "document",
+      "filePath": "docs/changelogs/2026-09-06-watcher-leak-fixes.md",
+      "language": "markdown",
+      "symbolCount": 0,
+      "lineCount": 115,
+      "complexity": "moderate",
+      "pagerank": 0.010753,
+      "communityId": 31,
+      "tags": [
+        "low_signal_summary"
+      ],
+      "summary": "Documentation: 2026-09-06-watcher-leak-fixes.md."
+    },
+    {
+      "id": "file:docs/changelogs/2026-09-17-mcpw-qfy-pane-exit-fix.md",
+      "type": "document",
+      "filePath": "docs/changelogs/2026-09-17-mcpw-qfy-pane-exit-fix.md",
+      "language": "markdown",
+      "symbolCount": 0,
+      "lineCount": 40,
+      "complexity": "simple",
+      "pagerank": 0.010753,
+      "communityId": 32,
+      "tags": [
+        "low_signal_summary"
+      ],
+      "summary": "Documentation: 2026-09-17-mcpw-qfy-pane-exit-fix.md."
+    },
+    {
+      "id": "file:docs/guides/launchers-and-watchers.md",
+      "type": "document",
+      "filePath": "docs/guides/launchers-and-watchers.md",
+      "language": "markdown",
+      "symbolCount": 0,
+      "lineCount": 106,
+      "complexity": "moderate",
+      "pagerank": 0.010753,
+      "communityId": 33,
+      "tags": [
+        "low_signal_summary"
+      ],
+      "summary": "Documentation: launchers-and-watchers.md."
+    },
+    {
+      "id": "file:docs/plans/2026-09-17-mcp-watchers-workspace-isolation-handover.md",
+      "type": "document",
+      "filePath": "docs/plans/2026-09-17-mcp-watchers-workspace-isolation-handover.md",
+      "language": "markdown",
+      "symbolCount": 0,
+      "lineCount": 766,
+      "complexity": "complex",
+      "pagerank": 0.010753,
+      "communityId": 34,
+      "tags": [
+        "low_signal_summary"
+      ],
+      "summary": "Documentation: 2026-09-17-mcp-watchers-workspace-isolation-handover.md."
+    },
+    {
+      "id": "file:opencode.json",
+      "type": "config",
+      "filePath": "opencode.json",
+      "language": "json",
+      "symbolCount": 0,
+      "lineCount": 5,
+      "complexity": "simple",
+      "pagerank": 0.010753,
+      "communityId": 44,
+      "tags": [
+        "config",
+        "low_signal_summary"
+      ],
+      "summary": "Configuration file: opencode.json."
+    },
+    {
+      "id": "file:reports/2026-09-17-graphiti-embed-handover.md",
+      "type": "document",
+      "filePath": "reports/2026-09-17-graphiti-embed-handover.md",
+      "language": "markdown",
+      "symbolCount": 0,
+      "lineCount": 73,
+      "complexity": "simple",
+      "pagerank": 0.010753,
+      "communityId": 45,
+      "tags": [
+        "low_signal_summary"
+      ],
+      "summary": "Documentation: 2026-09-17-graphiti-embed-handover.md."
+    },
+    {
+      "id": "file:reports/2026-09-17-pane-exit-debug-handover.md",
+      "type": "document",
+      "filePath": "reports/2026-09-17-pane-exit-debug-handover.md",
+      "language": "markdown",
+      "symbolCount": 0,
+      "lineCount": 137,
+      "complexity": "moderate",
+      "pagerank": 0.010753,
+      "communityId": 46,
+      "tags": [
+        "low_signal_summary"
+      ],
+      "summary": "Documentation: 2026-09-17-pane-exit-debug-handover.md."
+    },
+    {
+      "id": "file:tests/test_grepai_heal_single_healer.py",
+      "type": "file",
+      "filePath": "tests/test_grepai_heal_single_healer.py",
+      "language": "python",
+      "symbolCount": 19,
+      "lineCount": 220,
+      "complexity": "complex",
+      "pagerank": 0.010753,
+      "communityId": 38,
+      "tags": [
+        "test"
+      ],
+      "summary": "Tests for grepai_heal_single_healer.",
+      "primaryOwner": "uni.universefire"
+    },
+    {
+      "id": "file:tests/test_grepai_rpg_endpoint.py",
+      "type": "file",
+      "filePath": "tests/test_grepai_rpg_endpoint.py",
+      "language": "python",
+      "symbolCount": 3,
+      "lineCount": 17,
+      "complexity": "simple",
+      "pagerank": 0.010753,
+      "communityId": 1,
+      "tags": [
+        "test"
+      ],
+      "summary": "Tests for grepai_rpg_endpoint.",
+      "primaryOwner": "uni.universefire"
+    },
+    {
+      "id": "file:tests/test_launch_watcher.py",
+      "type": "file",
+      "filePath": "tests/test_launch_watcher.py",
+      "language": "python",
+      "symbolCount": 15,
+      "lineCount": 637,
+      "complexity": "complex",
+      "pagerank": 0.010753,
+      "communityId": 0,
+      "tags": [
+        "test"
+      ],
+      "summary": "Tests for launch_watcher.",
+      "primaryOwner": "uni.universefire"
+    },
+    {
+      "id": "file:tests/test_launch_watcher_for_grepai_ps1.py",
+      "type": "file",
+      "filePath": "tests/test_launch_watcher_for_grepai_ps1.py",
+      "language": "python",
+      "symbolCount": 3,
+      "lineCount": 28,
+      "complexity": "simple",
+      "pagerank": 0.010753,
+      "communityId": 38,
+      "tags": [
+        "test"
+      ],
+      "summary": "Tests for launch_watcher_for_grepai_ps1.",
+      "primaryOwner": "uni.universefire"
+    },
+    {
+      "id": "file:tests/test_launch_watcher_teardown.py",
+      "type": "file",
+      "filePath": "tests/test_launch_watcher_teardown.py",
+      "language": "python",
+      "symbolCount": 11,
+      "lineCount": 294,
+      "complexity": "moderate",
+      "pagerank": 0.010753,
+      "communityId": 38,
+      "tags": [
+        "test"
+      ],
+      "summary": "Tests for launch_watcher_teardown.",
+      "primaryOwner": "uni.universefire"
+    },
+    {
+      "id": "file:tests/test_launcher.py",
+      "type": "file",
+      "filePath": "tests/test_launcher.py",
+      "language": "python",
+      "symbolCount": 5,
+      "lineCount": 75,
+      "complexity": "moderate",
+      "pagerank": 0.010753,
+      "communityId": 1,
+      "tags": [
+        "test"
+      ],
+      "summary": "Tests for launcher.",
+      "primaryOwner": "uni.universefire"
+    },
+    {
+      "id": "file:tests/test_launcher_double_click_bat.py",
+      "type": "file",
+      "filePath": "tests/test_launcher_double_click_bat.py",
+      "language": "python",
+      "symbolCount": 5,
+      "lineCount": 75,
+      "complexity": "moderate",
+      "pagerank": 0.010753,
+      "communityId": 38,
+      "tags": [
+        "test"
+      ],
+      "summary": "Tests for launcher_double_click_bat.",
+      "primaryOwner": "uni.universefire"
+    },
+    {
+      "id": "file:tests/test_launcher_gm_popup_state.py",
+      "type": "file",
+      "filePath": "tests/test_launcher_gm_popup_state.py",
+      "language": "python",
+      "symbolCount": 6,
+      "lineCount": 73,
+      "complexity": "moderate",
+      "pagerank": 0.010753,
+      "communityId": 38,
+      "tags": [
+        "test"
+      ],
+      "summary": "Tests for launcher_gm_popup_state.",
+      "primaryOwner": "uni.universefire"
+    },
+    {
+      "id": "file:tests/test_launcher_gm_wiring.py",
+      "type": "file",
+      "filePath": "tests/test_launcher_gm_wiring.py",
+      "language": "python",
+      "symbolCount": 13,
+      "lineCount": 335,
+      "complexity": "moderate",
+      "pagerank": 0.010753,
+      "communityId": 40,
+      "tags": [
+        "test"
+      ],
+      "summary": "Tests for launcher_gm_wiring.",
+      "primaryOwner": "uni.universefire"
+    },
+    {
+      "id": "file:tests/test_launcher_job_helpers_dedupe.py",
+      "type": "file",
+      "filePath": "tests/test_launcher_job_helpers_dedupe.py",
+      "language": "python",
+      "symbolCount": 37,
+      "lineCount": 755,
+      "complexity": "complex",
+      "pagerank": 0.010753,
+      "communityId": 38,
+      "tags": [
+        "test"
+      ],
+      "summary": "Tests for launcher_job_helpers_dedupe.",
+      "primaryOwner": "uni.universefire"
+    },
+    {
+      "id": "file:tests/test_launcher_portable_paths.py",
+      "type": "file",
+      "filePath": "tests/test_launcher_portable_paths.py",
+      "language": "python",
+      "symbolCount": 21,
+      "lineCount": 167,
+      "complexity": "complex",
+      "pagerank": 0.010753,
+      "communityId": 38,
+      "tags": [
+        "test"
+      ],
+      "summary": "Tests for launcher_portable_paths.",
+      "primaryOwner": "uni.universefire"
+    },
+    {
+      "id": "file:tests/test_launcher_proxy_wiring.py",
+      "type": "file",
+      "filePath": "tests/test_launcher_proxy_wiring.py",
+      "language": "python",
+      "symbolCount": 10,
+      "lineCount": 58,
+      "complexity": "moderate",
+      "pagerank": 0.010753,
+      "communityId": 38,
+      "tags": [
+        "test"
+      ],
+      "summary": "Tests for launcher_proxy_wiring.",
+      "primaryOwner": "uni.universefire"
+    },
+    {
+      "id": "file:tests/test_launcher_teardown_state_live.py",
+      "type": "file",
+      "filePath": "tests/test_launcher_teardown_state_live.py",
+      "language": "python",
+      "symbolCount": 6,
+      "lineCount": 105,
+      "complexity": "moderate",
+      "pagerank": 0.010753,
+      "communityId": 1,
+      "tags": [
+        "test"
+      ],
+      "summary": "Tests for launcher_teardown_state_live.",
+      "primaryOwner": "uni.universefire"
+    },
+    {
+      "id": "file:tests/test_launcher_watchers_contract.py",
+      "type": "file",
+      "filePath": "tests/test_launcher_watchers_contract.py",
+      "language": "python",
+      "symbolCount": 13,
+      "lineCount": 198,
+      "complexity": "moderate",
+      "pagerank": 0.010753,
+      "communityId": 38,
+      "tags": [
+        "test"
+      ],
+      "summary": "Tests for launcher_watchers_contract.",
+      "primaryOwner": "uni.universefire"
+    },
+    {
+      "id": "file:tests/test_launcher_worktree_quoting.py",
+      "type": "file",
+      "filePath": "tests/test_launcher_worktree_quoting.py",
+      "language": "python",
+      "symbolCount": 11,
+      "lineCount": 132,
+      "complexity": "moderate",
+      "pagerank": 0.010753,
+      "communityId": 38,
+      "tags": [
+        "test"
+      ],
+      "summary": "Tests for launcher_worktree_quoting.",
+      "primaryOwner": "uni.universefire"
+    },
+    {
+      "id": "file:tests/test_teardown_grepai_pid_scoped.py",
+      "type": "file",
+      "filePath": "tests/test_teardown_grepai_pid_scoped.py",
+      "language": "python",
+      "symbolCount": 6,
+      "lineCount": 97,
+      "complexity": "moderate",
+      "pagerank": 0.010753,
+      "communityId": 38,
+      "tags": [
+        "test"
+      ],
+      "summary": "Tests for teardown_grepai_pid_scoped.",
+      "primaryOwner": "uni.universefire"
+    },
+    {
+      "id": "file:tests/test_watcher_allocator.py",
+      "type": "file",
+      "filePath": "tests/test_watcher_allocator.py",
+      "language": "python",
+      "symbolCount": 8,
+      "lineCount": 88,
+      "complexity": "moderate",
+      "pagerank": 0.010753,
+      "communityId": 1,
+      "tags": [
+        "test"
+      ],
+      "summary": "Tests for watcher_allocator.",
+      "primaryOwner": "uni.universefire"
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:###2.llm_fallback_proxy.py",
+      "target": "file:external:hashlib",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:###2.llm_fallback_proxy.py",
+      "target": "file:external:http.server",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:###2.llm_fallback_proxy.py",
+      "target": "file:external:json",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:###2.llm_fallback_proxy.py",
+      "target": "file:external:os",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:###2.llm_fallback_proxy.py",
+      "target": "file:external:socketserver",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:###2.llm_fallback_proxy.py",
+      "target": "file:external:sys",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:###2.llm_fallback_proxy.py",
+      "target": "file:external:threading",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:###2.llm_fallback_proxy.py",
+      "target": "file:external:time",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:###2.llm_fallback_proxy.py",
+      "target": "file:external:urllib.error",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:###2.llm_fallback_proxy.py",
+      "target": "file:external:urllib.request",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:Modules/graphiti/embed_server.py",
+      "target": "file:external:http.server",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:Modules/graphiti/embed_server.py",
+      "target": "file:external:json",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:Modules/graphiti/embed_server.py",
+      "target": "file:external:os",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:Modules/graphiti/embed_server.py",
+      "target": "file:external:sentence_transformers",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:Modules/graphiti/embed_server.py",
+      "target": "file:external:sys",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:Modules/graphiti/mcp_proxy.py",
+      "target": "file:external:atexit",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:Modules/graphiti/mcp_proxy.py",
+      "target": "file:external:http.server",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:Modules/graphiti/mcp_proxy.py",
+      "target": "file:external:json",
+      "type": "imports",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_grepai_heal_single_healer.py",
+      "target": "file:external:pathlib",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_grepai_heal_single_healer.py",
+      "target": "file:external:re",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_grepai_heal_single_healer.py",
+      "target": "file:external:subprocess",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_grepai_rpg_endpoint.py",
+      "target": "file:external:os",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_grepai_rpg_endpoint.py",
+      "target": "file:external:re",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launch_watcher.py",
+      "target": "file:external:filelock",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launch_watcher.py",
+      "target": "file:external:glob",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launch_watcher.py",
+      "target": "file:external:os",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launch_watcher.py",
+      "target": "file:external:pathlib",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launch_watcher.py",
+      "target": "file:external:pytest",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launch_watcher.py",
+      "target": "file:external:re",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launch_watcher.py",
+      "target": "file:external:shutil",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launch_watcher.py",
+      "target": "file:external:subprocess",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launch_watcher.py",
+      "target": "file:external:sys",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launch_watcher.py",
+      "target": "file:external:time",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launch_watcher.py",
+      "target": "file:external:urllib.request",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launch_watcher_for_grepai_ps1.py",
+      "target": "file:external:pathlib",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launch_watcher_for_grepai_ps1.py",
+      "target": "file:external:subprocess",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launch_watcher_teardown.py",
+      "target": "file:external:pathlib",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launch_watcher_teardown.py",
+      "target": "file:external:pytest",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launch_watcher_teardown.py",
+      "target": "file:external:re",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launcher.py",
+      "target": "file:external:filelock",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launcher.py",
+      "target": "file:external:pathlib",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launcher.py",
+      "target": "file:external:pytest",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launcher.py",
+      "target": "file:external:subprocess",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launcher.py",
+      "target": "file:external:sys",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launcher_double_click_bat.py",
+      "target": "file:external:pathlib",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launcher_double_click_bat.py",
+      "target": "file:external:pytest",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launcher_double_click_bat.py",
+      "target": "file:external:subprocess",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launcher_gm_popup_state.py",
+      "target": "file:external:pathlib",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launcher_gm_popup_state.py",
+      "target": "file:external:re",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launcher_gm_wiring.py",
+      "target": "file:external:re",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launcher_job_helpers_dedupe.py",
+      "target": "file:external:pathlib",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launcher_job_helpers_dedupe.py",
+      "target": "file:external:re",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launcher_job_helpers_dedupe.py",
+      "target": "file:external:subprocess",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launcher_portable_paths.py",
+      "target": "file:external:pathlib",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launcher_proxy_wiring.py",
+      "target": "file:external:pathlib",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launcher_teardown_state_live.py",
+      "target": "file:external:json",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launcher_teardown_state_live.py",
+      "target": "file:external:os",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launcher_teardown_state_live.py",
+      "target": "file:external:pathlib",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launcher_teardown_state_live.py",
+      "target": "file:external:pytest",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launcher_teardown_state_live.py",
+      "target": "file:external:subprocess",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launcher_teardown_state_live.py",
+      "target": "file:external:sys",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launcher_teardown_state_live.py",
+      "target": "file:external:tempfile",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launcher_watchers_contract.py",
+      "target": "file:external:pathlib",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launcher_watchers_contract.py",
+      "target": "file:external:pytest",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launcher_watchers_contract.py",
+      "target": "file:external:re",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launcher_watchers_contract.py",
+      "target": "file:external:subprocess",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launcher_worktree_quoting.py",
+      "target": "file:external:pathlib",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_launcher_worktree_quoting.py",
+      "target": "file:external:re",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_teardown_grepai_pid_scoped.py",
+      "target": "file:external:pathlib",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_teardown_grepai_pid_scoped.py",
+      "target": "file:external:pytest",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_watcher_allocator.py",
+      "target": "file:external:llm_fallback_proxy",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_watcher_allocator.py",
+      "target": "file:external:os",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_watcher_allocator.py",
+      "target": "file:external:pytest",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "file:tests/test_watcher_allocator.py",
+      "target": "file:external:sys",
+      "type": "tested_by",
+      "direction": "forward",
+      "weight": 1.0
+    }
+  ],
+  "layers": [
+    {
+      "id": "layer:application",
+      "name": "LLM Fallback and Proxy Services",
+      "description": "Core application logic for LLM fallback proxy, embedding server, and MCP proxy functionality with supporting documentation.",
+      "nodeIds": [
+        "file:###2.llm_fallback_proxy.py",
+        "file:2026-09-17-mcp-watchers-workspace-isolation-handover.md",
+        "file:2026-09-17-pane-exit-debug-handover.md",
+        "file:AGENTS.md",
+        "file:Modules/graphiti/README.md",
+        "file:Modules/graphiti/config-litellm.yaml",
+        "file:Modules/graphiti/embed_server.py",
+        "file:Modules/graphiti/mcp_proxy.py",
+        "file:README.md",
+        "file:opencode.json",
+        "file:reports/2026-09-17-graphiti-embed-handover.md",
+        "file:reports/2026-09-17-pane-exit-debug-handover.md"
+      ],
+      "display_order": 0,
+      "order_basis": "canonical"
+    },
+    {
+      "id": "layer:config",
+      "name": "Agent Configuration and Hooks",
+      "description": "Configuration files, agent skills, beads system settings, and Git hooks for development workflow automation.",
+      "nodeIds": [
+        "file:.agents/skills/beads/SKILL.md",
+        "file:.agents/skills/beads/agents/openai.yaml",
+        "file:.beads/README.md",
+        "file:.beads/config.yaml",
+        "file:.beads/hooks/post-checkout",
+        "file:.beads/hooks/post-merge",
+        "file:.beads/hooks/pre-commit",
+        "file:.beads/hooks/pre-push",
+        "file:.beads/hooks/prepare-commit-msg",
+        "file:.beads/metadata.json",
+        "file:.claude/settings.json",
+        "file:.codex/config.toml",
+        "file:.codex/hooks.json",
+        "file:.cursor/hooks.json",
+        "file:.serena/project.yml",
+        "file:.workbuddy-ai/memory/2026-09-17.md"
+      ],
+      "display_order": 1,
+      "order_basis": "canonical"
+    },
+    {
+      "id": "layer:docs-tooling",
+      "name": "Documentation and Review Tooling",
+      "description": "Code review documentation, changelogs, guides, and development tooling configurations.",
+      "nodeIds": [
+        "file:docs/CODE_REVIEWS/2026-09-06-###1-watchers-memory-leak-and-optimization-scan.md",
+        "file:docs/CODE_REVIEWS/2026-09-11-###1-watchers-vad-v14z5-helper-dedupe-review.md",
+        "file:docs/CODE_REVIEWS/2026-09-12-###1-###4-###7-###5-code-review-quality.md",
+        "file:docs/CODE_REVIEWS/2026-09-17-grepai-watcher-dies-debug.md",
+        "file:docs/changelogs/2026-08-18-harden-launcher-against-orphaned-watchers.md",
+        "file:docs/changelogs/2026-09-05-llm-fallback-proxy-move-and-ling-swap.md",
+        "file:docs/changelogs/2026-09-06-watcher-leak-fixes.md",
+        "file:docs/changelogs/2026-09-17-mcpw-qfy-pane-exit-fix.md",
+        "file:docs/guides/launchers-and-watchers.md",
+        "file:docs/plans/2026-09-17-mcp-watchers-workspace-isolation-handover.md"
+      ],
+      "display_order": 2,
+      "order_basis": "canonical"
+    },
+    {
+      "id": "layer:test",
+      "name": "Watcher and Launcher Testing",
+      "description": "Test suite for watcher services, launcher functionality, and related endpoint testing.",
+      "nodeIds": [
+        "file:tests/test_grepai_heal_single_healer.py",
+        "file:tests/test_grepai_rpg_endpoint.py",
+        "file:tests/test_launch_watcher.py",
+        "file:tests/test_launch_watcher_for_grepai_ps1.py",
+        "file:tests/test_launch_watcher_teardown.py",
+        "file:tests/test_launcher.py",
+        "file:tests/test_launcher_double_click_bat.py",
+        "file:tests/test_launcher_gm_popup_state.py",
+        "file:tests/test_launcher_gm_wiring.py",
+        "file:tests/test_launcher_job_helpers_dedupe.py",
+        "file:tests/test_launcher_portable_paths.py",
+        "file:tests/test_launcher_proxy_wiring.py",
+        "file:tests/test_launcher_teardown_state_live.py",
+        "file:tests/test_launcher_watchers_contract.py",
+        "file:tests/test_launcher_worktree_quoting.py",
+        "file:tests/test_teardown_grepai_pid_scoped.py",
+        "file:tests/test_watcher_allocator.py"
+      ],
+      "display_order": 3,
+      "order_basis": "canonical"
+    }
+  ],
+  "tour": [
+    {
+      "order": 1,
+      "target_path": "README.md",
+      "page_type": "repo_overview",
+      "title": "README.md",
+      "depth": 0,
+      "kind": "overview",
+      "reason": "Start here for the end-to-end picture before diving into the code.",
+      "layer_id": "layer:application"
+    },
+    {
+      "order": 2,
+      "target_path": "###2.llm_fallback_proxy.py",
+      "page_type": "file_page",
+      "title": "###2.llm_fallback_proxy.py",
+      "depth": 0,
+      "kind": "code",
+      "reason": "The walk's anchor \u2014 its imports fan out the widest in a repo with no single entry point.",
+      "layer_id": "layer:application"
+    },
+    {
+      "order": 3,
+      "target_path": "Modules/graphiti/embed_server.py",
+      "page_type": "file_page",
+      "title": "embed_server.py",
+      "depth": 1,
+      "kind": "code",
+      "reason": "Off the import paths walked above \u2014 a standalone or supporting file.",
+      "layer_id": "layer:application"
+    },
+    {
+      "order": 4,
+      "target_path": "Modules/graphiti/mcp_proxy.py",
+      "page_type": "file_page",
+      "title": "mcp_proxy.py",
+      "depth": 1,
+      "kind": "code",
+      "reason": "Off the import paths walked above \u2014 a standalone or supporting file.",
+      "layer_id": "layer:application"
+    },
+    {
+      "order": 5,
+      "target_path": "tests/test_grepai_heal_single_healer.py",
+      "page_type": "file_page",
+      "title": "test_grepai_heal_single_healer.py",
+      "depth": 2,
+      "kind": "code",
+      "reason": "The test suite \u2014 how the system's behavior is verified.",
+      "layer_id": "layer:test"
+    }
+  ],
+  "modules": [
+    {
+      "id": "module:application",
+      "name": "Application",
+      "path": "",
+      "layerId": "layer:application",
+      "nodeIds": [
+        "file:###2.llm_fallback_proxy.py",
+        "file:2026-09-17-mcp-watchers-workspace-isolation-handover.md",
+        "file:2026-09-17-pane-exit-debug-handover.md",
+        "file:AGENTS.md",
+        "file:Modules/graphiti/README.md",
+        "file:Modules/graphiti/config-litellm.yaml",
+        "file:Modules/graphiti/embed_server.py",
+        "file:Modules/graphiti/mcp_proxy.py",
+        "file:README.md",
+        "file:opencode.json",
+        "file:reports/2026-09-17-graphiti-embed-handover.md",
+        "file:reports/2026-09-17-pane-exit-debug-handover.md"
+      ],
+      "wholeLayer": true,
+      "language": "markdown"
+    },
+    {
+      "id": "module:config",
+      "name": "Config",
+      "path": "",
+      "layerId": "layer:config",
+      "nodeIds": [
+        "file:.agents/skills/beads/SKILL.md",
+        "file:.agents/skills/beads/agents/openai.yaml",
+        "file:.beads/README.md",
+        "file:.beads/config.yaml",
+        "file:.beads/hooks/post-checkout",
+        "file:.beads/hooks/post-merge",
+        "file:.beads/hooks/pre-commit",
+        "file:.beads/hooks/pre-push",
+        "file:.beads/hooks/prepare-commit-msg",
+        "file:.beads/metadata.json",
+        "file:.claude/settings.json",
+        "file:.codex/config.toml",
+        "file:.codex/hooks.json",
+        "file:.cursor/hooks.json",
+        "file:.serena/project.yml",
+        "file:.workbuddy-ai/memory/2026-09-17.md"
+      ],
+      "wholeLayer": true,
+      "language": "shell"
+    },
+    {
+      "id": "module:docs",
+      "name": "Docs & Tooling",
+      "path": "docs",
+      "layerId": "layer:docs-tooling",
+      "nodeIds": [
+        "file:docs/CODE_REVIEWS/2026-09-06-###1-watchers-memory-leak-and-optimization-scan.md",
+        "file:docs/CODE_REVIEWS/2026-09-11-###1-watchers-vad-v14z5-helper-dedupe-review.md",
+        "file:docs/CODE_REVIEWS/2026-09-12-###1-###4-###7-###5-code-review-quality.md",
+        "file:docs/CODE_REVIEWS/2026-09-17-grepai-watcher-dies-debug.md",
+        "file:docs/changelogs/2026-08-18-harden-launcher-against-orphaned-watchers.md",
+        "file:docs/changelogs/2026-09-05-llm-fallback-proxy-move-and-ling-swap.md",
+        "file:docs/changelogs/2026-09-06-watcher-leak-fixes.md",
+        "file:docs/changelogs/2026-09-17-mcpw-qfy-pane-exit-fix.md",
+        "file:docs/guides/launchers-and-watchers.md",
+        "file:docs/plans/2026-09-17-mcp-watchers-workspace-isolation-handover.md"
+      ],
+      "wholeLayer": true,
+      "language": "markdown"
+    },
+    {
+      "id": "module:tests",
+      "name": "Test",
+      "path": "tests",
+      "layerId": "layer:test",
+      "nodeIds": [
+        "file:tests/test_grepai_heal_single_healer.py",
+        "file:tests/test_grepai_rpg_endpoint.py",
+        "file:tests/test_launch_watcher.py",
+        "file:tests/test_launch_watcher_for_grepai_ps1.py",
+        "file:tests/test_launch_watcher_teardown.py",
+        "file:tests/test_launcher.py",
+        "file:tests/test_launcher_double_click_bat.py",
+        "file:tests/test_launcher_gm_popup_state.py",
+        "file:tests/test_launcher_gm_wiring.py",
+        "file:tests/test_launcher_job_helpers_dedupe.py",
+        "file:tests/test_launcher_portable_paths.py",
+        "file:tests/test_launcher_proxy_wiring.py",
+        "file:tests/test_launcher_teardown_state_live.py",
+        "file:tests/test_launcher_watchers_contract.py",
+        "file:tests/test_launcher_worktree_quoting.py",
+        "file:tests/test_teardown_grepai_pid_scoped.py",
+        "file:tests/test_watcher_allocator.py"
+      ],
+      "wholeLayer": true,
+      "language": "python"
+    }
+  ]
+}

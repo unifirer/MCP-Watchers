@@ -39,3 +39,6 @@ desktop.ini
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+
+# repowise API keys (local)
+.repowise/.env

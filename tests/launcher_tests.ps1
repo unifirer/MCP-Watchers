@@ -1437,12 +1437,15 @@ $probeBody = Get-TailerTemplateBody
 Assert ($probeBody -match 'function Test-GrepaiWatcherAlive') 'T19 template defines the grepai probe' ("missing-probe")
 Assert ($probeBody -match 'CommandLine -match ''watch''') 'T19 probe requires watch in CommandLine (mcp-serve excluded)' ("missing-watch-match")
 Assert ($probeBody -match "'__LABEL__' -eq 'grepai'") 'T19 template routes grepai to the probe branch' ("missing-branch")
-# Dynamic: a generated grepai tailer exits when NO grepai watch process exists.
+# Dynamic (mcpw-qfy RC1): a generated grepai tailer PERSISTS when NO grepai
+# watch process exists. The old pane exited after its grace window (the
+# pane-exit bug); the fixed pane rides the dead-tick grace, keeps
+# heartbeating, and never closes the terminal pane on its own.
 # Skip when a real watcher is live so the suite never flakes on a running env.
 $liveWatch = @(Get-CimInstance Win32_Process -Filter "Name='grepai.exe'" -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandLine -and $_.CommandLine -match 'watch' }).Count -gt 0
 if ($liveWatch) {
-    Write-Host '  [SKIP] T19 grepai watch already running - probe-exit scenario untestable'
+    Write-Host '  [SKIP] T19 grepai watch already running - probe-persist scenario untestable'
 } else {
     $t19dir = Join-Path $env:TEMP ('lt_t19_' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $t19dir -Force | Out-Null
@@ -1456,11 +1459,16 @@ if ($liveWatch) {
         Set-Content -LiteralPath $t19tail -Value $t19body -Encoding UTF8
         $t19out = Join-Path $t19dir 'out.txt'
         $t19p = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-File', ("`"" + $t19tail + "`"")) -WindowStyle Hidden -RedirectStandardOutput $t19out -PassThru
-        $t19p.WaitForExit(15000) | Out-Null
+        # 9s ~= 18 ticks: inside the 60-tick grace and before the tick-30
+        # pane heal, so no heal side effects are possible in this window.
+        Start-Sleep -Seconds 9
         $t19p.Refresh()
-        Assert ($t19p.HasExited) 'T19 grepai tailer exits when no watch process exists' ("still-alive")
+        Assert (-not $t19p.HasExited) 'T19 grepai tailer persists when no watch process exists' ("exit=" + $t19p.ExitCode)
         $t19text = Get-Content -LiteralPath $t19out -Raw -ErrorAction SilentlyContinue
-        Assert ([bool]($t19text -match 'grepai watcher exited - closing pane')) 'T19 grepai closing-pane marker printed' ("out=$t19text")
+        Assert ([bool]($t19text -match 'watcher down')) 'T19 grepai tailer reports the down watcher' ("out=$t19text")
+        Assert (Test-Path -LiteralPath $t19hb) 'T19 grepai tailer keeps heartbeating while down' ("missing-hb")
+        $t19hbAge = ((Get-Date) - (Get-Item -LiteralPath $t19hb).LastWriteTime).TotalSeconds
+        Assert ($t19hbAge -lt 10) 'T19 grepai heartbeat is fresh' ("age=$t19hbAge")
     } finally {
         if ($t19p -and -not $t19p.HasExited) { Stop-Process -Id $t19p.Id -Force -ErrorAction SilentlyContinue }
         Remove-Item -LiteralPath $t19dir -Recurse -Force -ErrorAction SilentlyContinue

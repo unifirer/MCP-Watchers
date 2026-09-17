@@ -71,3 +71,56 @@ function Get-WatchersWorkspaceRoot {
     if (-not $loc) { return '' }
     return $loc.TrimEnd('\', '/')
 }
+
+function Test-WatchersProcessAttribution {
+    <#
+    .SYNOPSIS
+        Decide whether a candidate process belongs to THIS workspace.
+    .DESCRIPTION
+        Used by the launcher's startup orphan sweep, which is a FALLBACK for
+        orphans the PID-scoped Stop-AllWatchers could not reach. The sweep must
+        FAIL SAFE: skipping an unattributable process can leave an orphan, which
+        is harmless, whereas terminating it can kill a sibling repository's LIVE
+        watcher.
+
+        Attribution is by COMMAND LINE only, because Win32_Process exposes no
+        working directory. A process whose command line carries no workspace
+        marker therefore cannot be attributed, and is never terminated.
+
+        Two markers are accepted:
+          1. the 8-character workspace key. The keyed pane dir and log dir put it
+             on the command line of everything the launcher spawns with a path.
+          2. the absolute workspace root. Catches a process started with the
+             workspace as an explicit argument.
+
+        A workspace root shorter than 4 characters is ignored. A drive root such
+        as C:\ would otherwise attribute every process on the machine.
+    .PARAMETER CommandLine
+        The candidate's command line. Empty means unattributable.
+    .PARAMETER WorkspaceKey
+        The 8-character key of this workspace.
+    .PARAMETER WorkspaceRoot
+        The absolute root of this workspace.
+    #>
+    param(
+        [string]$CommandLine,
+        [string]$WorkspaceKey,
+        [string]$WorkspaceRoot
+    )
+
+    if (-not $CommandLine) { return $false }
+
+    if ($WorkspaceKey) {
+        if ($CommandLine.IndexOf($WorkspaceKey, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            return $true
+        }
+    }
+
+    if ($WorkspaceRoot -and $WorkspaceRoot.Length -ge 4) {
+        if ($CommandLine.IndexOf($WorkspaceRoot, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            return $true
+        }
+    }
+
+    return $false
+}

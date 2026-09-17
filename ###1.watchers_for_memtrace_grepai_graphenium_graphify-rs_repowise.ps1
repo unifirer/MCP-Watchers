@@ -288,7 +288,24 @@ function Stop-PriorLauncherInstances {
     # vad-10m.3: entries flagged Persistent (port-singleton backends) are
     # SKIPPED here - they are reused across launchers by design, and the
     # backend-duplicate pass in Stop-WatcherOrphans reaps real duplicates.
+    #
+    # mcpw-ybs.2 attribution gate. This sweep is a FALLBACK for orphans the
+    # PID-scoped Stop-AllWatchers could not reach; it is NOT the primary kill
+    # path. It must therefore FAIL SAFE. A matching process is terminated ONLY
+    # when its command line can be attributed to THIS workspace. An
+    # unattributable match is SKIPPED and counted: an orphan is harmless, a
+    # sibling repository's live watcher is not.
+    # The match-all entries (graphify-rs.exe, memtrace.exe, memcortex-daemon.exe
+    # all carry an EMPTY Pattern) are the reason this gate exists - without it the
+    # sweep kills EVERY such process on the machine, whatever repository it
+    # belongs to.
+    # NOTE: this inline match is deliberately NOT Test-WatcherSweepMatch. The
+    # shared helper returns $false for a match-all pattern when the command line
+    # is empty; this check treats it as a candidate. With the attribution gate
+    # below both behave identically (an unreadable command line is never
+    # attributable, so it is skipped). Kept inline so the diff stays minimal.
     if ($null -eq $script:WatcherSweepPatterns) { return }
+    $sweepSkipped = 0
     foreach ($entry in $script:WatcherSweepPatterns) {
         if ($entry.Persistent) { continue }
         $pattern = $entry.Pattern
@@ -298,18 +315,34 @@ function Stop-PriorLauncherInstances {
             foreach ($proc in $procs) {
                 $cmdLine = ''
                 try { $cmdLine = $proc.CommandLine } catch { $cmdLine = '' }
-                if ($pattern -eq '' -or ($cmdLine -and $cmdLine -match [regex]::Escape($pattern))) {
-                    try {
-                        Invoke-CimMethod -InputObject $proc -MethodName Terminate -ErrorAction SilentlyContinue | Out-Null
-                        Write-Host "Swept orphaned watcher: $name (PID $($proc.ProcessId))"
-                    } catch {
-                        Write-Warning "Failed to sweep orphaned watcher $name (PID $($proc.ProcessId)): $($_.Exception.Message)"
-                    }
+                if (-not ($pattern -eq '' -or ($cmdLine -and $cmdLine -match [regex]::Escape($pattern)))) { continue }
+                $attributed = $false
+                if (Get-Command Test-WatchersProcessAttribution -ErrorAction SilentlyContinue) {
+                    $attributed = Test-WatchersProcessAttribution -CommandLine $cmdLine `
+                        -WorkspaceKey $workspaceKey -WorkspaceRoot $watchersWorkspaceRoot
+                } else {
+                    # Inline fallback. If the helper is unavailable the sweep must
+                    # still not kill machine-wide, so match on the key alone.
+                    $attributed = [bool]($workspaceKey -and $cmdLine -and
+                        $cmdLine.IndexOf($workspaceKey, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
+                }
+                if (-not $attributed) {
+                    $sweepSkipped++
+                    continue
+                }
+                try {
+                    Invoke-CimMethod -InputObject $proc -MethodName Terminate -ErrorAction SilentlyContinue | Out-Null
+                    Write-Host "Swept orphaned watcher: $name (PID $($proc.ProcessId))"
+                } catch {
+                    Write-Warning "Failed to sweep orphaned watcher $name (PID $($proc.ProcessId)): $($_.Exception.Message)"
                 }
             }
         } catch {
             Write-Warning "Orphan watcher sweep failed for ${name}: $($_.Exception.Message)"
         }
+    }
+    if ($sweepSkipped -gt 0) {
+        Write-Warning "Startup orphan sweep skipped $sweepSkipped process(es) not attributable to this workspace (key $workspaceKey). They may belong to another repository; leaving them running is the safe choice."
     }
 }
 

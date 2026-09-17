@@ -1380,6 +1380,10 @@ if ($grepaiOk) {
         # stale. Path derives from the lock file, so no wiring crosses the job
         # boundary. Started before the loop so the first tick is stamped.
         $supStamp = [System.IO.Path]::ChangeExtension($LockFile, '.sup')
+        # mcpw-qfy RC1: a previous supervisor run may have parked the grepai
+        # pane on IDLE via <lockfile>.idle. This supervisor owns healing
+        # again, so drop that stale marker at startup.
+        try { $staleIdle = [System.IO.Path]::ChangeExtension($LockFile, '.idle'); if (Test-Path -LiteralPath $staleIdle) { Remove-Item -LiteralPath $staleIdle -Force -ErrorAction SilentlyContinue } } catch { }
         while ($true) {
             try { Set-Content -LiteralPath $supStamp -Value (Get-Date -Format 'o') -ErrorAction SilentlyContinue } catch {}
             try {
@@ -1523,6 +1527,12 @@ if ($grepaiOk) {
                                 # read reaped healthy watchers on every launch.
                                 $idleMin = Get-GrepaiIdleMinutes -ConfigPath (Join-Path $RepoRoot '.grepai\config.yaml')
                                 if ($idleMin -ge $idleTtlMin) {
+                                    # mcpw-qfy RC1: all three exits below are
+                                    # intentional idle stops (no relaunch), so
+                                    # park the grepai pane on IDLE via the
+                                    # marker the pane's Test-GrepaiIdleMarker
+                                    # reads. The next supervisor start clears it.
+                                    try { Set-Content -LiteralPath ([System.IO.Path]::ChangeExtension($LockFile, '.idle')) -Value (Get-Date -Format 'o') -ErrorAction SilentlyContinue } catch { }
                                     if ($trackedGrepaiPid -le 0) {
                                         Write-SupLog "grepai idle $idleMin min (TTL $idleTtlMin min) - no tracked PID, skipping reap, supervisor exiting (no relaunch)"
                                         Write-WatchersLog "grepai idle TTL reached ($idleMin min >= $idleTtlMin min) - no tracked PID, skipping reap, supervisor exiting (no restart)"
@@ -3343,8 +3353,17 @@ $graphitiEmbedJobScript = {
         return
     }
 
-    $embedPy = Join-Path $env:LOCALAPPDATA "Programs\Temp\graphiti-mcp\mcp_server\.venv\Scripts\python.exe"
-    $embedScript = Join-Path $env:LOCALAPPDATA "Programs\Temp\graphiti-mcp\mcp_server\embed_server.py"
+    # Glue resolution: repo copy first (Modules\graphiti), install second. The
+    # venv python stays install-resident - a venv cannot be relocated by copy,
+    # because Scripts\*.exe shims embed absolute paths.
+    $embedPy = Join-Path $env:LOCALAPPDATA "Programs\graphiti-mcp\mcp_server\.venv\Scripts\python.exe"
+    $embedScript = $null
+    $embedCands = @()
+    if ($ScriptDir) { $embedCands += (Join-Path $ScriptDir 'Modules\graphiti\embed_server.py') }
+    $embedCands += (Join-Path $env:LOCALAPPDATA 'Programs\graphiti-mcp\mcp_server\embed_server.py')
+    foreach ($cand in $embedCands) {
+        if (Test-Path -LiteralPath $cand) { $embedScript = $cand; break }
+    }
     if (-not (Test-Path -LiteralPath $embedPy)) {
         $pyCmd = Get-Command "python.exe" -ErrorAction SilentlyContinue
         if ($pyCmd) { $embedPy = $pyCmd.Source }
@@ -3353,10 +3372,11 @@ $graphitiEmbedJobScript = {
         Write-Warning "graphiti embed python not found (looked at $embedPy and PATH). Skipping embed proxy start."
         return
     }
-    if (-not (Test-Path -LiteralPath $embedScript)) {
-        Write-Warning "embed_server.py not found at $embedScript. Skipping embed proxy start."
+    if (-not $embedScript) {
+        Write-Warning "embed_server.py not found (looked at $($embedCands -join '; ')). Skipping embed proxy start."
         return
     }
+    Write-Host "Graphiti embed proxy script: $embedScript"
 
     try {
         Write-Host "Starting Graphiti embed proxy (port $backendPort)..."
@@ -3444,8 +3464,16 @@ $graphitiMcpJobScript = {
         Write-Warning "Graphiti embed proxy (:8003) not listening yet - starting MCP proxy anyway; tools may stay empty until embeddings are up."
     }
 
-    $mcpPy = Join-Path $env:LOCALAPPDATA "Programs\Temp\graphiti-mcp\mcp_server\.venv\Scripts\python.exe"
-    $mcpScript = Join-Path $env:LOCALAPPDATA "Programs\Temp\graphiti-mcp\mcp_server\mcp_proxy.py"
+    # Glue resolution: repo copy first (Modules\graphiti), install second. See
+    # the embed block above for why the venv python stays install-resident.
+    $mcpPy = Join-Path $env:LOCALAPPDATA "Programs\graphiti-mcp\mcp_server\.venv\Scripts\python.exe"
+    $mcpScript = $null
+    $mcpCands = @()
+    if ($ScriptDir) { $mcpCands += (Join-Path $ScriptDir 'Modules\graphiti\mcp_proxy.py') }
+    $mcpCands += (Join-Path $env:LOCALAPPDATA 'Programs\graphiti-mcp\mcp_server\mcp_proxy.py')
+    foreach ($cand in $mcpCands) {
+        if (Test-Path -LiteralPath $cand) { $mcpScript = $cand; break }
+    }
     if (-not (Test-Path -LiteralPath $mcpPy)) {
         $pyCmd = Get-Command "python.exe" -ErrorAction SilentlyContinue
         if ($pyCmd) { $mcpPy = $pyCmd.Source }
@@ -3454,10 +3482,11 @@ $graphitiMcpJobScript = {
         Write-Warning "graphiti MCP python not found (looked at $mcpPy and PATH). Skipping MCP proxy start."
         return
     }
-    if (-not (Test-Path -LiteralPath $mcpScript)) {
-        Write-Warning "mcp_proxy.py not found at $mcpScript. Skipping MCP proxy start."
+    if (-not $mcpScript) {
+        Write-Warning "mcp_proxy.py not found (looked at $($mcpCands -join '; ')). Skipping MCP proxy start."
         return
     }
+    Write-Host "Graphiti MCP proxy script: $mcpScript"
 
     try {
         Write-Host "Starting Graphiti MCP proxy (port $backendPort)..."
@@ -3596,14 +3625,21 @@ $backendSupervisorScript = {
         } catch { Write-BackendSupLog "claude-mcp relaunch failed: $($_.Exception.Message)" }
     }
     function Start-GraphitiEmbedBackend {
-        $embedPy = Join-Path $env:LOCALAPPDATA "Programs\Temp\graphiti-mcp\mcp_server\.venv\Scripts\python.exe"
-        $embedScript = Join-Path $env:LOCALAPPDATA "Programs\Temp\graphiti-mcp\mcp_server\embed_server.py"
+        $embedPy = Join-Path $env:LOCALAPPDATA "Programs\graphiti-mcp\mcp_server\.venv\Scripts\python.exe"
+        # Glue resolution: repo copy first (Modules\graphiti), install second.
+        $embedScript = $null
+        $embedCands = @()
+        if ($ScriptDir) { $embedCands += (Join-Path $ScriptDir 'Modules\graphiti\embed_server.py') }
+        $embedCands += (Join-Path $env:LOCALAPPDATA 'Programs\graphiti-mcp\mcp_server\embed_server.py')
+        foreach ($cand in $embedCands) {
+            if (Test-Path -LiteralPath $cand) { $embedScript = $cand; break }
+        }
         if (-not (Test-Path -LiteralPath $embedPy)) {
             $pyCmd = Get-Command "python.exe" -ErrorAction SilentlyContinue
             if ($pyCmd) { $embedPy = $pyCmd.Source }
         }
         if (-not (Test-Path -LiteralPath $embedPy)) { Write-BackendSupLog "graphiti embed python not found - skipping relaunch"; return }
-        if (-not (Test-Path -LiteralPath $embedScript)) { Write-BackendSupLog "embed_server.py not found - skipping relaunch"; return }
+        if (-not $embedScript) { Write-BackendSupLog "embed_server.py not found - skipping relaunch"; return }
         $log = Join-Path $env:LOCALAPPDATA "graphiti-embed\embed-8003.log"
         try {
             $p = Start-Process -FilePath $embedPy -ArgumentList "`"$embedScript`"", "8003" `
@@ -3612,14 +3648,21 @@ $backendSupervisorScript = {
         } catch { Write-BackendSupLog "graphiti-embed relaunch failed: $($_.Exception.Message)" }
     }
     function Start-GraphitiMcpBackend {
-        $mcpPy = Join-Path $env:LOCALAPPDATA "Programs\Temp\graphiti-mcp\mcp_server\.venv\Scripts\python.exe"
-        $mcpScript = Join-Path $env:LOCALAPPDATA "Programs\Temp\graphiti-mcp\mcp_server\mcp_proxy.py"
+        $mcpPy = Join-Path $env:LOCALAPPDATA "Programs\graphiti-mcp\mcp_server\.venv\Scripts\python.exe"
+        # Glue resolution: repo copy first (Modules\graphiti), install second.
+        $mcpScript = $null
+        $mcpCands = @()
+        if ($ScriptDir) { $mcpCands += (Join-Path $ScriptDir 'Modules\graphiti\mcp_proxy.py') }
+        $mcpCands += (Join-Path $env:LOCALAPPDATA 'Programs\graphiti-mcp\mcp_server\mcp_proxy.py')
+        foreach ($cand in $mcpCands) {
+            if (Test-Path -LiteralPath $cand) { $mcpScript = $cand; break }
+        }
         if (-not (Test-Path -LiteralPath $mcpPy)) {
             $pyCmd = Get-Command "python.exe" -ErrorAction SilentlyContinue
             if ($pyCmd) { $mcpPy = $pyCmd.Source }
         }
         if (-not (Test-Path -LiteralPath $mcpPy)) { Write-BackendSupLog "graphiti mcp python not found - skipping relaunch"; return }
-        if (-not (Test-Path -LiteralPath $mcpScript)) { Write-BackendSupLog "mcp_proxy.py not found - skipping relaunch"; return }
+        if (-not $mcpScript) { Write-BackendSupLog "mcp_proxy.py not found - skipping relaunch"; return }
         $log = Join-Path $env:LOCALAPPDATA "graphiti-mcp\mcp-8002.log"
         try { New-Item -ItemType Directory -Path (Split-Path $log) -Force | Out-Null } catch {}
         try {
@@ -3862,7 +3905,7 @@ if (-not $logFile) {
 }
 if (-not $logFile) { $logFile = $grepaiLaunchLog }
 $tailGrepai      = New-WatcherPaneScript -Label "grepai"      -LogPath $logFile            -ErrPath ""                 -RepoRoot $scriptDir -HeartbeatPath (Join-Path $hbDir "grepai.hb") -SupervisorLog $supSupervisorLog -LaunchLog $grepaiLaunchLog -LaunchErr $grepaiLaunchErr -LockFile $lockFile
-$tailGraphenium  = New-WatcherPaneScript -Label "graphenium"  -LogPath $gmLog              -ErrPath "$gmLog.err"      -RepoRoot $scriptDir -HeartbeatPath (Join-Path $hbDir "graphenium.hb")  -WatchPid $gmWatchPid
+$tailGraphenium  = New-WatcherPaneScript -Label "graphenium"  -LogPath $gmLog              -ErrPath "$gmLog.err"      -RepoRoot $scriptDir -HeartbeatPath (Join-Path $hbDir "graphenium.hb")  -WatchPid $gmWatchPid -LockFile $lockFile
 $tailGraphifyRs  = New-WatcherPaneScript -Label "graphify-rs" -LogPath $graphifyLog        -ErrPath "$graphifyLog.err" -RepoRoot $scriptDir -HeartbeatPath (Join-Path $hbDir "graphify-rs.hb") -WatchPid $graphifyWatchPid
 $tailRepowise    = New-WatcherPaneScript -Label "repowise"    -LogPath $repowiseLog        -ErrPath "$repowiseLog.err" -RepoRoot $scriptDir -HeartbeatPath (Join-Path $hbDir "repowise.hb")   -WatchPid $repowiseWatchPid
 # Collect the heartbeat paths so the controller loop can watch any of them.
@@ -4321,8 +4364,13 @@ try {
 # $hbTimeoutSec the tab is gone, and we run the
 # same Stop-AllWatchers the Ctrl+C / [X] paths use. This makes the visible tab
 # itself the kill trigger, matching the user's mental model.
-$hbTimeoutSec = 8
+# mcpw-qfy RC4: 15s tolerates transient process starvation; a sleep/resume
+# gap (loop iteration delayed 60s+) forgives missed beats instead of killing
+# healthy daemons on wake. Panes tick every ~2s, so 15s is still a fast
+# dead-tab signal.
+$hbTimeoutSec = 15
 $hbStaleSince = $null
+$hbLastLoop = [datetime]::UtcNow
 while ($true) {
     Start-Sleep -Seconds 1
     # Beads VAD-3apv: surface gm-semantic thread-job failure instead of
@@ -4353,6 +4401,13 @@ while ($true) {
     # a Utc-kind datetime mis-computes by the timezone offset and would declare
     # healthy panes stale. Use UtcNow for both sides.
     $now = [datetime]::UtcNow
+    # mcpw-qfy RC4: OS sleep / modern standby freezes this loop. Without this
+    # check the post-wake gap looks like a dead tab and healthy watchers die.
+    if (($now - $hbLastLoop).TotalSeconds -gt 60) {
+        Write-Host "System resume detected (loop gap $([int]($now - $hbLastLoop).TotalSeconds)s) - forgiving missed pane heartbeats..."
+        $hbStaleSince = $null
+    }
+    $hbLastLoop = $now
     foreach ($hb in $script:hbPaths) {
         try {
             if (Test-Path -LiteralPath $hb) {

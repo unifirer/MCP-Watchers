@@ -2,8 +2,11 @@
 
 These tests pin the exact tokens the launcher emits so a refactor that drops a
 watcher or changes the persisted live-state shape fails loudly. No processes are
-spawned. Behavioral teardown is covered by the Pester suite plus the live tests
-in test_launcher_teardown_state_live.py and test_launcher_watcher_live_tracking.py.
+spawned. Behavioral teardown is covered by the Pester suite
+(launcher_watcher_teardown plus the keyed workspace suites).
+Live round-trip via tests/test_launcher_teardown_state_live.py was deleted
+2026-09-18 (mcpw-ybs.6): helper never existed, REAL_STATE pointed at the
+pre-.2a un-keyed path, WT-title probe unreliable.
 
 Contract facts taken from ###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1:
   - gm:   NO `gm watch` process. gm 0.19.3's incremental writers (`gm watch`,
@@ -16,8 +19,9 @@ Contract facts taken from ###1.watchers_for_memtrace_grepai_graphenium_graphify-
   - repowise: Start-WatcherDetached "repowise" "repowise" @("watch", ".", "--index-only", "--debounce", "30000")
   - grepai: grepai watch --background
   - memtrace: start --headless on 127.0.0.1:50051, state at <root>/.memdb/daemon-state.json
-  - persisted live state: $env:LOCALAPPDATA\\watchers\\teardown-state.json
-      { RootPids[], MemtraceStatePath, RepoRoot }  where RepoRoot = $PSScriptRoot
+  - persisted live state: $env:LOCALAPPDATA\\watchers\\<key>\\teardown-state.json
+      { RootPids[], MemtraceStatePath, RepoRoot, WtWindowName, GrepaiPid }
+      where RepoRoot = workspace root, WtWindowName = vadwatchers-<key>
 """
 import re
 import subprocess

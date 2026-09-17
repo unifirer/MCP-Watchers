@@ -3947,8 +3947,32 @@ if (Get-Command "wt" -ErrorAction SilentlyContinue) {
     # grid build is deterministic. A clean first launch sees no tailers and
     # adds zero latency.
     function Get-WatcherPaneTailers {
-        @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+        param([switch]$ThisWorkspaceOnly)
+        $all = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
             Where-Object { $_.CommandLine -and $_.CommandLine -match [regex]::Escape('panes\tail_') })
+        if (-not $ThisWorkspaceOnly) { return $all }
+        return @($all | Where-Object { Test-WatcherPaneTailerIsOurs -Proc $_ })
+    }
+    # mcpw-ybs.5: attribute BEFORE terminating. The reset below used to
+    # Terminate() EVERY 'panes\tail_' match machine-wide. mcpw-ybs.2b added an
+    # attribution gate to the STARTUP orphan sweep but not here, so launching in
+    # repo B killed repo A's live 2x2 grid. Verified live 2026-09-17: VAD's
+    # un-keyed tailers are C:\Temp\vad-watchers\panes\tail_*.ps1 and matched.
+    # Same FAIL-SAFE trade as the sweep: a skipped stale tailer can leave a
+    # second tab, which is a layout wart; killing another repository's live
+    # panes is not. A cross-workspace clean grid now depends on mcpw-ybs.3
+    # giving each workspace its own Windows Terminal window.
+    function Test-WatcherPaneTailerIsOurs {
+        param($Proc)
+        $cmd = ''
+        try { $cmd = [string]$Proc.CommandLine } catch { $cmd = '' }
+        if (-not $cmd) { return $false }
+        if (Get-Command Test-WatchersProcessAttribution -ErrorAction SilentlyContinue) {
+            return (Test-WatchersProcessAttribution -CommandLine $cmd `
+                -WorkspaceKey $workspaceKey -WorkspaceRoot $watchersWorkspaceRoot)
+        }
+        # Inline fallback, same rule as the sweep: never kill machine-wide.
+        return [bool]($workspaceKey -and $cmd.IndexOf($workspaceKey, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
     }
     # RUNTIME FEEDBACK LOOP (2026-08-26 "not equal quarters" regression): the
     # static suites lock wt argument structure but cannot see the REALIZED
@@ -4004,7 +4028,12 @@ if (Get-Command "wt" -ErrorAction SilentlyContinue) {
             }
         } catch { Write-Host "[grid-probe] skipped: $($_.Exception.Message)" }
     }
-    $resetTailers = Get-WatcherPaneTailers
+    $resetAll = @(Get-WatcherPaneTailers)
+    $resetTailers = @(Get-WatcherPaneTailers -ThisWorkspaceOnly)
+    $resetSkipped = $resetAll.Count - $resetTailers.Count
+    if ($resetSkipped -gt 0) {
+        Write-Warning "Pre-grid reset skipped $resetSkipped pane tailer(s) not attributable to this workspace (key $workspaceKey). They belong to another repository; leaving their panes running is the safe choice. The new grid may share the '$wtWindowName' window with them until mcpw-ybs.3 gives each workspace its own."
+    }
     if ($resetTailers.Count -gt 0) {
         foreach ($t in $resetTailers) {
             try { Invoke-CimMethod -InputObject $t -MethodName Terminate | Out-Null } catch { Write-Warning "Failed to terminate stale pane tailer: $($_.Exception.Message)" }
@@ -4016,7 +4045,10 @@ if (Get-Command "wt" -ErrorAction SilentlyContinue) {
         $resetDeadline = (Get-Date).AddSeconds(4)
         while ((Get-Date) -lt $resetDeadline) {
             Start-Sleep -Milliseconds 200
-            if ((Get-WatcherPaneTailers).Count -eq 0) { break }
+            # Only OUR tailers must be gone. Waiting for every machine-wide
+            # match to disappear would spin the full 4s on every launch that
+            # coexists with another repository (mcpw-ybs.5).
+            if ((@(Get-WatcherPaneTailers -ThisWorkspaceOnly).Count) -eq 0) { break }
         }
     }
     # ROOT CAUSE (2026-07-16 fix for intermittent "2 tabs instead of 1"):
@@ -4096,7 +4128,10 @@ if (Get-Command "wt" -ErrorAction SilentlyContinue) {
             $stableSince = $null
             $stabilized = $false
             while ((Get-Date) -lt $gridWaitDeadline) {
-                $tailerCount = (Get-WatcherPaneTailers).Count
+                # mcpw-ybs.5: count OUR tailers. A machine-wide count is inflated
+                # by another repository's grid and would declare this step's pane
+                # materialized before it actually was.
+                $tailerCount = (@(Get-WatcherPaneTailers -ThisWorkspaceOnly)).Count
                 if ($tailerCount -ge $ExpectedTailers) {
                     if ($null -eq $stableSince) { $stableSince = Get-Date }
                     elseif ((Get-Date) - $stableSince -ge [TimeSpan]::FromMilliseconds($gridStableMs)) { $stabilized = $true; break }

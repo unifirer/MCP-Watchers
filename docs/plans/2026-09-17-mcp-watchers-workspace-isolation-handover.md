@@ -1,0 +1,556 @@
+# Handover — MCP-Watchers workspace isolation (beads epic `mcpw-ybs`)
+
+**Date:** 2026-09-17
+**Author:** agent (Agent mode)
+**Updated:** 2026-09-17 (22:24) — current-progress snapshot added in §10.
+`mcpw-ybs.4`, `.5` and `.3` landed earlier; the `.2b` test suite was found RED
+and fixed (see §2a). Read §2a before trusting any "green" claim; read §5a
+before trusting the smoke test.
+**Repo:** `J:\audio\MCP-Watchers` (own beads tracker `mcpw`, server mode on the same WSL Dolt as VAD)
+**Epic order:** `.2` (sweep + keying) → `.4` (key the lock/mutexes) → `.5` (pane
+reset attribution) → `.1` (remaining)
+
+---
+
+## 1. Status
+
+| Issue | Half | State | Commit |
+|-------|------|-------|--------|
+| `mcpw-ybs.2a` | workspace-key derivation | **DONE** | `ef08919` (8 files, +241/−55) |
+| `mcpw-ybs.2b` | startup orphan-sweep attribution gate | **DONE** | `e21a4d4` (+ test fix `bb48c91`, see §2a) |
+| `mcpw-ybs.4` | key the launcher lock + named mutexes per workspace | **DONE** | `03770ad` (§2b) |
+| `mcpw-ybs.5` | pre-grid pane-tailer reset attribution | **DONE** | `4bf97b9` (§2c) |
+| `mcpw-ybs.3` | WT window name is global so pane grids collide | **DONE** | `654ef25` (§2d) |
+| `mcpw-ybs.1` | remaining cross-repo single-instance/teardown isolation | **OPEN** | — |
+
+---
+
+## 2. What shipped in the `mcpw-ybs.2b` commit
+
+Three tracked files, **+343 / −7**, all mine:
+
+- **`Modules/watcher_workspace.ps1`** (+53) — new exported function
+  `Test-WatchersProcessAttribution -CommandLine -WorkspaceKey -WorkspaceRoot`.
+  Pure, command-line-only attribution (Win32_Process has no working-dir field).
+  Returns true iff the command line carries this workspace's 8-char key **or** its
+  absolute root (root ignored if shorter than 4 chars, so a drive root like `C:\`
+  can't attribute every process on the box).
+- **`###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1`** (+47/−7) —
+  the tail of `Stop-PriorLauncherInstances` (the **startup orphan sweep**) now
+  consults the helper before terminating. A candidate is killed only when
+  attributable; otherwise it is **skipped** and counted in `$sweepSkipped`.
+- **`tests/launcher_sweep_attribution.tests.ps1`** (new, 250 lines, 16 Pester
+  3.4.0 tests) — the sweep block is **extracted from the real launcher source**
+  and executed against a stubbed `Get-CimInstance` / `Invoke-CimMethod` process
+  table, so the assertions run the actual branch logic, not a hand-copy.
+
+**The bug this closes:** the startup orphan sweep is a FALLBACK for orphans the
+PID-scoped `Stop-AllWatchers` could not reach. Before `.2b` it terminated *any*
+machine-wide process matching a sweep pattern. The `graphify-rs.exe` entry has
+an **empty `Pattern`** → a match-all kill. Two repositories launched at once
+could therefore tree-kill each other's live watchers. Now the sweep is
+**fail-safe**: skipping an unattributable orphan is harmless; killing a sibling
+repo's watcher is not.
+
+**Proof it's green — CORRECTION (2026-09-17).** The claim below this line is
+wrong; it was verified with a method that cannot fail. See §2a.
+
+---
+
+## 2a. The `.2b` suite was RED — and the runner hid it
+
+Found while adding the `.4` suite. `tests/launcher_sweep_attribution.tests.ps1`
+had **never** run its assertions:
+
+1. `Get-SweepBlock` (the block extracted from the launcher) ended **after**
+   `Stop-PriorLauncherInstances`' own closing `}` — a brace at column 0. The
+   fragment therefore had one `}` too many and `Invoke-Expression` threw
+   `Unexpected token '}'`, so **5 of 15 tests asserted nothing**.
+2. The first test dot-sourced `Modules\watcher_workspace.ps1` *inside the `{ }`
+   handed to `Should Not Throw`. That scriptblock has its own scope, so
+   `Test-WatchersProcessAttribution` was already gone when the assertion ran →
+   `CommandNotFoundException`.
+
+Both were invisible because of two traps in the runner:
+
+- **The exit code is worthless.** `powershell -File suite.tests.ps1` returns 0
+  no matter how many Pester tests fail. `temp\_gate.bat` records `EXIT=0` for a
+  red suite.
+- **The trailing summary lies.** Every suite ends with
+  `Tests completed in 0ms / Passed: 0 Failed: 0 Skipped: 0` — that line comes
+  from the nested `Invoke-Pester` that rediscovers zero tests. Grepping for
+  `Failed` finds it and reports green.
+
+**Count the markers, not the exit code:**
+```bash
+awk '/^---- /{s=$2} /^ \[-\]/{f[s]++} /^ \[\+\]/{p[s]++} END{for (k in p) printf "%-42s +%d -%d\n", k, p[k], (f[k]?f[k]:0)}' temp/_gate.out.txt
+```
+Each suite runs twice (Pester 3.4.0 executes `Describe` once on load and once
+via the self-invoked `Invoke-Pester`), so the counts are 2x the test count.
+The launcher is NOT to blame: the same structure exists at `e21a4d4`, so this
+was born red, not regressed.
+
+Fixed in `bb48c91` (drop the trailing column-0 brace; dot-source the module as
+a direct statement). **15/15 green.**
+
+---
+
+## 2b. What shipped for `mcpw-ybs.4`
+
+Four files, all mine (see §4 for the staging discipline):
+
+- **`###1…ps1`** — the FIRST-WINS lock and **both** launcher mutexes are keyed
+  per workspace:
+  - `%LOCALAPPDATA%\watchers\<key>\###1-launcher.lock` (was
+    `watchers\###1-launcher.lock`). The key is a **directory component** and the
+    file name is unchanged, matching `watcher_teardown.ps1`
+    (`watchers\<key>\teardown-state.json`) and keeping every literal
+    `###1-launcher.lock` match working.
+  - `Global\VAD_Watchers_Launcher_<key>` and `Global\VAD_Watchers_Takeover_<key>`.
+  - `Acquire-LauncherLock` / `Write-LauncherLock` take the name as a
+    `-MutexName` parameter; `Stop-PriorLauncherInstances` takes
+    `-TakeoverMutexName`. Neither defaults to the bare legacy name — an empty
+    key degrades to `_default`, never back to machine-global.
+  - The `PowerShell.Exiting` handler bakes `$launcherMutexName` into its
+    scriptblock, so it releases **its own** mutex instead of another repo's.
+  - An empty key now degrades to the literal `default` before it can reach
+    `Join-Path` (which would throw) or the mutex name.
+  - `Global\VAD_Grepai_Heal` is **deliberately left machine-global** and the
+    reason is recorded in the source: it only serialises a heal and the loser
+    *skips a tick* rather than killing anything. Whether grepai's index is
+    per-repo is not established here, and keying a genuinely shared index would
+    allow two concurrent writers.
+- **`tests/launcher_lock_keying.tests.ps1`** (new, 16 Pester 3.4.0 tests) —
+  the keying lines are **extracted from the launcher and executed**, so the
+  assertions run the real code. Covers: key as a directory component, filename
+  unchanged, two workspaces → two lock files and two mutex names, no bare
+  legacy mutex name left anywhere, empty-key degradation, the parameter
+  plumbing, the `Exiting` handler, and that the teardown state file uses the
+  **same** keyed-directory convention.
+- **`tests/launcher_tests.ps1`** — T21 now computes the keyed lock path (it
+  launches with `-WorkingDirectory $repoRoot`, so that is the key) and creates
+  the keyed parent dir before opening its holder `FileStream`.
+- **`tests/launcher_wrapper_stack.tests.ps1`** — its cleanup now removes the
+  keyed `teardown-state.json` / `###1-launcher.lock`; the child inherits this
+  process's cwd, so the key is computable. It had been silently cleaning a path
+  that no longer exists since `.2a`.
+
+`.4` is **additive for the kill paths** — it changes where the lock lives and
+which mutex is signalled, never what gets killed.
+
+## 2c. What shipped for `mcpw-ybs.5` (commit `4bf97b9`)
+
+Found while re-reading the reset after `.4`, not from the handover's list. The
+**pre-grid pane-tailer reset** (`###1…ps1` ~line 4064) matched `panes\tail_` on
+`CommandLine` and `Terminate()`d **every** match machine-wide. `.2b` had put an
+attribution gate on the *startup orphan sweep* but not here — so launching in
+repo B killed repo A's **live 2x2 grid**. Confirmed live 2026-09-17: VAD's
+Tier A launcher runs four tailers at the un-keyed
+`C:\Temp\vad-watchers\panes\tail_*.ps1` (PIDs 25656/18232/31176/32348) and all
+four matched.
+
+Two files:
+
+- **`###1…ps1`** — `Get-WatcherPaneTailers` gains `-ThisWorkspaceOnly`, backed
+  by a new `Test-WatcherPaneTailerIsOurs` helper that calls
+  `Test-WatchersProcessAttribution` with an inline key-only fallback. The reset
+  now terminates only `$resetTailers` (the attributed subset) and **counts the
+  rest** as `$resetSkipped`, warning instead of killing. Two further call sites
+  were scoped the same way, or a coexisting repo would have paid for them:
+  - the post-terminate wait loop (`Test-WatcherPaneTailers -ThisWorkspaceOnly`)
+    — waiting for *every* machine-wide match to disappear would spin the full
+    4s deadline on **every** launch that coexists with another repo;
+  - the grid-build settle count at ~line 4164.
+- **`tests/launcher_grid_reset_attribution.tests.ps1`** (new, 13 Pester 3.4.0
+  tests) — same extract-and-execute discipline as the `.2b`/`.4` suites: the
+  reset is sliced out of the real launcher and run against a stubbed
+  `Get-CimInstance` / `Invoke-CimMethod`. The stub drops terminated PIDs from
+  the process table so the condition-based wait exits rather than spinning 4s.
+
+Same **fail-safe** trade as the sweep: a skipped stale tailer can leave an extra
+tab (a layout wart); killing another repository's live panes is not.
+
+**Mutation-checked.** Given §2a, a green run was not accepted on trust. Deleting
+`-ThisWorkspaceOnly` from the `$resetTailers` line turns exactly the three
+cross-workspace tests red (`-6` markers). The gate has teeth.
+
+**A second extraction trap (same family as §2a).** The first draft of this suite
+extracted one span — `Get-WatcherPaneTailers` → the `ROOT CAUSE` anchor — and
+filtered out lines matching `GridProbe`. But that span also contains the whole
+`WatcherGridProbe` UI Automation function, and the filter deleted its **opening
+line while leaving its body**, orphaning the closing brace. `Invoke-Expression`
+threw `Unexpected token '}'` and most assertions ran against nothing. Fixed by
+taking **three balanced slices** instead of one span-and-filter, and by adding
+an explicit test that asserts the extracted block **parses** — so any future
+anchor drift fails loudly instead of silently voiding the suite.
+
+---
+
+## 2d. What shipped for `mcpw-ybs.3` (commit `654ef25`)
+
+`$wtWindowName` was the bare literal `"vadwatchers"`, so two repositories
+launched at once shared **one** Windows Terminal window. Repo B's
+`new-tab -w vadwatchers` landed in repo A's live grid, and the directional
+`move-focus` / `split-pane` anchors — which carry no ids and resolve against
+whatever layout the window currently holds — then operated on a 2x2 that
+already had repo A in it.
+
+`.5` made that collision **survivable** (repo A's panes are no longer killed);
+`.3` makes it **not happen** (each repo gets its own window). The two are
+complementary and `.5`'s `$resetSkipped` warning explicitly names `.3` as the
+remaining piece.
+
+Now `"vadwatchers-$workspaceKey"` — deliberately still human-readable rather
+than a bare hash, so an operator can tell which window belongs to which repo.
+
+**Fallout — the literal was matched in four places, and one of them was
+dangerous.** Every match had to move to a **prefix** (no closing quote) so it
+cannot silently stop matching again:
+
+- `tests/watcher_pane_helpers.ps1` — transform 1 was a literal
+  `$block.Replace('$wtWindowName = "vadwatchers"', ...)`. After keying, that
+  would have **silently no-opped** and T8 would have driven the **user's LIVE
+  window**. Now a regex with the same loud guard transform 2 already had.
+- `launcher_tests.ps1` T9, `launcher_equal_quarters.tests.ps1`,
+  `t8_isolation.tests.ps1` — same prefix treatment.
+
+**Adjacent fix (flagged, not part of the ask):** `t8_isolation.tests.ps1`
+extracted its pane block via `IndexOf` of the full literal
+`'$wtPaneDir = Join-Path $scratchRoot "vad-watchers\panes"'` — which `.2a`
+keyed to `vad-watchers\$workspaceKey\panes`. `IndexOf` returned -1,
+`Substring(-1)` threw, and **the suite asserted nothing**. It now anchors on the
+assignment prefix the file already defined for exactly this purpose
+(`$sharedPaneDirLiteral`, previously unused) and throws a *named* error instead
+of an opaque `ArgumentOutOfRangeException`.
+
+`tests/launcher_window_name_keying.tests.ps1` (new, 8 assertions):
+mutation-checked — reverting to the bare name turns **5 of 8** red.
+
+---
+
+## 3. Architecture — the canonical workspace key (from `.2a`, `ef08919`)
+
+Single source of truth: `Modules/watcher_workspace.ps1`.
+
+- `Get-WatchersWorkspaceKey` → 8 lowercase hex chars of SHA-256 over the
+  **normalised absolute invocation path** (absolute, lowercased, no trailing
+  separator). Short form matters: embedded in WT command lines and named-mutex
+  names.
+- The launcher captures the **invocation** directory **before** `Set-Location`
+  (capture index 774, `Set-Location` index 1035), derives the key, exports
+  `VAD_WATCHERS_WORKSPACE_KEY`, and keys the **teardown state file**, the
+  **logs dir** and the **pane dir**.
+- `watcher_teardown.ps1` reads the key from the environment with a legacy
+  fallback; it never *guesses* a key (a wrong key reads a nonexistent file and
+  silently disables teardown).
+- Keys on this box: `77442b14` = `J:\audio\VAD`, `ad90e3fb` = `J:\audio\MCP-Watchers`.
+- The key is a **directory** component, never a filename suffix — `teardown-state.<key>.json`
+  would break the Python contract tests that assert `"teardown-state.json" in
+  launcher_src`, and `vad-watchers\<key>\panes` still contains the `panes\tail_`
+  substring the sweep matches.
+
+---
+
+## 4. Concurrent-session discipline (READ BEFORE TOUCHING `###1…ps1`)
+
+A **second session** owns the graphiti glue and is still writing. Its work in
+this repo (do **not** commit or `git add -A` it):
+
+- `###1…ps1`: 6 graphiti hunks at **lines ~3267–3595** (`$graphitiEmbedJobScript`,
+  `$graphitiMcpJobScript`, `$backendSupervisorScript` — glue resolution that
+  prefers `Modules\graphiti\*.py` over the install).
+- `Modules/watcher_patterns.ps1`: +1 `mcp_proxy` `:8002` persistent entry.
+- `README.md`: graphiti service docs.
+- `tests/launcher_graphify_wiring.tests.ps1`, `launcher_equal_quarters`,
+  `launcher_pane_line_cap`, `launcher_proxy_wiring`, `launcher_repowise_wiring`,
+  `launcher_watcher_panes`, `backend_sweep_safety.tests.ps1` (their edits).
+- `Modules/graphiti/` (untracked — the vendored graphiti glue).
+
+**My `.2b` launcher hunks are at lines ~288–315** (the sweep gate) — disjoint
+from theirs. Ditto `.4` (lock/mutex keying) and `.5` (the pane reset, ~3982–4164).
+**Re-split every time you re-edit the launcher** — `git diff`, then
+`git apply --cached` on the MY-only hunks. Read/write the patch as **bytes**:
+`text` mode strips the `\r` that is part of a CRLF file's content and every
+context line then fails (`*.gitattributes` pins `* -text`, so CRLF is the
+contract).
+
+Reusable splitters: `temp/_stage_mine.py` (`.4` markers) and
+`temp/_stage_mine5.py` (`.5` markers). Both classify a hunk as MINE only if an
+**added** line carries one of the markers — a *context* line from their blob must
+never drag their hunk in.
+
+**State as of `.3`:** the other session committed part of its work as `d7d8d3c`
+("Vendor graphiti glue…"), but **6 graphiti hunks are still unstaged** in the
+launcher at lines ~3343–3612 (`$graphitiEmbedJobScript`,
+`$graphitiMcpJobScript`, `$backendSupervisorScript`). Each of my commits
+(`03770ad`, `4bf97b9`, `654ef25`) was staged hunk-by-hunk against a moving HEAD
+and contains **0 graphiti markers** — verified after every commit, along with a
+sha256 check that the worktree launcher was byte-identical before and after
+committing. `git apply --cached` reports a **-33 line offset** on every apply
+because their commit landed mid-session; that is expected, not a sign of a
+misapplied patch. Always re-verify both facts after staging against a
+concurrent writer.
+
+---
+
+## 5. How to verify
+
+```bash
+# full regression gate (temp\_gate.bat is gitignored; its SUITES list now
+# includes launcher_sweep_attribution.tests.ps1,
+# launcher_lock_keying.tests.ps1 and
+# launcher_grid_reset_attribution.tests.ps1)
+J:/audio/MCP-Watchers/temp/_gate.bat
+
+# THEN COUNT THE MARKERS - the exit code and the trailing summary are both
+# useless (see 2a). Each suite runs twice, so expect 2x the test count.
+awk '/^---- /{s=$2} /^ \[-\]/{f[s]++} /^ \[\+\]/{p[s]++} END{for (k in p) printf "%-42s +%d -%d\n", k, p[k], (f[k]?f[k]:0)}' temp/_gate.out.txt
+```
+
+Current gate (**79 assertions, 8 suites, 0 failures** = 158 markers):
+
+| suite | tests |
+|-------|-------|
+| `backend_sweep_safety` | 7 |
+| `launcher_final_window` | 6 |
+| `launcher_grid_reset_attribution` (mcpw-ybs.5) | 13 |
+| `launcher_lock_keying` (mcpw-ybs.4) | 16 |
+| `launcher_sweep_attribution` (mcpw-ybs.2b) | 15 |
+| `launcher_window_name_keying` (mcpw-ybs.3) | 8 |
+| `watcher_log_tail` | 8 |
+| `watcher_patterns` | 6 |
+
+**Refinement of the §2a rule:** the marker-counting trap is specific to the
+**Pester 3.4.0** suites (the self-invoking `Invoke-Pester` pattern that prints a
+bogus `Passed: 0 Failed: 0`). Suites on **Pester 6** — `launcher_equal_quarters`,
+`t8_isolation` — print an honest `Tests Passed: N, Failed: 0` and can be read
+directly. `launcher_equal_quarters` is static (no execution) and reports
+**15 passed, 0 failed** after `.3`.
+
+Parse-sanity (no execution): the launcher and both `Modules\watcher_*.ps1`
+files parse with `[System.Management.Automation.Language.Parser]::ParseFile`.
+
+## 5a. Real-launch smoke test (2026-09-17) — A PASS, B INCONCLUSIVE
+
+A real launch was smoke-tested with VAD's **live** Tier A launcher as the
+fixture (PID 27192, holding the legacy un-keyed `watchers\###1-launcher.lock`).
+Only `powershell.exe` (5.1) works here — `pwsh.exe` silently no-ops in the
+sandbox with "Cannot run a document in the middle of a pipeline".
+
+- **Test A — PASS.** With *our* keyed lock held by a sacrificial young sleeper
+  (PID 67624), the launcher logged `Launcher already running (PID 67624) -
+  exiting` and exited 0. **FIRST-WINS still holds within one workspace** after
+  `.4`, and the keyed lock path is the one being consulted.
+- **Test B — INCONCLUSIVE.** The launcher did get *past* the lock gate (it never
+  printed "already running"), but exited on its own before creating any
+  artifacts: no keyed lock, teardown state, or pane dir were observed. The log
+  tail shows why, and it is **environmental, not caused by `.4`/`.5`**:
+  - `The term 'git' is not recognized` — git is on PATH for bash, and
+    `C:\Program Files\Git\cmd\git.exe` exists on disk, but `Get-Command git`
+    under PS 5.1 returns NOT FOUND.
+  - Followed by `Stopping all watchers (Ctrl+C)...` — the launcher's own
+    bail-out path.
+- **Nothing was harmed.** All four of VAD's live pane tailers survived, and the
+  legacy lock's mtime was unchanged. No leftover keyed lock or state after
+  cleanup.
+- A `VAD_UNTOUCHED=FAIL` line reporting 10 "lost" PIDs was investigated and is
+  **an artifact of the harness**, not a regression: the baseline set was
+  dominated by transient `J:\audio\VAD` matches, the post count was identical
+  (104 → 104) with different membership, and no `panes\tail_` process was lost.
+  `Get-VadSet` is an unstable proxy.
+
+**Re-run Test B on a machine where `git` resolves under PS 5.1** before claiming
+a full end-to-end launch. Everything the bead actually changed is covered by the
+deterministic suites; the smoke test only ever checked the lock gate and
+non-destructiveness.
+
+---
+
+## 6. Warnings
+
+- **Do NOT run `tests/launcher_watcher_teardown_sweep.tests.ps1` casually.**
+  It calls `Stop-AllWatchers -RootPids @()`; with zero roots the module **adopts
+  the root PIDs from the live `teardown-state.json`** and can tree-kill a real
+  running launcher's watchers. Pre-existing, not introduced by me.
+- **Do NOT run two launchers from different repos at once — yet.** `.4` removed
+  the lock/mutex hazard, `.5` removed the pane-reset hazard and `.3` gave each
+  workspace its own WT window (`vadwatchers-<key>`). What is still
+  machine-global is the **shared backend/daemon surface** (the Ollama/grepai
+  daemons are single-instance and not workspace-scoped) — that is `.1`.
+  Note the two panes-vs-window halves are now fixed **independently**: `.5`
+  stops the killing, `.3` stops the sharing. If you revert one, the other still
+  holds, but the symptom changes shape.
+- **The keyed window name is a visible behaviour change.** A launcher started
+  for `J:\audio\VAD` now opens `vadwatchers-77442b14`, not `vadwatchers`. Any
+  saved WT layout, screenshot tooling or muscle memory keyed on the old name
+  needs updating. VAD's Tier A launcher is a separate file and still uses the
+  bare name, so the two will open **different windows** — that is intended.
+- `temp/` is gitignored; the gate config there is local-only and not version
+  controlled.
+
+---
+
+## 7. Next steps for the next owner
+
+1. ~~**`mcpw-ybs.4`** — key the launcher lock and the named mutexes.~~ **DONE**
+   (§2b, `03770ad`). Bead closed.
+2. ~~**`mcpw-ybs.5`** — attribute the pre-grid pane-tailer reset.~~ **DONE**
+   (§2c, `4bf97b9`). Bead closed. Found during this work, not from this list —
+   worth re-reading the other kill paths for the same omission.
+3. ~~**`mcpw-ybs.3`** — give each workspace its own Windows Terminal window.~~
+   **DONE** (§2d, `654ef25`). Bead closed.
+4. **`mcpw-ybs.1`** — finish the remaining isolation. Now the **only** child
+   left. Assessed 2026-09-17: this is **large, not a one-liner**.
+   `$watchersWorkspaceRoot` is used in only 7 places (key derivation, env
+   export, attribution), while `$scriptDir` is used **53** times and
+   `Set-Location -LiteralPath $scriptDir` (line 20) makes the entire
+   operational surface — backends, jobs, logs, indexers — resolve against the
+   *launcher's* folder. Meeting the acceptance criteria means threading
+   `$watchersWorkspaceRoot` into the backend launch paths too, not just
+   changing the four `-d .` args at ~4192/4199/4206/4212.
+   **Recommended sequencing:** do the cheap half first (`-d $watchersWorkspaceRoot`
+   on the four grid steps — panes then root at the caller's repo and Modules
+   still load from `$scriptDir` via absolute `Join-Path`), verify, and treat
+   "remove the `Set-Location`" as a separate, riskier step.
+5. Re-run the **real-launch smoke test** (§5a) on a box where `git` resolves
+   under PS 5.1 — Test B is still inconclusive. This matters more now: `.3`
+   changes which window opens, which is exactly the kind of thing only a real
+   launch proves.
+6. After `.1`, a single `git merge` of the two sessions' launcher work should
+   be clean (hunks are disjoint); verify the committed blob carries the
+   sweep-gate markers, the `.4` keying markers, the `.5` reset markers, the
+   `.3` window-name markers **and** the graphiti markers, and parses.
+7. **Dead Python contract test — worse than previously recorded (checked
+   2026-09-17, not fixed):** `tests/test_launcher_teardown_state_live.py` is
+   broken in **three** ways, not one:
+   - `REAL_STATE` points at the un-keyed `watchers\teardown-state.json`, which
+     `.2a` stopped writing.
+   - `HELPER = tests/_write_teardown_state.ps1` **does not exist and never
+     has** — `git ls-files` finds no such path and there is no deletion commit,
+     so the `subprocess.run(...)` always fails and
+     `assert r.returncode == 0` can never pass.
+   - Its "is a launcher session active?" probe matches `MainWindowTitle -eq
+     'vadwatchers'`, but a WT window's title mirrors the ACTIVE PANE title
+     (e.g. `grepai`), never the window name — so the skip guard is unreliable
+     too. `.3` did not make this worse (the test never reads
+     `$wtWindowName`), but any fix must now key the name.
+8. **Port ALL VAD-side progress into MCP-Watchers before retiring the original**
+   — see §9. This is the extraction plan's "apply the multi-repo patch" step and
+   is the only still-open item from the plan's `Still open` list.
+
+---
+
+## 8. One-line recap
+
+`.2a` keys every *machine-global* resource the launcher owns by the caller's
+repo (teardown/logs/panes). `.2b` makes the startup orphan *sweep* fail-safe so
+it can never kill a sibling repo's watchers (match-all `graphify-rs.exe` fixed;
+its suite was born red and is fixed in `bb48c91`). `.4` keys the FIRST-WINS lock
+and both launcher mutexes per workspace, so a second repo's launcher neither
+exits silently nor takes over and kills the first repo's watchers. `.5` puts the
+same attribution gate on the **pre-grid pane-tailer reset**, so it can no longer
+terminate a sibling repository's live 2x2 grid. `.3` gives each workspace its
+own **Windows Terminal window** (`vadwatchers-<key>`), so two grids no longer
+collide in one window.
+
+Remaining: finish single-instance isolation (`.1` — the shared backend/daemon
+surface; now the only open child), and port the VAD originals into
+MCP-Watchers (§9) before retiring VAD's Tier A copies.
+
+**Standing caution:** never trust this repo's test runner by exit code or by
+its trailing `Passed:` summary — count `[+]`/`[-]` (§2a).
+
+**Second standing caution:** a green suite is not evidence until it has been
+**mutation-checked**. Both extract-and-execute suites in this repo have now
+produced a suite that reported green while asserting nothing (§2a, §2c). Before
+believing a new gate, delete the thing it guards and confirm it turns red.
+
+---
+
+## 9. Port all VAD-side progress into MCP-Watchers (prereq to retiring VAD)
+
+The watcher launcher was **extracted** from VAD (`J:\audio\VAD`) into this repo;
+VAD still holds the original "Tier A" copy. The two have **already diverged**, so
+the extraction is NOT finished until every VAD-side change is merged forward:
+
+- VAD `###1...ps1`: **0** workspace-isolation markers, **88** graphiti markers.
+  The `.2a`/`.2b` isolation work exists ONLY here in MCP-Watchers (ef08919,
+  e21a4d4) — VAD's copy does not have it.
+- Module parity (sha256, 2026-09-17): `watcher_workspace` DIFFER (MCP-Watchers
+  only), `watcher_teardown` DIFFER (MCP-Watchers has the env-keyed teardown),
+  `watcher_patterns` / `watcher_job_helpers` / `watcher_pane_scripts` /
+  `watcher_log_tail` SAME.
+
+**Procedure (do NOT just copy VAD's `###1...ps1` over this one — that would wipe
+the isolation work):**
+
+1. Diff every shared file between the two repos:
+   `J:\audio\VAD\###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1`
+   vs this repo's launcher, and each `Modules\watcher_*.ps1`, `tests\*.tests.ps1`,
+   and `Modules\graphiti\*` pair.
+2. Classify each VAD hunk: isolation (already here — skip), graphiti glue, or a
+   genuine VAD-only fix. Merge only the VAD-only fixes FORWARD into MCP-Watchers.
+3. Use the **hunk-filtered `git apply --cached`** discipline from §4/§7: stage
+   only the VAD-only hunks so you never drop MCP-Watchers' isolation hunks or
+   the concurrent session's graphiti refinements. (Read/write the patch as
+   **bytes** — CRLF is the contract, `* -text`.)
+4. `Modules\graphiti\*` must stay 3-way identical (install / VAD / MCP-Watchers)
+   — bring any VAD graphiti refinement into this repo.
+5. `###2.launch_watcher_for_grepai.ps1` is still in VAD and resolves
+   `Modules\watcher_*.ps1` from VAD's folder. Add one candidate path pointing at
+   `J:\audio\MCP-Watchers\Modules\` so there is never a window where neither copy
+   is authoritative (drift-surface note in the daily log).
+6. Re-run the Pester gate (§5) and re-verify the 5 `Modules\watcher_*.ps1` are
+   byte-identical across both repos.
+7. Only then: repoint the Startup shortcut
+   (`...\Startup\VAD-Watchers-###1.lnk` → this repo's launcher) and delete VAD's
+   Tier A copies (`###1...ps1`/`.bat`, `###2.launch_watcher_for_grepai.ps1`, and
+   the 5 `Modules\watcher_*.ps1` if nothing else references them).
+
+Until step 7 is done, treat VAD's copy as **LIVE**: any fix made there must be
+mirrored here, or the two repos will keep drifting.
+
+---
+
+## 10. Current progress snapshot (2026-09-17 22:24)
+
+Captured during a status-review turn. No launcher/code changes were made this
+session — the only file changed in the accompanying commit is this handover doc.
+
+**Epic `mcpw-ybs` — 4 of 5 children DONE.** `.2a`, `.2b`, `.4`, `.5`, `.3` are
+closed and committed (`ef08919`, `e21a4d4`/`bb48c91`, `03770ad`, `4bf97b9`,
+`654ef25`). **`mcpw-ybs.1` is the only OPEN child** — the "last bead" (§7.4). It
+is large: `$scriptDir` is used **53** times vs `$watchersWorkspaceRoot` only 7,
+and `Set-Location -LiteralPath $scriptDir` (line 20) makes the whole operational
+surface resolve against the launcher's own folder. Recommended sequencing (still
+unstarted): do the cheap half first (`-d $watchersWorkspaceRoot` on the four
+grid steps at ~4192/4199/4206/4212), verify, then treat removing `Set-Location`
+as a separate, riskier step.
+
+**`mcpw-qfy` is a SEPARATE bead, not a child of `mcpw-ybs`.** P1 bug: WT panes
+launched by the launcher exit automatically after a few hours (acceptance: panes
+stay open ≥12h and a controller restart must not close existing panes). It was
+moved from the VAD tracker (`vad-zer5`) on 2026-09-17. **Explicitly OUT OF SCOPE
+for this handover** by user instruction 2026-09-17 — do not fold it into
+`mcpw-ybs`.
+
+**Worktree state at commit time — what is deliberately NOT committed:**
+- The only uncommitted *tracked* change is `###1.watchers_for_memtrace_grepai_
+  graphenium_graphify-rs_repowise.ps1`: a 61-line **graphiti glue-resolution**
+  diff (repo copy first, install second; venv python stays install-resident).
+  This belongs to a **concurrent session** and is left **UNSTAGED** — it is not
+  part of this commit and must never be swept into a `git add -A`. Its landing
+  is the precondition for the clean two-session merge check in §7.6.
+- Untracked `.serena/` and `.workbuddy-ai/` are tooling dirs (the latter holds
+  the agent's local memory and MCP config). Not repo work; not committed.
+
+**Remaining work outside `.1` and `qfy`:**
+1. Dead Python contract test `tests/test_launcher_teardown_state_live.py`
+   (broken 3 ways, §7.7) — fix or delete.
+2. Smoke Test B inconclusive — `git` not resolvable under PS 5.1 on that box
+   (§7.5). Re-run after `.1`, since `.3` changes which window opens.
+3. §9 VAD-side porting before retiring VAD's Tier A copies (still LIVE).
+
+**Standing cautions still in force:** count `[+]`/`[-]` markers, never trust the
+runner's `Passed:` summary (§2a); and mutation-check any new gate before
+believing it (§8).

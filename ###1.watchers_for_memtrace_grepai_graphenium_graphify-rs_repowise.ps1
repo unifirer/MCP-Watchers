@@ -3925,7 +3925,16 @@ Write-Host "Press Ctrl+C here to stop everything."
 # "unequal quarters / 3 on bottom" bug came from ONE chained wt ";" call).
 # Directional moves are unambiguous in this fixed sequence: after the -H
 # split there are EXACTLY two rows, so up/down have single valid targets.
-$wtWindowName = "vadwatchers"
+# mcpw-ybs.3: the window name is workspace-keyed, like the lock and the
+# mutexes. It used to be the bare literal 'vadwatchers', so two repositories
+# launched at once shared ONE Windows Terminal window: repo B's new-tab landed
+# in repo A's live grid, and the pre-grid reset could not cleanly separate them
+# (mcpw-ybs.5 stops it from KILLING repo A's panes, but the grids still shared
+# the window and the focus/split anchors). Keying gives each workspace its own
+# window, which is what makes the cross-workspace grid deterministic.
+# The name stays recognisable ('vadwatchers-<key>') rather than a bare hash so
+# an operator can still tell which window belongs to which repo by eye.
+$wtWindowName = "vadwatchers-$workspaceKey"
 $wtOk = $false
 if (Get-Command "wt" -ErrorAction SilentlyContinue) {
     # PRE-GRID RESET: tear down any SURVIVING vadwatchers 2x2 grid from a prior

@@ -33,8 +33,15 @@ Describe 'T8 pane block is fully isolated from the user''s ###1 window' {
         function Extract-LauncherPaneBlock([string]$RRoot) {
             $launcher = Join-Path $RRoot '###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1'
             $s = Get-Content -LiteralPath $launcher -Raw -Encoding UTF8
-            $a = $s.IndexOf('$wtPaneDir = Join-Path $scratchRoot "vad-watchers\panes"')
+            # Anchor on the ASSIGNMENT PREFIX ($sharedPaneDirLiteral), not the
+            # old full literal 'vad-watchers\panes'. mcpw-ybs.2 keyed the pane
+            # dir, so the full literal no longer exists and IndexOf returned -1
+            # -> Substring(-1) threw and this test asserted nothing.
+            $a = $s.IndexOf($sharedPaneDirLiteral)
             $b = $s.IndexOf('# Controller loop (WT panes open)')
+            if ($a -lt 0 -or $b -le $a) {
+                throw "Extract-LauncherPaneBlock: pane block anchors not found (a=$a b=$b). The launcher's wtPaneDir assignment or the controller-loop marker moved."
+            }
             return $s.Substring($a, $b - $a)
         }
 
@@ -47,7 +54,10 @@ Describe 'T8 pane block is fully isolated from the user''s ###1 window' {
         # DESIRED end state (achieved by Task 2): block IS isolated.
         # RED (un-scoped block): these are FALSE -> test FAILS.
         # GREEN (after Task 2): these are TRUE -> test PASSES.
-        $hasSharedName = $isolated.Contains('$wtWindowName = "vadwatchers"')
+        # PREFIX, no closing quote: mcpw-ybs.3 keys the name, so the assignment
+        # is 'vadwatchers-<key>'. A full-literal check would be FALSE even when
+        # isolation FAILED, i.e. it could never fail. The prefix catches both.
+        $hasSharedName = $isolated.Contains('$wtWindowName = "vadwatchers')
         $hasSharedDir  = $isolated.Contains($vadPanes)
         $hasBareMatch  = $isolated.Contains($tailMarker)
         $hasUniqueName = $isolated.Contains('$wtWindowName = "t8_' + $guid + '"')

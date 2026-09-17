@@ -698,14 +698,18 @@ public class Win32Placement {
 
 Write-Host "=== T9: dedicated WT named window ($wtWindowName) is the -w target, no dead vars ==="
 # The equal-quarters fix routes every wt call through a dedicated named window
-# ($wtWindowName = 'vadwatchers'). Anchors are DIRECTIONAL move-focus commands
-# (no numeric pane ids -- see T15); the named window keeps every step scoped to
-# the single 2x2 tab. T9 asserts that named window is PRESENT and wired as the
-# -w target, and that no dead/stale variable ($watchRunning) lingers.
-$hasWtVar = $src -match '\$wtWindowName\s*=\s*"vadwatchers"'
+# ($wtWindowName). mcpw-ybs.3 keys that name per workspace
+# ('vadwatchers-<key>'), so the pattern below matches the PREFIX without the
+# closing quote -- a full-literal match would silently stop matching the moment
+# the name was keyed, and T9 would report "missing" for a present window.
+# Anchors are DIRECTIONAL move-focus commands (no numeric pane ids -- see T15);
+# the named window keeps every step scoped to the single 2x2 tab. T9 asserts
+# that named window is PRESENT and wired as the -w target, and that no
+# dead/stale variable ($watchRunning) lingers.
+$hasWtVar = $src -match '\$wtWindowName\s*=\s*"vadwatchers'
 $hasWtTarget = $src -like "*'-w', `$wtWindowName*"
 $noDeadVar = ($src -split "`n" | Where-Object { $_ -match '\$watchRunning' }).Count -eq 0
-Assert $hasWtVar 'T9 named window variable defined ($wtWindowName="vadwatchers")' ("missing")
+Assert $hasWtVar 'T9 named window variable defined ($wtWindowName="vadwatchers-<key>")' ("missing")
 Assert $hasWtTarget 'T9 named window is the -w target on the new-tab call' ("missing")
 Assert $noDeadVar 'T9 no dead $watchRunning var' ("found")
 # Regression guard for the 0x80070002 banner: the launcher must never pass wt

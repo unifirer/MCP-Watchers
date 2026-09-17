@@ -11,8 +11,20 @@
 function New-IsolatedPaneBlock {
     param([string]$PaneBlock, [string]$Guid)
     $block = $PaneBlock
-    # 1) window name: vadwatchers -> t8_<guid>  (never collides with ###1)
-    $block = $block.Replace('$wtWindowName = "vadwatchers"', '$wtWindowName = "t8_' + $Guid + '"')
+    # 1) window name: vadwatchers-<key> -> t8_<guid>  (never collides with ###1)
+    #    A REGEX, not a literal replace. mcpw-ybs.3 keys the window name per
+    #    workspace, so the assignment is now 'vadwatchers-<key>' and an
+    #    exact-literal search for the old bare name would SILENTLY NO-OP -- T8
+    #    would then drive the USER'S live vadwatchers window. Same guard style
+    #    as transform 2: turn that no-op into a loud failure.
+    $wtNamePattern = '\$wtWindowName\s*=\s*"vadwatchers[^"]*"'
+    $block = [regex]::Replace($block, $wtNamePattern, {
+        param($m)
+        '$wtWindowName = "t8_' + $Guid + '"'
+    })
+    if ($block -notmatch ('\$wtWindowName = "t8_' + [regex]::Escape($Guid) + '"')) {
+        throw "New-IsolatedPaneBlock: the window-name isolation transform did NOT apply (pattern '$wtNamePattern' not found). Refusing to run against the user's live window."
+    }
     # 2) pane dir: <scratch>\vad-watchers\<workspaceKey>\panes -> <scratch>\t8_<guid>\panes
     #    A REGEX, not a literal replace. The launcher inserts a per-workspace key
     #    (beads mcpw-ybs.2) between 'vad-watchers' and 'panes', and that key is

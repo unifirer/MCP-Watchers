@@ -70,7 +70,10 @@ Describe '###1 2x2 pane grid enforces EQUAL quarters' {
 
     It 'resets any SURVIVING vadwatchers 2x2 grid BEFORE building the grid (a pre-grid pane-tailer kill between the window-name assignment and new-tab), so new-tab never inherits a stale 2nd tab that makes focus-pane -t mis-resolve and collapse two quarters into one half -- and so teardown only closes the tab(s) it opened, not the whole window' {
         $code = Get-LauncherCode | Out-String
-        $winNameIdx = $code.IndexOf('$wtWindowName = "vadwatchers"')
+        # Prefix, no closing quote: mcpw-ybs.3 keys the name per workspace
+        # ('vadwatchers-<key>'), so the old full literal no longer exists and
+        # IndexOf would return -1 for a window name that IS defined.
+        $winNameIdx = $code.IndexOf('$wtWindowName = "vadwatchers')
         $newTabIdx  = $code.IndexOf("'new-tab'")
         $winNameIdx -gt -1      | Should -Be $true
         $newTabIdx  -gt -1      | Should -Be $true

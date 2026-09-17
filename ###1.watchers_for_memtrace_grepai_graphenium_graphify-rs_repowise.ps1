@@ -789,10 +789,12 @@ function Test-GrepaiIndexHealth {
     # Port-reservation fix: ensure grepai's Ollama target is reachable & not
     # reserved; sets OLLAMA_HOST (session env var read by the auto-start below).
     $ghDir = Join-Path $scriptDir '.grepai'
-    if (Test-Path $ghDir) { Enable-GrepaiOllamaPortFix | Out-Null }
     $ollamaUp = Test-OllamaRunning
     if (-not $ollamaUp) {
-        Write-Warning "Ollama is not running in the background. grepai needs it for nomic-embed-text embeddings; the index will not update until Ollama is started."
+        # Accurate: Ollama is NOT up yet, but it WILL be auto-started by the
+        # background readiness gate launched further below (VAD-kesg, 2026-09-06).
+        # This health-check block runs first and must not duplicate that start.
+        Write-Host "Ollama is not yet running in the background; it will be auto-started in the readiness gate below."
     } else {
         $ollamaTarget = Get-GrepaiOllamaTarget
         Write-Host "Ollama is running in the background (port $ollamaTarget) - grepai embeddings available."

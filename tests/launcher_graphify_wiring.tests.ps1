@@ -6,7 +6,7 @@ Import-Module Pester -RequiredVersion 3.4.0 -Force
 # launch the bare `graphify-rs watch` subcommand, and must now launch the
 # ignore-aware wrapper with -WatchMode (keeping the literal "watch" token in
 # the CommandLine so the existing teardown -match 'watch' still kills it).
-$launcher = 'J:\audio\VAD\###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1'
+$launcher = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')).Path '###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1'
 
 Describe 'graphify-rs launch wiring' {
     It 'replaced the bare graphify-rs watch with the ignore-aware wrapper (no stale # OLD comment)' {

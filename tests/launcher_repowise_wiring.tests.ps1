@@ -4,7 +4,7 @@
 # Source-wiring assertions that the repowise pane now (a) carries -RepoRoot so
 # the resolver has a repo to diff, and (b) the tailer calls Show-ChangedFiles
 # label-aware (unconditionally) instead of the old graphify-rs-only branch.
-$launcher = 'J:\audio\VAD\###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1'
+$launcher = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')).Path '###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1'
 
 Describe 'repowise pane wiring' {
     It 'repowise pane call now passes -RepoRoot $scriptDir' {

@@ -1,6 +1,6 @@
 # tests/launcher_proxy_wiring.tests.ps1 — Pester 3.4.0
 Import-Module Pester -RequiredVersion 3.4.0 -Force -ErrorAction SilentlyContinue
-$launcher = 'J:\audio\VAD\###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1'
+$launcher = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')).Path '###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1'
 Describe 'fallback proxy wiring' {
     It 'Invoke-GmSemanticBuild uses proxy api-base (11436) not NOUS_BASE_URL' {
         $c = Get-Content -LiteralPath $launcher -Raw

@@ -25,6 +25,7 @@ $script:WatcherSweepPatterns = @(
     @{ Name = 'cerememory.exe';  Pattern = 'cerememory'; Persistent = $true },     # vad-10m.3: backend singleton (:8420), token-scoped
     @{ Name = 'python.exe';      Pattern = 'mcp_agent_mail'; Persistent = $true }, # vad-10m.3: mail singleton (:8765), token-scoped
     @{ Name = 'python.exe';      Pattern = 'embed_server'; Persistent = $true }, # graphiti embed proxy (:8003), token-scoped
+    @{ Name = 'python.exe';      Pattern = 'mcp_proxy'; Persistent = $true },   # graphiti MCP proxy (:8002), token-scoped
     @{ Name = 'pwsh.exe';        Pattern = 'vad-grepai-sup' },
     @{ Name = 'powershell.exe';  Pattern = 'vad-grepai-sup' },
     @{ Name = 'powershell.exe';  Pattern = 'panes\tail_' },      # WT pane tailers

@@ -7,8 +7,8 @@
 # line crashes Microsoft.Terminal.Control.dll (access violation 0xc0000005 /
 # 0xc000041d at offset 0x10494) and takes down the whole 4-pane window. CleanLogLine
 # must cap every emitted line to a safe length, with a visible truncation marker.
-$launcher = 'J:\audio\VAD\###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1'
-$paneModule = 'J:\audio\VAD\Modules\watcher_pane_scripts.ps1'
+$launcher = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')).Path '###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1'
+$paneModule = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')).Path 'Modules\watcher_pane_scripts.ps1'
 if (-not $env:VAD_WORKSPACE_ROOT) { $env:VAD_WORKSPACE_ROOT = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path }
 # Pin any installed Pester 3.x explicitly BEFORE anything else: some hosts leak
 # pwsh7 module dirs onto PSModulePath, and 5.1 auto-load then picks Pester 6.x,

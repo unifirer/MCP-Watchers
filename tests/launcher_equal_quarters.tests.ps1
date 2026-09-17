@@ -5,7 +5,7 @@ Import-Module Pester -ErrorAction Stop
 # Comments are stripped before assertions so the documented "-w 0 is bad" note
 # in the comment block does not trip the "never -w 0" guard.
 
-$launcher = 'J:\audio\VAD\###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1'
+$launcher = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')).Path '###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1'
 
 function Get-LauncherCode {
     (Get-Content -LiteralPath $launcher) |

@@ -18,10 +18,16 @@ Describe 'backend sweep safety (vad-10m.3)' {
     It 'matches real backend command lines against their own patterns' {
         . $patternsModule
         $cerememory = @($script:WatcherSweepPatterns | Where-Object { $_.Name -eq 'cerememory.exe' })[0]
-        $mail = @($script:WatcherSweepPatterns | Where-Object { $_.Name -eq 'python.exe' })[0]
+        # Select by Pattern, not by index: python.exe now carries several
+        # token-scoped entries (mail :8765, embed :8003, mcp_proxy :8002) and
+        # index order is not part of the contract.
+        $mail = @($script:WatcherSweepPatterns | Where-Object { $_.Name -eq 'python.exe' -and $_.Pattern -eq 'mcp_agent_mail' })[0]
         $claude = @($script:WatcherSweepPatterns | Where-Object { $_.Name -eq 'node.exe' })[0]
         @($script:WatcherSweepPatterns | Where-Object { $_.Name -eq 'cerememory.exe' }).Count | Should Be 1
-        @($script:WatcherSweepPatterns | Where-Object { $_.Name -eq 'python.exe' }).Count | Should Be 1
+        # Each token-scoped python.exe pattern must be declared exactly once.
+        foreach ($pat in @('mcp_agent_mail', 'embed_server', 'mcp_proxy')) {
+            @($script:WatcherSweepPatterns | Where-Object { $_.Name -eq 'python.exe' -and $_.Pattern -eq $pat }).Count | Should Be 1
+        }
         $cerememoryCmd = 'C:\ProgramData\cerememory\cerememory.exe serve --config C:\ProgramData\cerememory\cerememory.toml'
         $mailCmd = 'C:\Python311\python.exe C:\Users\yuni\.local\mcp-agent-mail\mcp_agent_mail\server.py --port 8765'
         $claudeCmd = 'C:\Program Files\nodejs\node.exe C:\npm-global\node_modules\claude-mcp-server\dist\cli.js --port 8080'
@@ -34,7 +40,13 @@ Describe 'backend sweep safety (vad-10m.3)' {
         . $patternsModule
         $backendEntries = @($script:WatcherSweepPatterns | Where-Object {
             $_.Name -eq 'cerememory.exe' -or $_.Name -eq 'python.exe' -or $_.Name -eq 'node.exe' })
-        $backendEntries.Count | Should Be 3
+        # Do not pin the entry count: new token-scoped backends get added over
+        # time (mail :8765, embed :8003, mcp_proxy :8002). What matters is that
+        # every backend image name is represented, so the decoy loop below is
+        # never vacuously true.
+        foreach ($name in @('cerememory.exe', 'python.exe', 'node.exe')) {
+            @($backendEntries | Where-Object { $_.Name -eq $name }).Count | Should BeGreaterThan 0
+        }
         $pythonDecoy = 'C:\tools\python.exe worker.py'
         $nodeDecoy = 'C:\app\node.exe server.js'
         foreach ($entry in $backendEntries) {

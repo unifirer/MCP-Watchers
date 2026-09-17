@@ -4,21 +4,26 @@ if (-not $scriptDir) {
     $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 }
 
-# --- Workspace identity (beads mcpw-ybs.2) -----------------------------------
-# Capture the INVOCATION directory BEFORE the Set-Location below. That directory
-# is the repository the user meant, and it keys every machine-global resource
-# this launcher owns: the teardown state file and the pane + log scratch dirs.
-# Without this key a launcher started for repo B reads repo A's teardown state
-# and kills repo A's watchers.
+# --- Workspace identity (beads mcpw-ybs.2, mcpw-ybs.1) ------------------------
+# Capture the INVOCATION directory. That directory is the repository the user
+# meant, and it keys every machine-global resource this launcher owns: the
+# teardown state file and the pane + log scratch dirs. Without this key a
+# launcher started for repo B reads repo A's teardown state and kills repo A's
+# watchers.
 # $scriptDir stays a SEPARATE concept: it locates the Modules\watcher_*.ps1
 # siblings and must never become the watched workspace.
+# mcpw-ybs.1: the launcher NO LONGER changes directory. It used to Set-Location
+# into $scriptDir at startup, so every pane, log path and indexer resolved
+# against the launcher folder instead of the caller's repository. The panes now
+# open at $watchersWorkspaceRoot (the grid steps pass it as -d) and the tailers
+# work there (-RepoRoot). Module loads keep using absolute Join-Path $scriptDir
+# entries, so they are unaffected.
 $watchersWorkspaceRoot = (Get-Location).ProviderPath
 if (-not $watchersWorkspaceRoot) { $watchersWorkspaceRoot = (Get-Location).Path }
 if ($watchersWorkspaceRoot) { $watchersWorkspaceRoot = $watchersWorkspaceRoot.TrimEnd('\', '/') }
-
-if ($scriptDir) {
-    Set-Location -LiteralPath $scriptDir
-}
+# An empty root would make Join-Path throw and silently un-key the guards
+# (same lesson as mcpw-ybs.4), so degrade visibly to the launcher folder.
+if (-not $watchersWorkspaceRoot) { $watchersWorkspaceRoot = $scriptDir }
 
 # Workspace key derivation (beads mcpw-ybs.2). Dot-sourced BEFORE the teardown
 # module so Get-WatchersWorkspaceKey is defined for every consumer. The key comes
@@ -3904,10 +3909,10 @@ if (-not $logFile) {
     if ($lfLate) { $logFile = $lfLate.FullName }
 }
 if (-not $logFile) { $logFile = $grepaiLaunchLog }
-$tailGrepai      = New-WatcherPaneScript -Label "grepai"      -LogPath $logFile            -ErrPath ""                 -RepoRoot $scriptDir -HeartbeatPath (Join-Path $hbDir "grepai.hb") -SupervisorLog $supSupervisorLog -LaunchLog $grepaiLaunchLog -LaunchErr $grepaiLaunchErr -LockFile $lockFile
-$tailGraphenium  = New-WatcherPaneScript -Label "graphenium"  -LogPath $gmLog              -ErrPath "$gmLog.err"      -RepoRoot $scriptDir -HeartbeatPath (Join-Path $hbDir "graphenium.hb")  -WatchPid $gmWatchPid -LockFile $lockFile
-$tailGraphifyRs  = New-WatcherPaneScript -Label "graphify-rs" -LogPath $graphifyLog        -ErrPath "$graphifyLog.err" -RepoRoot $scriptDir -HeartbeatPath (Join-Path $hbDir "graphify-rs.hb") -WatchPid $graphifyWatchPid
-$tailRepowise    = New-WatcherPaneScript -Label "repowise"    -LogPath $repowiseLog        -ErrPath "$repowiseLog.err" -RepoRoot $scriptDir -HeartbeatPath (Join-Path $hbDir "repowise.hb")   -WatchPid $repowiseWatchPid
+$tailGrepai      = New-WatcherPaneScript -Label "grepai"      -LogPath $logFile            -ErrPath ""                 -RepoRoot $watchersWorkspaceRoot -HeartbeatPath (Join-Path $hbDir "grepai.hb") -SupervisorLog $supSupervisorLog -LaunchLog $grepaiLaunchLog -LaunchErr $grepaiLaunchErr -LockFile $lockFile
+$tailGraphenium  = New-WatcherPaneScript -Label "graphenium"  -LogPath $gmLog              -ErrPath "$gmLog.err"      -RepoRoot $watchersWorkspaceRoot -HeartbeatPath (Join-Path $hbDir "graphenium.hb")  -WatchPid $gmWatchPid -LockFile $lockFile
+$tailGraphifyRs  = New-WatcherPaneScript -Label "graphify-rs" -LogPath $graphifyLog        -ErrPath "$graphifyLog.err" -RepoRoot $watchersWorkspaceRoot -HeartbeatPath (Join-Path $hbDir "graphify-rs.hb") -WatchPid $graphifyWatchPid
+$tailRepowise    = New-WatcherPaneScript -Label "repowise"    -LogPath $repowiseLog        -ErrPath "$repowiseLog.err" -RepoRoot $watchersWorkspaceRoot -HeartbeatPath (Join-Path $hbDir "repowise.hb")   -WatchPid $repowiseWatchPid
 # Collect the heartbeat paths so the controller loop can watch any of them.
 $script:hbPaths = @(
     (Join-Path $hbDir "grepai.hb"),
@@ -3941,7 +3946,7 @@ Write-Host "Press Ctrl+C here to stop everything."
 #                         IDs of the 2x2 from every other tab. (This is the same
 #                         root cause the 2026-07-10 wt-2x2-grid regression fix hit,
 #                         just via the -w routing rather than the missing -w.)
-#   - "-d ."        every subcommand opens its pane in the current directory
+#   - "-d <ws>"     every subcommand opens its pane at $watchersWorkspaceRoot (mcpw-ybs.1)
 #   - ";"           chain ALL subcommands into a SINGLE wt invocation
 #   - execute immediately, no preview/confirmation
 #
@@ -4204,31 +4209,31 @@ if (Get-Command "wt" -ErrorAction SilentlyContinue) {
         # it (it never writes the file), and passing it is exactly what triggers
         # the 0x80070002 mis-parse where WT treats the flag's .txt value as the
         # program to launch in the new pane. Without it the command is the clean,
-        # universally-supported `new-tab -d . --title grepai powershell -NoProfile
+        # universally-supported `new-tab -d <workspaceRoot> --title grepai powershell -NoProfile
         # -File <tailer>`. Teardown therefore always uses the close-window
         # fallback (see trap / controller loop), which is already implemented for
         # the $wtTabId -eq $null case. See change log 2026-07-18 / 2026-07-19.
-        Build-GridStep @('-w', $wtWindowName, 'new-tab', '-d', '.', '--title', 'grepai', 'powershell', '-NoProfile', '-File', $tailGrepai) 1
+        Build-GridStep @('-w', $wtWindowName, 'new-tab', '-d', $watchersWorkspaceRoot, '--title', 'grepai', 'powershell', '-NoProfile', '-File', $tailGrepai) 1
         # $wtTabId stays $null: this WT build does not support --tabIdFile, so we
         # rely on the close-window fallback for teardown (already handled in the
         # trap / controller loop for the $null case).
         $script:wtTabId = $null
         if (Test-Path -LiteralPath "variable:wtTabIdFile") { Remove-Variable -Name wtTabIdFile -Scope Script -ErrorAction SilentlyContinue }
         # pane 1 (BL): horizontal split below pane 0
-        Build-GridStep @('-w', $wtWindowName, 'split-pane', '-H', '-s', '0.5', '-d', '.', '--title', 'graphify-rs', 'powershell', '-NoProfile', '-File', $tailGraphifyRs) 2
+        Build-GridStep @('-w', $wtWindowName, 'split-pane', '-H', '-s', '0.5', '-d', $watchersWorkspaceRoot, '--title', 'graphify-rs', 'powershell', '-NoProfile', '-File', $tailGraphifyRs) 2
         # focus the TOP row before its vertical split. Directional move (no pane
         # id): after the -H split exactly two rows exist, so "up" uniquely
         # selects the top (grepai) pane. A numeric focus-pane -t id went stale
         # across rebuilds here and mis-anchored the following -V split.
         Build-GridStep @('-w', $wtWindowName, 'move-focus', 'up') 2
         # pane 2 (TR): vertical split to the right of pane 0
-        Build-GridStep @('-w', $wtWindowName, 'split-pane', '-V', '-s', '0.5', '-d', '.', '--title', 'graphenium', 'powershell', '-NoProfile', '-File', $tailGraphenium) 3
+        Build-GridStep @('-w', $wtWindowName, 'split-pane', '-V', '-s', '0.5', '-d', $watchersWorkspaceRoot, '--title', 'graphenium', 'powershell', '-NoProfile', '-File', $tailGraphenium) 3
         # focus the BOTTOM row before its vertical split. Focus currently sits on
         # the just-created TR pane; "down" uniquely selects the full-width bottom
         # (graphify-rs) pane, so the final -V halves the bottom row.
         Build-GridStep @('-w', $wtWindowName, 'move-focus', 'down') 3
         # pane 3 (BR): vertical split to the right of pane 1
-        Build-GridStep @('-w', $wtWindowName, 'split-pane', '-V', '-s', '0.5', '-d', '.', '--title', 'repowise', 'powershell', '-NoProfile', '-File', $tailRepowise) 4
+        Build-GridStep @('-w', $wtWindowName, 'split-pane', '-V', '-s', '0.5', '-d', $watchersWorkspaceRoot, '--title', 'repowise', 'powershell', '-NoProfile', '-File', $tailRepowise) 4
         $wtOk = $true
         # Self-hide the controller console. The 2x2 Windows Terminal window
         # (vadwatchers) is already open and is where the user reads the watcher

@@ -89,7 +89,7 @@ Describe 'pane grid wiring' {
         # and -LogPath (e.g. line 772 "...-Label \"graphenium\"  -LogPath $gmLog"),
         # so the assertions use \s+ rather than a single literal space.
         $c | Should Match 'New-WatcherPaneScript -Label "graphenium"\s+-LogPath \$gmLog'
-        $c | Should Match 'New-WatcherPaneScript -Label "graphify-rs"\s+-LogPath \$graphifyLog\s+-ErrPath "\$graphifyLog\.err"\s+-RepoRoot \$scriptDir'
+        $c | Should Match 'New-WatcherPaneScript -Label "graphify-rs"\s+-LogPath \$graphifyLog\s+-ErrPath "\$graphifyLog\.err"\s+-RepoRoot \$watchersWorkspaceRoot'
         $c | Should Match 'New-WatcherPaneScript -Label "repowise"\s+-LogPath \$repowiseLog'
         $c | Should Match 'New-WatcherPaneScript -Label "grepai"\s+-LogPath \$logFile\s+-ErrPath ""'
     }

@@ -7,9 +7,9 @@
 $launcher = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')).Path '###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1'
 
 Describe 'repowise pane wiring' {
-    It 'repowise pane call now passes -RepoRoot $scriptDir' {
+    It 'repowise pane call now passes -RepoRoot $watchersWorkspaceRoot (mcpw-ybs.1)' {
         $c = Get-Content -LiteralPath $launcher
-        ($c | Where-Object { $_ -match '-Label "repowise"' -and $_ -match '-RepoRoot \$scriptDir' }) | Should Not BeNullOrEmpty
+        ($c | Where-Object { $_ -match '-Label "repowise"' -and $_ -match '-RepoRoot \$watchersWorkspaceRoot' }) | Should Not BeNullOrEmpty
     }
     It 'tailer calls Show-ChangedFiles label-aware (unconditional)' {
         $c = Get-Content -LiteralPath $launcher -Raw

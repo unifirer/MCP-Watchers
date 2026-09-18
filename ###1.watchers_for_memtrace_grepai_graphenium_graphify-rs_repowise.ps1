@@ -2065,6 +2065,46 @@ function Test-LlmProxyReady {
     }
 }
 
+# --- Codegraph prerequisite probe ------------------------------------------
+# `codegraph build` creates .codegraph/graph.db ONCE; `codegraph watch` only
+# keeps that database fresh. Every query works without the watcher - the data
+# just goes stale. This probe is therefore a prerequisite check, not a
+# hard dependency: on any miss it warns and returns $false so the caller
+# skips the watcher and the rest of the launcher keeps running.
+function Test-CodegraphReady {
+    $cg = Get-Command 'codegraph.exe' -ErrorAction SilentlyContinue
+    if (-not $cg) { $cg = Get-Command 'codegraph' -ErrorAction SilentlyContinue }
+    if (-not $cg) {
+        Write-Warning "codegraph not found on PATH. Skipping codegraph watch (run 'npm install -g @optave/codegraph' and 'codegraph build' to enable)."
+        return $false
+    }
+    $db = Join-Path $watchersWorkspaceRoot '.codegraph\graph.db'
+    if (-not (Test-Path -LiteralPath $db)) {
+        Write-Host "codegraph graph.db missing - running one-time 'codegraph build'..."
+        try {
+            $bl = Join-Path $logsDir 'codegraph-build.log'
+            $bp = Start-Process -FilePath $cg.Source -ArgumentList @('build', '.') -WorkingDirectory $watchersWorkspaceRoot -WindowStyle Hidden -RedirectStandardOutput $bl -RedirectStandardError "$bl.err" -PassThru
+            if ($bp) { $bp.WaitForExit(120000) | Out-Null }
+        } catch {
+            Write-Warning ("codegraph build failed: " + $_.Exception.Message + ". Continuing without codegraph watch.")
+            return $false
+        }
+        if (-not (Test-Path -LiteralPath $db)) {
+            Write-Warning "codegraph build did not produce .codegraph/graph.db. Continuing without codegraph watch."
+            return $false
+        }
+    }
+    # Upstream caveats: #979 (incremental update leaked duplicate edges per
+    # run) and #984/#987 (`watch --db/-d` missing in older builds). Both are
+    # non-blocking; the version line tells a long session when to prefer a
+    # periodic full `codegraph build` over the incremental watcher.
+    try {
+        $v = & $cg.Source --version 2>$null | Out-String
+        Write-Host ("codegraph ready (" + $v.Trim() + "). Watch is opt-in freshness only.")
+    } catch { Write-Host "codegraph ready. Watch is opt-in freshness only." }
+    return $true
+}
+
 # --- Graphenium LIVE REBUILD (inline, file-change driven) -----------------
 # CONSOLIDATED from the now-deleted ###5 semantic-build script
 # (user decision 2026-08-27). The name still says "Semantic" for historical

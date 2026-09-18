@@ -111,6 +111,14 @@ Complete this cognitive process before taking any action.
 - Git Rules: Commit AGENTS.md and words.ahk directly. Use stacked flags: git
   commit -m "subject" -m "body".
 
+- Branch Names on J: Use flat names. A slash-named branch is silently
+  discarded on this volume: `git branch a/b HEAD` exits 0, prints nothing,
+  writes .git/logs/refs/heads/a/b, and never creates .git/refs/heads/a/.
+  The branch then does not exist. This is mcpw-sr4. It is volume-level, not
+  a git setting. Use fixtests-20260918-105800, not
+  fix-tests/20260918-105800. Create branches with
+  dev_tools\New-VerifiedGitBranch.ps1 so a missing ref fails loudly.
+
 - Testing: Run tests minimized or headless. Verify a file only once per
   session. Test all bug fixes. Add regression tests.
 

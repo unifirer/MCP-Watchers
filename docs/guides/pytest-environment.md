@@ -194,10 +194,20 @@ swallowed), while default output has no `[+]` at all but does print
 `Tests Passed: N`. The sweeper takes the max of the two sources.
 
 For the Pester version it also mostly keeps its hands off. If a suite contains
-`Import-Module Pester`, the sweeper just runs the file and lets it choose —
-forcing a version from outside actively breaks suites that do a bare import and
-expect the newest. Only when a suite does NOT import Pester does the sweeper
-pick, by sniffing for `Should -` (6.1.0) versus the legacy idiom (3.4.0).
+`Import-Module Pester`, the sweeper just runs the file and lets it choose.
+Only when a suite does NOT import Pester does the sweeper pick, by sniffing for
+`Should -` (6.1.0) versus the legacy idiom (3.4.0).
+
+Why it will not wrap a self-importing suite: wrapping means driving the file
+through an outer `Invoke-Pester`, which double-runs a self-invoking suite.
+`launcher_equal_quarters` passes 15 when executed directly and reports 15
+failures when wrapped — identical Pester version, identical machine. The
+version is not what broke it; the wrapping is.
+
+**Pester 6.0.0 on this box is a broken install** — any suite run under it dies
+in discovery (`Discovery in ...tests.ps1 failed with:`). It exits 0 with
+"Passed: 0", so a green result under 6.0.0 means nothing was tested. Use 6.1.0
+or 3.4.0.
 
 `scan_stale_anchors.py` finds positive anchors (`IndexOf` / `Contains` /
 `-match` / `Should Match`) whose literal no longer appears in the launcher or
@@ -205,12 +215,25 @@ pick, by sniffing for `Should -` (6.1.0) versus the legacy idiom (3.4.0).
 is the passing state. It reports leads, not verdicts — confirm a suite actually
 fails before changing anything.
 
-`dev_tools/run_pester_suite.py` runs one suite and takes an optional version
-argument; without it, it sniffs for `Should -` and picks 6.1.0, else 3.4.0.
-Prefer it over the sweeper when iterating on a single file. Older single-suite
-runners (`run_pester.py`, `run_pester6.py`, `run_launcher_suite.py`,
-`ps_query.py`) were left in `temp/`, which is gitignored and wiped — recreate
-from `run_pester_suite.py` if you need them again.
+`dev_tools/run_pester_suite.py` runs one suite and prints a VERDICT line.
+Prefer it over the sweeper when iterating on a single file:
+
+```bash
+python dev_tools/run_pester_suite.py tests/launcher_watcher_teardown.tests.ps1
+python dev_tools/run_pester_suite.py tests/t8_isolation.tests.ps1 6.1.0   # override
+```
+
+It **imports its version and parsing logic from `sweep_pester.py`**, so the two
+tools cannot disagree. They briefly did: the runner reported
+`launcher_equal_quarters` as 15 failed while the sweeper reported 15 passed.
+The suite is green; the 15 failures came from wrapping a self-invoking suite in
+an outer `Invoke-Pester`, which double-runs it — same Pester version, same box.
+
+Passing a version explicitly is honoured but prints a warning when the file
+imports Pester itself, because that combination is what manufactures false
+failures. Older single-suite runners (`run_pester.py`, `run_pester6.py`,
+`run_launcher_suite.py`, `ps_query.py`) were left in `temp/`, which is
+gitignored and wiped — recreate from `run_pester_suite.py` if needed.
 
 Current baseline: 35 suites, 234 passed, 2 failed. Both failures are the
 `mcpw-lqy` teardown suites, which are red by design pending a decision — see

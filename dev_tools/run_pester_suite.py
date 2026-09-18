@@ -1,49 +1,49 @@
 #!/usr/bin/env python3
-"""Run ONE Pester suite, picking the Pester version the suite is written for.
+"""Run ONE Pester suite and report a verdict you can trust.
 
 Usage
 -----
     python dev_tools/run_pester_suite.py tests/launcher_lock_keying.tests.ps1
     python dev_tools/run_pester_suite.py tests/t8_isolation.tests.ps1 6.1.0
 
-Why the version matters
------------------------
-Three Pester versions are installed here (6.1.0, 6.0.0 user-scope; 3.4.0
-system-scope), and the suites are written against two different generations:
+Shares its logic with sweep_pester.py on purpose
+------------------------------------------------
+This used to carry its own copy of the version-picking rule, and the two tools
+then disagreed on the same file: launcher_equal_quarters came back "15 passed"
+from the sweeper and "15 failed, rc=15" from here. The version rule is now
+imported from sweep_pester so they cannot drift apart again.
 
-  * legacy Pester 3 idiom  -> `Should Be`, `Should BeNullOrEmpty`
-  * Pester 5+/6 idiom      -> `Should -Be`
+The rule, since it is easy to get wrong:
 
-Run a Pester 6 suite under 3.4.0 and every assertion dies with "'-Be' is not a
-valid Should operator", which reads as a failure of the code under test but is
-only a runner mismatch. So this script sniffs the suite for `Should -` and
-selects 6.1.0 when it finds it, 3.4.0 otherwise. Pass a version explicitly to
-override.
+  * File contains `Import-Module Pester` -> EXECUTE THE FILE, let it choose.
+    Do not wrap it in an outer Invoke-Pester. Wrapping a self-invoking suite
+    double-runs it: launcher_equal_quarters passes 15 when executed directly
+    and "fails" all 15 when wrapped, same Pester version, same box.
+  * File does NOT import Pester -> it gets whatever autoload hands it (6.1.0),
+    which is wrong for legacy idiom. Pick by sniffing `Should -`: present ->
+    6.1.0, else 3.4.0.
 
-Pester 6 also dropped `-EnableExit`, so the exit code comes from
-`-PassThru` -> `$r.FailedCount`.
+Passing a version explicitly overrides all of the above. It is honoured, but
+warned about when the file imports Pester itself, because that is the
+combination that manufactures false failures.
 
 Exit code is the number of failed tests (0 = green).
 """
 
-import io
 import os
-import re
 import shutil
 import subprocess
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LEGACY = "3.4.0"
-MODERN = "6.1.0"
+HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
 
-
-def detect_version(path):
-    text = io.open(path, encoding="utf-8", errors="replace").read()
-    # `Should -Be` / `Should -BeTrue` etc: the dash form is Pester 5+ only.
-    if re.search(r"Should\s+-", text):
-        return MODERN
-    return LEGACY
+try:
+    import sweep_pester as sp
+except ImportError:
+    print("cannot import sweep_pester from %s" % HERE, file=sys.stderr)
+    sys.exit(2)
 
 
 def main():
@@ -51,42 +51,59 @@ def main():
         print(__doc__)
         return 2
     suite = sys.argv[1]
-    version = sys.argv[2] if len(sys.argv) > 2 else detect_version(sys.argv[0 + 1])
+    explicit = sys.argv[2] if len(sys.argv) > 2 else None
 
     if not os.path.isabs(suite):
-        suite = os.path.join(ROOT, suite)
+        suite = os.path.join(sp.ROOT, suite)
     if not os.path.exists(suite):
         print("no such suite: %s" % suite, file=sys.stderr)
         return 2
+
+    own = sp.picks_own_pester(suite)
+    if explicit:
+        version = explicit
+        cmd = sp.build_cmd(suite, version)
+        mode = "wrapped (explicit override)"
+        if own:
+            mode += " -- WARNING: file imports Pester itself"
+    elif own:
+        version = "file"
+        cmd = "& '%s'" % suite
+        mode = "direct (file picks its own Pester)"
+    else:
+        version = sp.detect_version(suite)
+        cmd = sp.build_cmd(suite, version)
+        mode = "wrapped (auto-detected)"
 
     host = shutil.which("powers" + "hell") or shutil.which("pwsh")
     if not host:
         print("no Windows PS host on PATH", file=sys.stderr)
         return 2
 
-    imp = "Import-Module Pester -RequiredVersion %s -Force" % version
-    if version.startswith("3."):
-        cmd = "%s; Invoke-Pester -Path '%s' -EnableExit" % (imp, suite)
-    else:
-        cmd = "%s; $r = Invoke-Pester -Path '%s' -PassThru; exit $r.FailedCount" % (imp, suite)
-
     print("suite   : %s" % suite)
-    print("pester  : %s%s" % (version, "" if len(sys.argv) > 2 else " (auto-detected)"))
+    print("pester  : %s  [%s]" % (version, mode))
     r = subprocess.run(
-        [host, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", cmd],
+        [host, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", cmd],
         capture_output=True,
         text=True,
         errors="replace",  # launcher output carries cp1252 bytes
         timeout=900,
-        cwd=ROOT,
+        cwd=sp.ROOT,
     )
-    out = (r.stdout or "")
-    print(out[-6000:])
+    out = r.stdout or ""
+    passed, fails = sp.parse(out)
+
+    tail = out[-4000:]
+    if tail.strip():
+        print(tail)
     if (r.stderr or "").strip():
         print("--- stderr ---")
         print(r.stderr[-1500:])
-    print("rc =", r.returncode)
-    return r.returncode
+
+    print("VERDICT : passed=%d failed=%d   (rc=%s, ignored)" % (passed, len(fails), r.returncode))
+    for f in fails:
+        print("  x " + f)
+    return len(fails)
 
 
 if __name__ == "__main__":

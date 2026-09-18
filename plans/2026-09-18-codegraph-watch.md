@@ -357,3 +357,61 @@ git commit -m "test: lock codegraph watch contract and document opt-in model" -m
 - [x] Spec coverage: `build`-once prerequisite (Task 1) / `watch` debounced incremental freshness (Task 2) / queries work stale without watcher + manual `update`/`build` fallback (Task 2 warnings + Task 4 README) / `watch --db` bug avoided via `WorkingDirectory` (Task 2) / duplicate-edge risk surfaced as version note + periodic-`build` guidance (Task 1 + README) - every spec sentence has a task.
 - [x] Placeholder scan: no TBD/TODO/appropriate-handling/similar-to phrasing; every code step has literal code, every test step has a literal command and expected string.
 - [x] Type consistency: `Test-CodegraphReady` (bool, no args) / `$script:codegraphProc` (Process-or-null) / `$codegraphLog`/`$codegraphExe` (strings) / sweep entry `@{Name='codegraph.exe'; Pattern='watch'}` named identically in Tasks 2-4; `New-WatcherPaneScript -Label "codegraph"` consistently ABSENT by design.
+
+---
+
+## Outcome (executed 2026-09-19)
+
+All four tasks landed, plus two commits the plan did not anticipate. The plan's
+spec was written assuming a `codegraph` CLI with `build`/`watch` subcommands.
+That was **not true when the plan was written** and only became true partway
+through execution, so the task list above describes the intent, not the final
+shape. What actually shipped:
+
+| commit | what |
+|---|---|
+| `70a004b` | T1 `Test-CodegraphReady` |
+| `97313cf` | T2 launch via `Start-WatcherDetached` (+ `-WorkingDirectory`) |
+| `9c370cc` | T3 sweep entry |
+| `a82fef3` | T4 contract asserts + README |
+| `8f6ce56` | checkboxes ticked |
+| `fc3e695` | shim-aware launch + watch-verb gate |
+| `f403c7f` | npm-shim branch + `node.exe` sweep token |
+
+### The part the plan got wrong
+
+`codegraph` is not a Windows executable. Two install shapes exist and both are
+shell shims, which `Start-WatcherDetached` cannot spawn directly
+(`UseShellExecute = $false` needs a PE image):
+
+- **declick adapter** - `node <...>\declick\bin\run.mjs codegraph ...`. Exposes
+  35 MCP query verbs and **none** of `watch`/`build`/`update`. `codegraph watch`
+  returned `unknown verb watch` and exited 2, so the verb gate refuses it.
+- **npm `@optave/codegraph` 3.17.0** - `"%_prog%"  "%dp0%\node_modules\@optave\codegraph\dist\cli.js" %*`.
+  This is the real CLI and does have `build`/`watch`/`stats`/`embed`.
+
+`Resolve-CodegraphLaunch` parses both and re-expresses them as
+`node.exe <entrypoint> [adapter] <args>`, the same node+entrypoint idiom the
+launcher already uses for memtrace. npm-global is PATH 58 and declick's bin is
+95, so npm wins on a box that has both.
+
+Two traps, both verified live rather than assumed:
+
+- The sweep token is the two-word `codegraph\dist\cli.js watch`. A bare
+  `codegraph` token is unsafe: the codegraph MCP backend runs the same
+  `cli.js` with the `mcp` verb and would be swept.
+- `ArgumentList` leaves space-free arguments **unquoted**, so the command line
+  really is `"...node.exe" J:\...\cli.js watch <root>` - that is why a token
+  spanning the argument boundary matches. Confirmed against a live process.
+
+The watch target is the **absolute** workspace root, not `"."` as the plan
+specified: the command line then carries the root, so
+`Stop-PriorLauncherInstances` can attribute a stale watcher to this workspace
+before killing it.
+
+### Verification
+
+Full Pester sweep **252 passed / 0 failed, 0 of 37 suites failing**. Canonical
+gate `run_launcher_tests.ps1 -SkipSmoke`: PASS=152 FAIL=0, exit 0. The watcher
+was spawned for real and stayed alive (the declick shape died in under a
+second), and the sweep matched its live command line.

@@ -94,6 +94,49 @@ Describe 'Stop-AllWatchers sweep' {
             if ($proc) { try { Get-Process -Id $proc.Id -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue } catch {} }
         }
     }
+
+    It 'does NOT kill a pane-tailer that is outside the PID scope (the safety property)' {
+        . $module
+        # Complement to the two tests above, and the property the PID scoping
+        # exists to guarantee: one launcher must never reap another launcher's
+        # watchers. Stop-AllWatchers builds $ourPids from -RootPids (or from the
+        # teardown state file) and gates BOTH the wrapper-host tree-kill and the
+        # pattern sweep on it. A process whose CommandLine matches the sweep but
+        # which is outside that scope must survive.
+        #
+        # NOTE (bead mcpw-lqy): the two tests above assert the OPPOSITE -- that
+        # an unscoped call DOES sweep. They predate the PID scoping and are
+        # currently red. This test is the contract as the code stands today;
+        # if the unscoped sweep is ever restored, this test must fail loudly
+        # and be reconsidered deliberately, not quietly updated.
+        $savedKey = $env:VAD_WATCHERS_WORKSPACE_KEY
+        # A key no real launcher uses, so no state file exists and no scope is
+        # inherited from a live launcher's teardown record.
+        $env:VAD_WATCHERS_WORKSPACE_KEY = ('sweeptest_' + [guid]::NewGuid().ToString('N'))
+        $paneDir = Join-Path $env:TEMP ('panes_' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $paneDir -Force | Out-Null
+        $realPaneDir = Join-Path $paneDir 'panes'
+        New-Item -ItemType Directory -Path $realPaneDir -Force | Out-Null
+        $probe = Join-Path $realPaneDir 'tail_probe.ps1'
+        Set-Content -LiteralPath $probe -Value 'Start-Sleep -Seconds 60' -Encoding UTF8
+        $proc = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden `
+            -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $probe)
+        try {
+            # Confirm the CommandLine really matches what the sweep looks for,
+            # otherwise "it survived" would prove nothing.
+            $ci = Get-CimInstance Win32_Process -Filter "ProcessId = $($proc.Id)" -ErrorAction SilentlyContinue
+            ([bool]($ci -and $ci.CommandLine -and $ci.CommandLine -match 'panes\\tail_')) | Should Be $true
+
+            Stop-AllWatchers -RootPids @() | Out-Null
+            Start-Sleep -Milliseconds 800   # give any (buggy) kill time to land
+            $alive = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue
+            ([bool]$alive) | Should Be $true
+        } finally {
+            try { Get-Process -Id $proc.Id -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue } catch {}
+            Remove-Item -LiteralPath $paneDir -Recurse -Force -ErrorAction SilentlyContinue
+            $env:VAD_WATCHERS_WORKSPACE_KEY = $savedKey
+        }
+    }
 }
 
 if (-not $env:WT_SWEEP_TEST_RAN) {

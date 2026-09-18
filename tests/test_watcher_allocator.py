@@ -1,3 +1,4 @@
+import importlib.util
 import os
 import sys
 
@@ -6,11 +7,34 @@ import pytest
 ROOT = os.path.join(os.path.dirname(__file__), "..", "dev_tools")
 sys.path.insert(0, ROOT)
 
-from llm_fallback_proxy import (  # noqa: E402
-    ModelHealthTracker,
-    WatcherModelAllocator,
-    extract_watcher_id,
-)
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+# The proxy ships as "###2.llm_fallback_proxy.py" at the repo root. The leading
+# "#" characters make it an invalid Python identifier, so no sys.path entry can
+# ever reach it -- a plain `import llm_fallback_proxy` raises ModuleNotFoundError
+# and, because that happens at collection time, it aborts the WHOLE pytest run
+# (Interrupted: 1 error during collection) instead of failing one test. Load it
+# by file location when the plain import cannot find it.
+try:
+    from llm_fallback_proxy import (  # noqa: E402
+        ModelHealthTracker,
+        WatcherModelAllocator,
+        extract_watcher_id,
+    )
+except ModuleNotFoundError:
+    _proxy_path = os.path.join(REPO_ROOT, "###2.llm_fallback_proxy.py")
+    _spec = importlib.util.spec_from_file_location(
+        "llm_fallback_proxy", _proxy_path
+    )
+    if _spec is None or _spec.loader is None:
+        raise ImportError(
+            f"cannot load the fallback proxy from {_proxy_path}"
+        ) from None
+    llm_fallback_proxy = importlib.util.module_from_spec(_spec)
+    sys.modules.setdefault("llm_fallback_proxy", llm_fallback_proxy)
+    _spec.loader.exec_module(llm_fallback_proxy)
+    ModelHealthTracker = llm_fallback_proxy.ModelHealthTracker  # noqa: E402
+    WatcherModelAllocator = llm_fallback_proxy.WatcherModelAllocator  # noqa: E402
+    extract_watcher_id = llm_fallback_proxy.extract_watcher_id  # noqa: E402
 
 ALL_TEST_CANDIDATES = [
     {"model": "m1", "label": "model_1"},

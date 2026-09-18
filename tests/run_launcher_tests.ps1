@@ -26,5 +26,26 @@
 #
 # Without the `@args` below, -SkipSmoke was silently DROPPED and the full smoke
 # ran regardless - the runner had no way to reach the switch it advertises.
-& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'launcher_tests.ps1') @args
+#
+# mcpw-tao: PowerShell resolves a bare executable name through $env:PATHEXT.
+# Hosts that export an unset or truncated PATHEXT (observed: '.CPL') cannot
+# resolve 'powershell' even when the binary is on PATH and spawnable, so the
+# spawn below died with CommandNotFoundException. Restore the standard
+# extension set, then resolve the host through PATH (no hardcoded System32
+# path) before invoking it.
+$stdExt = @('.COM', '.EXE', '.BAT', '.CMD', '.VBS', '.VBE', '.JS', '.JSE', '.WSF', '.WSH', '.MSC', '.CPL')
+$haveExt = @()
+if ($env:PATHEXT) { $haveExt = @($env:PATHEXT -split ';' | Where-Object { $_.Trim() }) }
+$missExt = @($stdExt | Where-Object { $haveExt -notcontains $_ })
+if ($missExt.Count -gt 0) { $env:PATHEXT = (($haveExt + $missExt) -join ';') }
+
+$hostPath = $null
+foreach ($n in @('powershell', 'pwsh')) {
+    $c = Get-Command $n -CommandType Application -ErrorAction SilentlyContinue |
+         Select-Object -First 1
+    if ($c) { $hostPath = $c.Source; break }
+}
+if (-not $hostPath) { throw "no PowerShell host found on PATH (tried: powershell, pwsh)" }
+
+& $hostPath -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'launcher_tests.ps1') @args
 exit $LASTEXITCODE

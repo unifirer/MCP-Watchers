@@ -1,2 +1,7 @@
-move these to plans: "J:\audio\MCP-Watchers\2026-09-17-mcp-watchers-workspace-isolation-handover.md"
-"J:\audio\MCP-Watchers\2026-09-17-pane-exit-debug-handover.md"
+add these to be done if the first initialization steps are not done for these mcps.
+
+memtrace build 
+grepai init, use existing ollama, and existing qdrant, use all default settings for qdrant.
+graphify-rs build
+gm init
+repowise init

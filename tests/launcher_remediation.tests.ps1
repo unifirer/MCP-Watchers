@@ -25,18 +25,66 @@ function Get-PaneModuleSource {
     Get-Content -LiteralPath $paneModule -Raw
 }
 
+function Get-ScriptBlockBody {
+    # mcpw-4g3: the remediation locks below need the BODY of a scriptblock that
+    # is assigned to a variable ($gmSemScriptBlock, $supervisorScript). Matching
+    # with a non-greedy regex broke twice: first when the scriptblock stopped
+    # being written inline after Start-ThreadJob, then when the body grew past
+    # the next "}" in the file. Count braces instead - it is exact and it does
+    # not care how the block is formatted or how far away its caller sits.
+    param(
+        [string] $Source,
+        [string] $Anchor
+    )
+
+    $start = $Source.IndexOf($Anchor)
+    if ($start -lt 0) { return $null }
+    $open = $Source.IndexOf('{', $start)
+    if ($open -lt 0) { return $null }
+
+    # Braces inside strings and comments must not move the depth, and this file
+    # is full of apostrophes in comments ("the operator's config"), so a naive
+    # quote toggle derails within a few hundred lines.
+    $depth = 0
+    $inSingle = $false
+    $inDouble = $false
+    $inComment = $false
+    for ($i = $open; $i -lt $Source.Length; $i++) {
+        $c = $Source[$i]
+        if ($inComment) { if ($c -eq "`n") { $inComment = $false }; continue }
+        if ($inSingle) { if ($c -eq "'") { $inSingle = $false }; continue }
+        if ($inDouble) {
+            if ($c -eq '`') { $i++; continue }
+            if ($c -eq '"') { $inDouble = $false }
+            continue
+        }
+        if ($c -eq '#') { $inComment = $true; continue }
+        if ($c -eq "'") { $inSingle = $true; continue }
+        if ($c -eq '"') { $inDouble = $true; continue }
+        if ($c -eq '{') { $depth++ }
+        elseif ($c -eq '}') {
+            $depth--
+            if ($depth -eq 0) { return $Source.Substring($open, $i - $open + 1) }
+        }
+    }
+    return $null
+}
+
 Describe 'launcher gauntlet remediation (2026-09-06)' {
 
     It 'VAD-3apv: gm-semantic thread job scriptblock starts with param() (no statements before it)' {
         $src = Get-LauncherSource
-        ($src -match '\$gmSemJob = Start-ThreadJob') | Should Be $true
-        if ($src -notmatch '(?s)\$gmSemJob = Start-ThreadJob.*?-ScriptBlock \{(.*?)\} -ErrorAction SilentlyContinue') {
-            throw 'gm-semantic Start-ThreadJob scriptblock not found'
-        }
-        $body = $Matches[1]
+        # mcpw-4g3: the scriptblock is no longer written inline after
+        # Start-ThreadJob. It is built once as $gmSemScriptBlock (so the
+        # Start-Job fallback can reuse the same body) and handed to both spawns.
+        ($src -match '\$gmSemJob = Start-ThreadJob.*-ScriptBlock \$gmSemScriptBlock') | Should Be $true
+        $body = Get-ScriptBlockBody -Source $src -Anchor '$gmSemScriptBlock = {'
+        if (-not $body) { throw 'gm-semantic scriptblock not found' }
         # The dead-on-arrival bug: any statement before param() makes PowerShell
         # throw "The term 'param' is not recognized" when the job invokes it.
-        ($body -match '^\s*param\(\$State, \$BuildSrc, \$ProbeSrc, \$BuildDir, \$RunLog\)') | Should Be $true
+        # $body includes its own braces (Get-ScriptBlockBody returns them), so
+        # the "no statement before param()" check allows the opening brace.
+        ($body -match '^\s*\{\s*param\(\$State, \$BuildSrc, \$ProbeSrc, \$BuildDir, \$RunLog\)') | Should Be $true
         # Startup FULL warm-up stays removed (the build is change-driven only).
         $src | Should Not Match 'Invoke-GmSemanticBuild -Mode "full"'
         # Failures surface instead of being discarded.
@@ -102,13 +150,21 @@ Describe 'launcher gauntlet remediation (2026-09-06)' {
 
     It 'VAD-pp50: grepai supervisor backs off after consecutive failed restarts' {
         $src = Get-LauncherSource
-        if ($src -notmatch '(?s)\$supervisorScript = \{(.*?)\}\r?\n\s*\$supervisorJob = Start-ThreadJob') {
-            throw 'grepai supervisor scriptblock not found'
-        }
-        $sup = $Matches[1]
+        # mcpw-4g3: the old regex anchored the scriptblock to the
+        # "$supervisorJob = Start-ThreadJob" line that used to follow it. The
+        # spawn moved ~400 lines away (it is now inside the ThreadJob
+        # availability check), so the anchor no longer bounds the block.
+        $sup = Get-ScriptBlockBody -Source $src -Anchor '$supervisorScript = {'
+        if (-not $sup) { throw 'grepai supervisor scriptblock not found' }
         $sup | Should Match '\$consecutiveRestarts'
         $sup | Should Match '\$consecutiveRestarts -ge 5'
-        $sup | Should Match 'Start-Sleep -Seconds 600'
+        # VAD-7qf0 replaced the single `Start-Sleep -Seconds 600` with a
+        # 20 x 30s loop so the liveness stamp stays fresh through the cooldown
+        # and the pane cannot mistake a backed-off supervisor for a dead one.
+        # Same 10 minutes, so assert the arithmetic the branch now uses.
+        $sup | Should Match 'for \(\$b = 0; \$b -lt 20; \$b\+\+\)'
+        $sup | Should Match 'Start-Sleep -Seconds 30'
+        $sup | Should Match 'backing off 10 minutes'
     }
 
     It 'VAD-zfb6: both FileSystemWatchers set a 64 KB InternalBufferSize and coalesce via ConcurrentQueue' {

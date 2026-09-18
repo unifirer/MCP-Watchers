@@ -44,6 +44,55 @@ function Assert {
     else { $script:FAIL++; $script:FAILMSGS += $Name; Write-Host ("  [FAIL] " + $Name + " :: " + $Detail) }
 }
 
+# --- mcpw-tao: nested PowerShell host resolution ----------------------------
+# T2 and T4 execute the generated pane tailer in a SECOND PowerShell host
+# (`& powershell -NoProfile -File ...`). PowerShell resolves a bare executable
+# name through $env:PATHEXT, so when PATHEXT is unset or truncated -- agent
+# sandboxes have been observed exporting literally '.CPL' -- discovery fails
+# with CommandNotFoundException even though
+# C:\WINDOWS\System32\WindowsPowerShell\v1.0 is on PATH and the binary is
+# spawnable (subprocess can launch it directly). That is an environment gap,
+# not a launcher defect, so restore the standard extension set once here. The
+# host is still located through PATH; nothing hardcodes the System32 directory.
+function Repair-PathExt {
+    $std = @('.COM', '.EXE', '.BAT', '.CMD', '.VBS', '.VBE', '.JS', '.JSE', '.WSF', '.WSH', '.MSC', '.CPL')
+    $have = @()
+    if ($env:PATHEXT) { $have = @($env:PATHEXT -split ';' | Where-Object { $_.Trim() }) }
+    $missing = @($std | Where-Object { $have -notcontains $_ })
+    if ($missing.Count -gt 0) { $env:PATHEXT = (($have + $missing) -join ';') }
+}
+Repair-PathExt
+
+function Resolve-NestedHost {
+    param([string[]]$Names = @('powershell', 'pwsh'))
+    foreach ($n in $Names) {
+        $cmd = Get-Command $n -CommandType Application -ErrorAction SilentlyContinue |
+               Select-Object -First 1
+        if ($cmd) { return $cmd.Source }
+    }
+    return $null
+}
+# $null when no host is reachable: the nested-host assertions then SKIP instead
+# of failing, because a missing interpreter says nothing about the launcher's
+# correctness.
+$script:NestedHost = Resolve-NestedHost
+
+function Invoke-NestedHostScript {
+    param([string]$ScriptPath)
+    if (-not $script:NestedHost) { return @() }
+    return (& $script:NestedHost -NoProfile -File $ScriptPath 2>&1)
+}
+
+# Assert that only holds when a nested host exists; reports SKIP otherwise.
+function Assert-Host {
+    param([bool]$Cond, [string]$Name, [string]$Detail = '')
+    if (-not $script:NestedHost) {
+        Write-Host ("  [SKIP] " + $Name + " :: no PowerShell host on PATH")
+        return
+    }
+    Assert $Cond $Name $Detail
+}
+
 # Mirrors the launcher's scratch-root resolution so test fixtures land on the
 # SAME off-repo path the launcher actually uses (C:\Temp\vad-watchers, else
 # $env:TEMP\vad-watchers). Keeps the IndexOf anchors + file checks in sync with
@@ -148,12 +197,12 @@ Set-Content -LiteralPath $tailPath -Value $body
 # validate the generated tailer itself parses
 $te = @(); [void][System.Management.Automation.PSParser]::Tokenize($body, [ref]$te)
 Assert ($te.Count -eq 0) 'T2 generated tailer parses' ("errors=" + $te.Count)
-$out = & powershell -NoProfile -File $tailPath 2>&1
-Assert ([bool]($out -match '=== test live log ===')) 'T2 prints header' ("out=" + ($out -join '|'))
+$out = Invoke-NestedHostScript -ScriptPath $tailPath
+Assert-Host ([bool]($out -match '=== test live log ===')) 'T2 prints header' ("out=" + ($out -join '|'))
 
 Write-Host "=== T3: tailer prints a recent BACKLOG on open ==="
-Assert ([bool]($out -match '\[test\] line1')) 'T3 backlog shows existing line1' ("out=" + ($out -join '|'))
-Assert ([bool]($out -match '\[test\] line3')) 'T3 backlog shows existing line3' ("out=" + ($out -join '|'))
+Assert-Host ([bool]($out -match '\[test\] line1')) 'T3 backlog shows existing line1' ("out=" + ($out -join '|'))
+Assert-Host ([bool]($out -match '\[test\] line3')) 'T3 backlog shows existing line3' ("out=" + ($out -join '|'))
 
 Write-Host "=== T4: tailer prints NEW appended lines after open ==="
 $body2 = $template.Replace('__LABEL__', 'live').Replace('__LOG__', $log).Replace('__ERR__', '')
@@ -166,11 +215,11 @@ Set-Content -LiteralPath $pollScript -Value @"
 `$off = `$all.Count - 1
 Write-Host ("[live] " + `$all[`$off])
 "@
-$liveOut = & powershell -NoProfile -File $pollScript 2>&1
-Assert ([bool]($liveOut -match 'NEW_APPENDED_LINE')) 'T4 new line surfaced by poll' ("out=" + $liveOut)
+$liveOut = Invoke-NestedHostScript -ScriptPath $pollScript
+Assert-Host ([bool]($liveOut -match 'NEW_APPENDED_LINE')) 'T4 new line surfaced by poll' ("out=" + $liveOut)
 
 Write-Host "=== T5: tailer prints [LABEL ERR] from stderr sidecar ==="
-Assert ([bool]($out -match '\[test ERR\] err1')) 'T5 stderr sidecar shown' ("out=" + ($out -join '|'))
+Assert-Host ([bool]($out -match '\[test ERR\] err1')) 'T5 stderr sidecar shown' ("out=" + ($out -join '|'))
 
 # ---------------------------------------------------------------------------
 # Stubs for launcher-internal functions referenced by T6/T7 extracted blocks.
@@ -257,7 +306,14 @@ Write-Host "=== T8: wt pane block opens exactly ONE window with FOUR panes ==="
 # Test-WatcherRunning for graphify-rs would match the USER's wrapper process and
 # produce a false pass (the test detects a process it did not start).
 try {
-    $t8LauncherActive = @(Get-CimInstance Win32Process -Filter "Name='pwsh.exe' OR Name='powershell.exe'" -ErrorAction SilentlyContinue |
+    # NOTE: the class name is Win32_Process. It used to read "Win32Process",
+    # which is not a CIM class -- the query silently returned nothing, so
+    # $t8LauncherActive was ALWAYS $false and T8 never took its own skip path,
+    # even with the user's real launcher running. Consequence: T8 competed with
+    # the live session for watcher detection and, on hosts where the WT pane
+    # spawn fails, fell through to the launcher's interactive combined view and
+    # hung until Ctrl+C.
+    $t8LauncherActive = @(Get-CimInstance Win32_Process -Filter "Name='pwsh.exe' OR Name='powershell.exe'" -ErrorAction SilentlyContinue |
         Where-Object { $_.CommandLine -and $_.CommandLine -match [regex]::Escape('###1') -and $_.CommandLine -match '\.ps1' -and $_.ProcessId -ne $PID }).Count -gt 0
 } catch { $t8LauncherActive = $false }
 if ($t8LauncherActive) {
@@ -741,9 +797,9 @@ $t10log = Join-Path $t10dir 'nulstrip.log'
 $t10tail = Join-Path $t10dir 'tail_t10.ps1'
 $t10body = $template.Replace('__LABEL__','nul').Replace('__LOG__',$t10log).Replace('__ERR__','')
 Set-Content -LiteralPath $t10tail -Value $t10body
-$t10out = & powershell -NoProfile -File $t10tail 2>&1
-Assert ([bool]($t10out -match 'beforeafter')) 'T10 NUL stripped (beforeafter present)' ("out=" + ($t10out -join '|'))
-Assert (-not [bool]($t10out -match 'before`0after')) 'T10 no raw NUL line' ("out=" + ($t10out -join '|'))
+$t10out = Invoke-NestedHostScript -ScriptPath $t10tail
+Assert-Host ([bool]($t10out -match 'beforeafter')) 'T10 NUL stripped (beforeafter present)' ("out=" + ($t10out -join '|'))
+Assert-Host (-not [bool]($t10out -match 'before`0after')) 'T10 no raw NUL line' ("out=" + ($t10out -join '|'))
 
 Write-Host "=== T11: graphify-rs pane throttles noisy lines 1-in-10 ==="
 $t11dir = Join-Path $env:TEMP ('lt_t11_' + [guid]::NewGuid().ToString('N'))
@@ -755,9 +811,9 @@ Set-Content -Path $t11log -Value $noisy
 $t11tail = Join-Path $t11dir 'tail_gf.ps1'
 $t11body = $template.Replace('__LABEL__','graphify-rs').Replace('__LOG__',$t11log).Replace('__ERR__','')
 Set-Content -LiteralPath $t11tail -Value $t11body
-$t11out = & powershell -NoProfile -File $t11tail 2>&1
+$t11out = Invoke-NestedHostScript -ScriptPath $t11tail
 $gfCount = (@($t11out -match 'graph too large for interactive viz')).Count
-Assert ($gfCount -eq 2) 'T11 exactly 2 of 25 noisy lines shown (pure 1-in-10)' ("count=$gfCount")
+Assert-Host ($gfCount -eq 2) 'T11 exactly 2 of 25 noisy lines shown (pure 1-in-10)' ("count=$gfCount")
 
 Write-Host "=== T12: repowise pane suppresses VS Code lines ==="
 $t12dir = Join-Path $env:TEMP ('lt_t12_' + [guid]::NewGuid().ToString('N'))
@@ -767,9 +823,9 @@ Set-Content -Path $t12log -Value @('real repowise event','[17:01:22] (VS Code): 
 $t12tail = Join-Path $t12dir 'tail_rw.ps1'
 $t12body = $template.Replace('__LABEL__','repowise').Replace('__LOG__',$t12log).Replace('__ERR__','')
 Set-Content -LiteralPath $t12tail -Value $t12body
-$t12out = & powershell -NoProfile -File $t12tail 2>&1
-Assert (-not [bool]($t12out -match 'VS Code')) 'T12 VS Code line suppressed' ("out=" + ($t12out -join '|'))
-Assert ([bool]($t12out -match 'real repowise event')) 'T12 real lines still shown' ("out=" + ($t12out -join '|'))
+$t12out = Invoke-NestedHostScript -ScriptPath $t12tail
+Assert-Host (-not [bool]($t12out -match 'VS Code')) 'T12 VS Code line suppressed' ("out=" + ($t12out -join '|'))
+Assert-Host ([bool]($t12out -match 'real repowise event')) 'T12 real lines still shown' ("out=" + ($t12out -join '|'))
 
 # T12b: graphenium pane suppresses the noisy "Non-code files changed" stderr notice
 # (only means a non-source file was edited; semantic nodes refresh on demand via gm run).
@@ -782,9 +838,9 @@ Set-Content -Path $t12blog -Value @('[graphenium ERR] [graphenium] Non-code file
 $t12btail = Join-Path $t12bdir 'tail_gm.ps1'
 $t12bbody = $template.Replace('__LABEL__','graphenium').Replace('__LOG__',$t12blog).Replace('__ERR__','')
 Set-Content -LiteralPath $t12btail -Value $t12bbody
-$t12bout = & powershell -NoProfile -File $t12btail 2>&1
-Assert (-not [bool]($t12bout -match 'Non-code files changed')) 'T12b graphenium Non-code notice suppressed' ("out=" + ($t12bout -join '|'))
-Assert ([bool]($t12bout -match 'real graphenium AST update')) 'T12b real graphenium lines still shown' ("out=" + ($t12bout -join '|'))
+$t12bout = Invoke-NestedHostScript -ScriptPath $t12btail
+Assert-Host (-not [bool]($t12bout -match 'Non-code files changed')) 'T12b graphenium Non-code notice suppressed' ("out=" + ($t12bout -join '|'))
+Assert-Host ([bool]($t12bout -match 'real graphenium AST update')) 'T12b real graphenium lines still shown' ("out=" + ($t12bout -join '|'))
 try { Remove-Item -LiteralPath $t12bdir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
 
 # T12c: repowise pane suppresses the per-file "Skipping oversized file" debug
@@ -800,9 +856,9 @@ Set-Content -Path $t12clog -Value @('[repowise] 2026-07-13 23:11:01 [debug    ] 
 $t12ctail = Join-Path $t12cdir 'tail_rw.ps1'
 $t12cbody = $template.Replace('__LABEL__','repowise').Replace('__LOG__',$t12clog).Replace('__ERR__','')
 Set-Content -LiteralPath $t12ctail -Value $t12cbody
-$t12cout = & powershell -NoProfile -File $t12ctail 2>&1
-Assert (-not [bool]($t12cout -match 'Skipping oversized file')) 'T12c "Skipping oversized file" line suppressed' ("out=" + ($t12cout -join '|'))
-Assert ([bool]($t12cout -match 'real repowise event')) 'T12c real lines still shown' ("out=" + ($t12cout -join '|'))
+$t12cout = Invoke-NestedHostScript -ScriptPath $t12ctail
+Assert-Host (-not [bool]($t12cout -match 'Skipping oversized file')) 'T12c "Skipping oversized file" line suppressed' ("out=" + ($t12cout -join '|'))
+Assert-Host ([bool]($t12cout -match 'real repowise event')) 'T12c real lines still shown' ("out=" + ($t12cout -join '|'))
 try { Remove-Item -LiteralPath $t12cdir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
 
 # T13: fallback combined tailer applies the SAME three rules as the pane tailer
@@ -842,15 +898,15 @@ foreach (`$s in `$streams) {
   }
 }
 "@
-$t13out = & powershell -NoProfile -File $fbScript 2>&1
+$t13out = Invoke-NestedHostScript -ScriptPath $fbScript
 $gfC = (@($t13out -match 'graph too large for interactive viz')).Count
-Assert ($gfC -eq 2) 'T13 fallback graphify 1-in-10 (2 of 25)' ("count=$gfC")
-Assert (-not [bool]($t13out -match 'VS Code')) 'T13 fallback VS Code suppressed' ("out=" + ($t13out -join '|'))
-Assert (-not [bool]($t13out -match 'Skipping oversized file')) 'T13 fallback "Skipping oversized file" suppressed' ("out=" + ($t13out -join '|'))
-Assert ([bool]($t13out -match 'okbad')) 'T13 fallback NUL stripped' ("out=" + ($t13out -join '|'))
-Assert ([bool]($t13out -match 'real')) 'T13 fallback real repowise line shown' ("out=" + ($t13out -join '|'))
-Assert (-not [bool]($t13out -match 'Non-code files changed')) 'T13 fallback graphenium Non-code notice suppressed' ("out=" + ($t13out -join '|'))
-Assert ([bool]($t13out -match 'real graphenium AST update')) 'T13 fallback real graphenium line shown' ("out=" + ($t13out -join '|'))
+Assert-Host ($gfC -eq 2) 'T13 fallback graphify 1-in-10 (2 of 25)' ("count=$gfC")
+Assert-Host (-not [bool]($t13out -match 'VS Code')) 'T13 fallback VS Code suppressed' ("out=" + ($t13out -join '|'))
+Assert-Host (-not [bool]($t13out -match 'Skipping oversized file')) 'T13 fallback "Skipping oversized file" suppressed' ("out=" + ($t13out -join '|'))
+Assert-Host ([bool]($t13out -match 'okbad')) 'T13 fallback NUL stripped' ("out=" + ($t13out -join '|'))
+Assert-Host ([bool]($t13out -match 'real')) 'T13 fallback real repowise line shown' ("out=" + ($t13out -join '|'))
+Assert-Host (-not [bool]($t13out -match 'Non-code files changed')) 'T13 fallback graphenium Non-code notice suppressed' ("out=" + ($t13out -join '|'))
+Assert-Host ([bool]($t13out -match 'real graphenium AST update')) 'T13 fallback real graphenium line shown' ("out=" + ($t13out -join '|'))
 
 # T14: pane tailer's "changed file" resolution (Show/Resolve-ChangedFiles) reports
 # the USER's source file, never tool-state/scratch paths, handles multi-digit
@@ -1055,6 +1111,18 @@ Assert ($ghBegin -ge 0) 'T10 health-check begin marker present' ("idx=$ghBegin")
 Assert ($ghEnd   -ge 0) 'T10 health-check end marker present' ("idx=$ghEnd")
 if ($ghBegin -ge 0 -and $ghEnd -ge 0) {
     $healthSrc = $src.Substring($ghBegin, $ghEnd - $ghBegin + '# === grepai health check (end) ==='.Length)
+    # The extracted block closes over $watchersWorkspaceRoot, which the launcher
+    # sets once at startup (###1...ps1 line 21) OUTSIDE the health-check markers.
+    # The harness never runs that preamble, so the variable is $null here and
+    # Get-GrepaiOllamaTarget dies with
+    # ParameterArgumentValidationErrorNullNotAllowed on Join-Path. Seed it with
+    # the repo under test.
+    if (-not $watchersWorkspaceRoot) { $watchersWorkspaceRoot = $repoRoot }
+    # The gob files Repair-GrepaiIndexIfCorrupted deletes. A qdrant-backed grepai
+    # install never writes index.gob (this repo ships symbols.gob/rpg.gob only),
+    # so the CLEAN-fixture assertions below must check the gobs the install
+    # actually has instead of assuming index.gob exists.
+    $gobNames = @('index.gob', 'symbols.gob', 'rpg.gob')
     # Sandbox the functions: define them in this scope via Invoke-Expression.
     Invoke-Expression $healthSrc
 
@@ -1095,9 +1163,16 @@ if ($ghBegin -ge 0 -and $ghEnd -ge 0) {
     # status reports clean and Repair must leave it untouched (no false delete).
     Copy-Item -LiteralPath (Join-Path $repoRoot '.grepai') -Destination (Join-Path $cleanDir '.grepai') -Recurse -Force
     $cleanGrepai = Join-Path $cleanDir '.grepai'
+    $cleanBefore = @($gobNames | Where-Object { Test-Path (Join-Path $cleanGrepai $_) })
     $clean = Repair-GrepaiIndexIfCorrupted -GrepaiDir $cleanGrepai
     Assert ($clean -eq $false) 'T10b clean index NOT "repaired" (no false delete)' ("clean=$clean")
-    Assert (Test-Path (Join-Path $cleanGrepai 'index.gob')) 'T10b clean index.gob left intact' ('deleted!')
+    if ($cleanBefore.Count -eq 0) {
+        Write-Host "  [SKIP] T10b clean-index assertion: this install ships no gob-backed index"
+    } else {
+        foreach ($g in $cleanBefore) {
+            Assert (Test-Path (Join-Path $cleanGrepai $g)) "T10b clean $g left intact" ('deleted!')
+        }
+    }
 
     # --- T10c: Ollama probe reflects the configured endpoint's real state ---
     # Test-OllamaRunning reads the endpoint from .grepai/config.yaml (live: 12134,
@@ -1131,6 +1206,10 @@ if ($ghBegin -ge 0 -and $ghEnd -ge 0) {
     # Authentic CLEAN worktree fixture (whole valid .grepai), so the orchestrator
     # must leave it untouched while repairing the corrupted root.
     Copy-Item -LiteralPath (Join-Path $repoRoot '.grepai') -Destination (Join-Path $wtDir '.grepai') -Recurse -Force
+    $wtGrepai = Join-Path $wtDir '.grepai'
+    # Snapshot the gobs this install actually ships (see $gobNames above) -- a
+    # qdrant-backed install has no index.gob to assert on.
+    $wtBefore = @($gobNames | Where-Object { Test-Path (Join-Path $wtGrepai $_) })
     # Stub git worktree list so the orchestrator finds only our clean worktree.
     function git($a) { if ($a -match 'worktree list') { @("worktree $wtDir") } else { '' } }
     $repairedCount = 0
@@ -1142,7 +1221,13 @@ if ($ghBegin -ge 0 -and $ghEnd -ge 0) {
     }
     Assert ($repairedCount -eq 1) 'T10d orchestrator repairs exactly the corrupted project' ("count=$repairedCount")
     Assert (-not (Test-Path (Join-Path $rootGrepai 'index.gob'))) 'T10d corrupted root index removed' ('present')
-    Assert (Test-Path (Join-Path (Join-Path $wtDir '.grepai') 'index.gob')) 'T10d clean worktree index untouched' ('deleted!')
+    if ($wtBefore.Count -eq 0) {
+        Write-Host "  [SKIP] T10d clean-worktree assertion: this install ships no gob-backed index"
+    } else {
+        foreach ($g in $wtBefore) {
+            Assert (Test-Path (Join-Path $wtGrepai $g)) "T10d clean worktree $g untouched" ('deleted!')
+        }
+    }
 
     # --- T10e (VAD-3cr, 2026-08-26): runtime heal paths repair a corrupt gob
     # index BEFORE relaunching. Covers the thread-job supervisor's inline
@@ -1199,7 +1284,13 @@ if ($ghBegin -ge 0 -and $ghEnd -ge 0) {
     $t11dir = Join-Path $env:TEMP ('gh_t11_' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $t11dir -Force | Out-Null
     $savedScriptDir = $scriptDir
+    # The helper is repository-scoped (mcpw-ybs.7): it reads
+    # $watchersWorkspaceRoot, NOT $scriptDir. Point BOTH at the fixture dir, or
+    # the probe silently reads the repo's real .grepai/config.yaml and reports
+    # its endpoint instead of the documented 11434 default.
+    $savedWorkspaceRoot = $watchersWorkspaceRoot
     $scriptDir = $t11dir   # point the helper at a dir with NO .grepai
+    $watchersWorkspaceRoot = $t11dir
     $def = Get-GrepaiOllamaTarget
     Assert ($def -eq '127.0.0.1:11434') 'T11 default endpoint when no config' ("def=$def")
     # Configured endpoint is honored (repo relocated Ollama to 12134). Mirror the
@@ -1214,6 +1305,7 @@ if ($ghBegin -ge 0 -and $ghEnd -ge 0) {
     $cfg = Get-GrepaiOllamaTarget
     Assert ($cfg -eq '127.0.0.1:12134') 'T11 configured endpoint honored (not llm_endpoint)' ("cfg=$cfg")
     $scriptDir = $savedScriptDir
+    $watchersWorkspaceRoot = $savedWorkspaceRoot
     Remove-Item -LiteralPath $t11dir -Recurse -Force -ErrorAction SilentlyContinue
 
     # --- T12: Enable-GrepaiOllamaPortFix is a no-op when target reachable & not reserved ---
@@ -1309,12 +1401,15 @@ if ($ghBegin -ge 0 -and $ghEnd -ge 0) {
         }
         Set-Content -Path (Join-Path $t12grepai 'config.yaml') -Value "embedder:`r`n  endpoint: http://127.0.0.1:$lport" -Encoding UTF8
         $saved2 = $scriptDir
+        $saved2Root = $watchersWorkspaceRoot
         $scriptDir = $t12dir
+        $watchersWorkspaceRoot = $t12dir   # helper is workspace-scoped, not script-scoped
         $noop = Enable-GrepaiOllamaPortFix
         Assert ($noop -eq $false) 'T12a returns $false (no-op) when endpoint reachable & not reserved' ("noop=$noop")
         $persisted = [Environment]::GetEnvironmentVariable('OLLAMA_HOST', 'User')
         Assert ($persisted -ne "127.0.0.1:$lport") 'T12a does NOT persist OLLAMA_HOST on reachable no-op' ("persisted=$persisted")
         $scriptDir = $saved2
+        $watchersWorkspaceRoot = $saved2Root
     } finally {
         if ($listenerJob) { try { Stop-Job $listenerJob; Remove-Job $listenerJob } catch {} }
         if ($null -eq $beforeUser12a) { [Environment]::SetEnvironmentVariable('OLLAMA_HOST', $null, 'User') }
@@ -1331,7 +1426,9 @@ if ($ghBegin -ge 0 -and $ghEnd -ge 0) {
     New-Item -ItemType Directory -Path $t12bgrepai -Force | Out-Null
     Set-Content -Path (Join-Path $t12bgrepai 'config.yaml') -Value "embedder:`r`n  endpoint: http://127.0.0.1:11434" -Encoding UTF8
     $saved3 = $scriptDir
+    $saved3Root = $watchersWorkspaceRoot
     $scriptDir = $t12bdir
+    $watchersWorkspaceRoot = $t12bdir   # helper is workspace-scoped, not script-scoped
     $fixed = Enable-GrepaiOllamaPortFix
     if ($fixed -eq $true) {
         # VAD-v14z.6 contract (pinned by tests/test_launch_watcher.py): the fix
@@ -1345,6 +1442,7 @@ if ($ghBegin -ge 0 -and $ghEnd -ge 0) {
         Write-Host '  [INFO] T12b: 11434 reported reserved/unreachable in this env - fix no-op (acceptable); skipping persisted-var asserts.'
     }
     $scriptDir = $saved3
+    $watchersWorkspaceRoot = $saved3Root
     # Restore User env so the test never leaks a value into the user profile.
     if ($null -eq $beforeUser) { [Environment]::SetEnvironmentVariable('OLLAMA_HOST', $null, 'User') }
     else { [Environment]::SetEnvironmentVariable('OLLAMA_HOST', $beforeUser, 'User') }
@@ -1749,7 +1847,16 @@ try {
     Set-Content -LiteralPath $t23log -Value @('post-trunc-a','post-trunc-b','post-trunc-c') -Encoding UTF8
     Start-Sleep -Seconds 1
     Add-Content -LiteralPath $t23log -Value 'TRUNC-MARKER-resumed-line' -Encoding UTF8
-    Start-Sleep -Seconds 3          # two poll cycles to observe resume + marker
+    # Poll instead of a fixed sleep: the tailer's poll interval is host
+    # dependent, and a hard 3s deadline killed it before the resume marker was
+    # flushed -- a false FAIL on a run whose other two T23 assertions passed.
+    $t23deadline = (Get-Date).AddSeconds(15)
+    $t23text = ''
+    while ((Get-Date) -lt $t23deadline) {
+        Start-Sleep -Milliseconds 500
+        try { $t23text = Get-Content -LiteralPath $t23out -Raw -ErrorAction SilentlyContinue } catch {}
+        if ($t23text -and $t23text -match 'resuming from tail' -and $t23text -match 'TRUNC-MARKER-resumed-line') { break }
+    }
     if (-not $tailer23.HasExited) { Stop-Process -Id $tailer23.Id -Force -ErrorAction SilentlyContinue }
     Start-Sleep -Milliseconds 400
     $t23text = ''

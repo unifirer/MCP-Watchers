@@ -9,7 +9,7 @@ $repo   = Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')
 $module = Join-Path $repo 'Modules\watcher_teardown.ps1'
 
 Describe 'Stop-AllWatchers sweep' {
-    It 'kills a live powershell.exe pane-tailer (panes\tail_*)' {
+    It 'kills an IN-SCOPE live powershell.exe pane-tailer (panes\tail_*)' {
         . $module
         # Build a fake pane-tailer script under a path whose CommandLine will
         # contain the literal single-backslash substring panes\tail_ that
@@ -41,9 +41,18 @@ Describe 'Stop-AllWatchers sweep' {
             # Sanity: the CommandLine really contains the single-backslash substring.
             $seen | Should Be $true
 
-            # Empty RootPids -> the tree-kill loop does nothing; only the pattern
-            # sweep can kill this process.
-            Stop-AllWatchers -RootPids @() | Out-Null
+            # mcpw-lqy: Stop-AllWatchers is PID-SCOPED, so an EMPTY RootPids
+            # kills nothing and this test could never pass. Give it a real
+            # scope: the probe is its own root.
+            #
+            # What this now proves is the contract the launcher actually relies
+            # on: a pane-tailer inside our PID scope is reaped. It does NOT
+            # isolate the pattern sweep (step 2) - with the probe as a root the
+            # tree-kill in step 1 gets there first. Sweep MATCHING is unit-
+            # covered by watcher_patterns.tests.ps1 / backend_sweep_safety,
+            # and the complementary property (an OUT-of-scope tailer survives)
+            # is covered by the test below. Do not read this as sweep coverage.
+            Stop-AllWatchers -RootPids @($proc.Id) | Out-Null
 
             $alive = $null
             for ($i = 0; $i -lt 25; $i++) {

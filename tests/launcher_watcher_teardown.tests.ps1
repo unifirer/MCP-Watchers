@@ -161,14 +161,18 @@ Describe 'WT-tab heartbeat guard detects a closed tab' {
 }
 
 Describe 'Stop-AllWatchers tree-kills a sweep-found wrapper host AND its rebuild child' {
-    It 'kills a wrapper host (and its graphify-rs rebuild child) found only by the sweep' {
+    It 'kills an IN-SCOPE wrapper host and its graphify-rs rebuild child' {
         . $module
         # Fake wrapper HOST: a powershell whose CommandLine carries the
         # 'graphify-watch-wrapper' token, which spawns a long-lived grandchild
         # (cmd.exe ping) standing in for an in-flight `graphify-rs build`.
         # The grandchild is a TRUE descendant of the host so Stop-WatcherTree
-        # (BFS by ParentProcessId) reaches it. We pass NO RootPids, so this
-        # exercises the sweep-path tree-kill added by this task.
+        # (BFS by ParentProcessId) reaches it.
+        # mcpw-lqy: this used to pass NO RootPids and rely on the unscoped
+        # sweep. Stop-AllWatchers is now PID-SCOPED (deliberately - it is what
+        # stops one launcher reaping another's watchers), so an empty scope
+        # kills nothing and the assertion could never hold. The host is now
+        # handed in as a root, which is how the launcher really calls it.
         $gcFile = Join-Path $env:TEMP ('gf_tree_' + [guid]::NewGuid().ToString('N') + '.txt')
         $hostProc = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden `
             -ArgumentList @('-NoProfile', '-WindowStyle', 'Hidden', '-Command',
@@ -184,10 +188,12 @@ Describe 'Stop-AllWatchers tree-kills a sweep-found wrapper host AND its rebuild
                 Start-Sleep -Milliseconds 200
             }
             $childPid | Should BeGreaterThan 0
-            # Pure sweep path: NO RootPids. The host is found by its CommandLine
-            # token; Task 3 must tree-kill it (and its grandchild) before/with
-            # the sweep.
-            Stop-AllWatchers | Out-Null
+            # In scope as a tracked root: the host dies with its grandchild.
+            # Note this no longer isolates the CommandLine sweep path - the
+            # step-1 tree-kill of the root reaches the pair first. The sweep's
+            # matching rules are unit-covered elsewhere; what is locked here is
+            # that an in-scope host never leaves an orphaned rebuild child.
+            Stop-AllWatchers -RootPids @($hostProc.Id) | Out-Null
             $stillAlive = $null
             for ($i = 0; $i -lt 25; $i++) {
                 try { $stillAlive = Get-Process -Id $childPid -ErrorAction SilentlyContinue } catch { $stillAlive = $null }

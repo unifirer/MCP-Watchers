@@ -16,6 +16,7 @@
 $script:WatcherSweepPatterns = @(
     @{ Name = 'gm.exe';          Pattern = 'watch' },
     @{ Name = 'repowise.exe';    Pattern = 'watch' },
+    @{ Name = 'codegraph.exe';   Pattern = 'watch' },
     @{ Name = 'graphify-rs.exe'; Pattern = '' },                 # rebuild child: no watch token
     @{ Name = 'grepai.exe';      Pattern = 'watch' },
     @{ Name = 'memtrace.exe';    Pattern = '' },

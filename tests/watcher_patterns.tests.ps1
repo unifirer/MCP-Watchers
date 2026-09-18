@@ -34,6 +34,13 @@ Describe 'watcher_patterns shared sweep list' {
         $gf.Count | Should Be 1
     }
 
+    It 'contains a dedicated entry for the codegraph watch sweep' {
+        . $patternsModule
+        $cg = @($script:WatcherSweepPatterns | Where-Object {
+            $_.Name -eq 'codegraph.exe' -and $_.Pattern -eq 'watch' })
+        $cg.Count | Should Be 1
+    }
+
     It 'contains a dedicated entry for the grepai supervisor sweep' {
         . $patternsModule
         $sup = @($script:WatcherSweepPatterns | Where-Object {

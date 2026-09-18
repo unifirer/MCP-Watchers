@@ -45,11 +45,16 @@ Modules\watcher_log_tail.ps1                                           increment
 Modules\watcher_pane_scripts.ps1                                       pane script builder
 Modules\watcher_patterns.ps1                                           regex patterns
 Modules\watcher_teardown.ps1                                           tree-kill and sweep
-Modules\graphiti\embed_server.py                                       graphiti embeddings proxy (:8003, still host-run for Docker)
-Modules\graphiti\README.md                                             graphiti glue notes
 tests\                                                                 25 Pester suites, 17 Python tests
 docs\                                                                  guides, reviews, plans, changelogs
 ```
+
+The graphiti glue is shared infrastructure, not repo code. `embed_server.py`
+(:8003) and `mcp_proxy.py` (:8004) are resolved from the shared tree at
+runtime - default the `shared\graphiti` sibling of this repository's parent
+(`J:\audio\shared\graphiti` on this machine) - with the `%LOCALAPPDATA%`
+install copy as fallback. Override the shared location with
+`$env:GRAPHITI_SHARED_DIR`.
 
 ## Run
 

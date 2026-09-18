@@ -4043,13 +4043,20 @@ $graphitiEmbedJobScript = {
         return
     }
 
-    # Glue resolution: repo copy first (Modules\graphiti), install second. The
-    # venv python stays install-resident - a venv cannot be relocated by copy,
-    # because Scripts\*.exe shims embed absolute paths.
+    # Glue resolution: global shared copy first, install second. The glue left
+    # every repo on 2026-09-19 - it is shared infrastructure, not repo code.
+    # Default is the shared sibling of the repo's parent; override with
+    # $env:GRAPHITI_SHARED_DIR. The venv python stays install-resident - a venv
+    # cannot be relocated by copy, because Scripts\*.exe shims embed absolute
+    # paths.
     $embedPy = Join-Path $env:LOCALAPPDATA "Programs\graphiti-mcp\mcp_server\.venv\Scripts\python.exe"
     $embedScript = $null
     $embedCands = @()
-    if ($ScriptDir) { $embedCands += (Join-Path $ScriptDir 'Modules\graphiti\embed_server.py') }
+    $sharedGraphiti = $env:GRAPHITI_SHARED_DIR
+    if (-not $sharedGraphiti -and $ScriptDir) {
+        $sharedGraphiti = Join-Path (Split-Path -Parent $ScriptDir) 'shared\graphiti'
+    }
+    if ($sharedGraphiti) { $embedCands += (Join-Path $sharedGraphiti 'embed_server.py') }
     $embedCands += (Join-Path $env:LOCALAPPDATA 'Programs\graphiti-mcp\mcp_server\embed_server.py')
     foreach ($cand in $embedCands) {
         if (Test-Path -LiteralPath $cand) { $embedScript = $cand; break }
@@ -4110,8 +4117,10 @@ if (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue) {
 # --- Graphiti MCP (:8002, Docker) -------------------------------------
 # graphiti-mcp runs as a Docker container (restart: always, native HTTP on
 # container :8000 -> host :8002). The old Windows python bridge
-# (Modules\graphiti\mcp_proxy.py, stdio main.py) is deleted. The launcher
-# never spawns or supervises :8002; it only reports. Docker owns restarts.
+# (stdio main.py) is deleted. mcp_proxy.py is NOT - it was relocated to the
+# global shared tree and serves :8004 as the Toolport -> docker session
+# adapter. The launcher never spawns or supervises :8002; it only reports.
+# Docker owns restarts.
 # The container still needs host :8003 (embed proxy above), :4000 (litellm)
 # and :6379 (FalkorDB) via host.docker.internal.
 try {
@@ -4227,10 +4236,15 @@ $backendSupervisorScript = {
     }
     function Start-GraphitiEmbedBackend {
         $embedPy = Join-Path $env:LOCALAPPDATA "Programs\graphiti-mcp\mcp_server\.venv\Scripts\python.exe"
-        # Glue resolution: repo copy first (Modules\graphiti), install second.
+        # Glue resolution: global shared copy first, install second. Override
+        # the shared location with $env:GRAPHITI_SHARED_DIR.
         $embedScript = $null
         $embedCands = @()
-        if ($ScriptDir) { $embedCands += (Join-Path $ScriptDir 'Modules\graphiti\embed_server.py') }
+        $sharedGraphiti = $env:GRAPHITI_SHARED_DIR
+        if (-not $sharedGraphiti -and $ScriptDir) {
+            $sharedGraphiti = Join-Path (Split-Path -Parent $ScriptDir) 'shared\graphiti'
+        }
+        if ($sharedGraphiti) { $embedCands += (Join-Path $sharedGraphiti 'embed_server.py') }
         $embedCands += (Join-Path $env:LOCALAPPDATA 'Programs\graphiti-mcp\mcp_server\embed_server.py')
         foreach ($cand in $embedCands) {
             if (Test-Path -LiteralPath $cand) { $embedScript = $cand; break }

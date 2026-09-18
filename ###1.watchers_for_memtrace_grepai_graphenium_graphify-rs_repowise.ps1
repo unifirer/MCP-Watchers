@@ -495,18 +495,97 @@ function Test-PortHeldByLauncherDaemon {
     }
     return $false
 }
+# PERSISTENT-SINGLETON STALENESS RULE (mcpw-d0m, decided 2026-09-18)
+# ---------------------------------------------------------------------------
+# A daemon that holds the port AND answers an HTTP request is NOT stale. It is
+# the machine's resident singleton, and a second repo must ADOPT it, not kill
+# it. Killing it only because this launcher started later took :8420/:8080/
+# :8765 down for the other repo (observed 2026-09-18 from a sibling checkout).
+#
+# Source of truth for "which daemons are machine-wide singletons":
+# Modules\watcher_patterns.ps1, the entries carrying Persistent = $true. The
+# startup takeover sweep honours that marker. This auto-heal path honours it
+# through -DeferToHealthy below, which every PERSISTENT call site passes.
+#
+# :50051 memtrace does NOT pass it, on purpose. memtrace is REPO-SCOPED: its
+# store lives in <repo>\.memdb ($script:memtraceStateFile) and the start job is
+# handed $watchersWorkspaceRoot. A foreign memtrace holding :50051 serves the
+# WRONG repo's store, so replacing it is correct - it stays kill-on-conflict.
+#
+# :8765 (mcp_agent_mail) has no call site here at all. Its process is
+# python.exe, too broad a name match; the in-job port dedup covers it. See the
+# comment at the mail block.
+# ---------------------------------------------------------------------------
+# Liveness probe: TCP connect plus a short HTTP GET. ANY HTTP status line
+# (200/401/404/405...) proves an application is behind the socket and
+# answering; only refusal, reset or timeout means dead. Verified live
+# 2026-09-18 against the running daemons: :8420 cerememory, :8080
+# claude-mcp-server and :8765 mcp_agent_mail each answered HTTP 404 to
+# "GET /" - all three are alive by this rule. Deliberately does NOT depend on
+# a documented health endpoint existing.
+function Test-HttpPortAnswering {
+    param(
+        [string]$Address = '127.0.0.1',
+        [int]$Port,
+        [int]$TimeoutMs = 3000
+    )
+    $sock = $null
+    try {
+        $sock = New-Object System.Net.Sockets.TcpClient
+        $iar = $sock.BeginConnect($Address, $Port, $null, $null)
+        if (-not $iar.AsyncWaitHandle.WaitOne($TimeoutMs)) { return $false }
+        if (-not $sock.Connected) { return $false }
+        [void]$sock.EndConnect($iar)
+    } catch {
+        return $false
+    } finally {
+        if ($sock) { try { $sock.Close() } catch { Write-Warning "Port-owner probe: socket close failed - $($_.Exception.Message)" } }
+    }
+    $resp = $null
+    try {
+        $req = [System.Net.HttpWebRequest]::Create("http://$($Address):$Port/")
+        $req.Timeout = $TimeoutMs
+        $req.ReadWriteTimeout = $TimeoutMs
+        $req.KeepAlive = $false
+        $req.UserAgent = 'watchers-launcher-liveness'
+        $resp = $req.GetResponse()
+        return $true
+    } catch [System.Net.WebException] {
+        # A WebException that CARRIES a response is a normal HTTP status such as
+        # 404 - the server answered, so it is alive.
+        if ($_.Exception.Response) { return $true }
+        return $false
+    } catch {
+        return $false
+    } finally {
+        if ($resp) { try { $resp.Close() } catch { Write-Warning "Port-owner probe: response close failed - $($_.Exception.Message)" } }
+    }
+}
+
 function Exit-IfPortHeldByLauncherDaemon {
     param(
         [int]$Port,
         [string[]]$DaemonProcessNames,
         [string]$Label,
-        [switch]$AutoHeal = $false
+        [switch]$AutoHeal = $false,
+        # mcpw-d0m: pass for a machine-wide PERSISTENT singleton. When the port
+        # holder answers an HTTP probe it is the resident singleton, not a stale
+        # daemon: adopt it and return instead of killing it. See the staleness
+        # rule comment above.
+        [switch]$DeferToHealthy = $false
     )
     $stalePid = 0
     $held = Test-PortHeldByLauncherDaemon -Port $Port -DaemonProcessNames $DaemonProcessNames -OwningPid ([ref]$stalePid)
     if (-not $held) { return }
 
     if ($AutoHeal) {
+        # PERSISTENT SINGLETON: a resident that answers is healthy. Adopt it.
+        # Safe because the downstream start job dedupes against an
+        # already-listening port ($cerememoryJobScript, $claudeMcpJobScript).
+        if ($DeferToHealthy -and (Test-HttpPortAnswering -Port $Port)) {
+            Write-Host "[$Label AUTO-HEAL] port $Port held by a healthy resident daemon (PID $stalePid) - adopting it, not killing it."
+            return
+        }
         # SELF-HEAL: kill the stale daemon so this launcher can take over the port.
         if ($stalePid -gt 0) {
             try {
@@ -642,7 +721,9 @@ function Repair-GrepaiIndexIfCorrupted {
 # Shared by Test-OllamaRunning and the orchestrator's status message so they
 # never disagree (and stay correct after the repo relocated Ollama to 12134).
 function Get-GrepaiOllamaTarget {
-    $ghGrepai = Join-Path $scriptDir '.grepai'
+    # mcpw-ybs.7: repository-scoped - read the WATCHED repo's .grepai, not the
+    # script's own folder, so a foreign cwd consults its own config.
+    $ghGrepai = Join-Path $watchersWorkspaceRoot '.grepai'
     $ghCfg = Join-Path $ghGrepai 'config.yaml'
     $target = '127.0.0.1:11434'   # grepai's documented default when none configured
     if (Test-Path $ghCfg) {
@@ -749,8 +830,9 @@ function Test-OllamaRunning {
 # .grepai/config.yaml, then report Ollama status. Always returns $true (the check
 # completed; repairs are side effects). Safe to call before grepai watch launches.
 function Test-GrepaiIndexHealth {
-    $gitRoot = git -C "$scriptDir" rev-parse --show-toplevel 2>$null
-    $dirs = @($scriptDir)
+    # mcpw-ybs.7: health-check the WATCHED repo's index, not the script folder's.
+    $gitRoot = git -C "$watchersWorkspaceRoot" rev-parse --show-toplevel 2>$null
+    $dirs = @($watchersWorkspaceRoot)
     if ($gitRoot) {
         $dirs += git -C "$gitRoot" worktree list --porcelain 2>$null |
             Where-Object { $_ -match '^worktree ' } |
@@ -789,7 +871,7 @@ function Test-GrepaiIndexHealth {
     # Ollama is required by grepai for nomic-embed-text embeddings.
     # Port-reservation fix: ensure grepai's Ollama target is reachable & not
     # reserved; sets OLLAMA_HOST (session env var read by the auto-start below).
-    $ghDir = Join-Path $scriptDir '.grepai'
+    $ghDir = Join-Path $watchersWorkspaceRoot '.grepai'
     $ollamaUp = Test-OllamaRunning
     if (-not $ollamaUp) {
         # Accurate: Ollama is NOT up yet, but it WILL be auto-started by the
@@ -963,57 +1045,181 @@ if (-not $ollamaGateJob) {
     $ollamaGateJob = $null
 }
 
-# Layer 2: Validate .grepai/ state in linked worktrees before starting grepai
-try {
-    $gitRoot = git -C "$scriptDir" rev-parse --show-toplevel 2>$null
-    if ($gitRoot) {
-        $worktreeDirs = git -C "$gitRoot" worktree list --porcelain 2>$null |
-            Where-Object { $_ -match '^worktree ' } |
-            ForEach-Object { ($_ -split ' ', 2)[1] } |
-            Where-Object { $_ -ne $gitRoot }
-        foreach ($wt in $worktreeDirs) {
-            $idx = Join-Path $wt '.grepai/index.gob'
-            $cfg = Join-Path $wt '.grepai\config.yaml'
-            if ((Test-Path $idx) -and -not (Test-Path $cfg)) {
-                Write-Host "Removing stale .grepai/index.gob in linked worktree: $wt"
-                Remove-Item $idx -Force
-            }
-        }
-    }
-} catch {
-    Write-Warning "Worktree .grepai validation failed: $($_.Exception.Message)"
+# --- mcpw-759: grepai worktree hygiene ----------------------------------------
+#
+# A linked worktree whose `.git` gitfile is missing or truncated is DEGRADED.
+# Measured with the real git on a throwaway repo (temp\mcpw759):
+#   rev-parse --is-inside-work-tree  -> (no output)              exit 128
+#   rev-parse HEAD                   -> (no output)              exit 128
+#   status --porcelain               -> fatal: not a git repo    exit 128
+#   worktree remove <wt> --force     -> fatal: validation failed exit 128
+#   worktree list --porcelain        -> STILL LISTS THE PATH
+#
+# The old Layer 1 guard was `if ($wtHead -and $wtHead -eq $mainHead)`. $wtHead
+# is EMPTY for exactly this case, so the guard was FALSE and the degraded
+# worktree was skipped in silence on every run. `worktree remove --force`
+# refuses it too, and `worktree prune` only drops the registration when the
+# gitfile is gone - the directory survives either way. grepai then re-used the
+# dead path and indexing failed inside grepai's own log.
+#
+# Detection now keys on `rev-parse --is-inside-work-tree`, the test git itself
+# uses to decide a path is a worktree at all. Toplevel identity is also
+# required: a corrupted directory NESTED inside another repository makes
+# `--is-inside-work-tree` answer "true" for the OUTER repo (measured), so
+# without identity check a nested dead path reads as healthy.
+
+function Test-GitWorktreeUsable {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return $false }
+    $inside = git -C "$Path" rev-parse --is-inside-work-tree 2>$null
+    if ($LASTEXITCODE -ne 0) { return $false }
+    if ($inside -ne 'true') { return $false }
+    $top = git -C "$Path" rev-parse --show-toplevel 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $top) { return $false }
+    $self = [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+    $root = [System.IO.Path]::GetFullPath($top).TrimEnd('\', '/')
+    return ($self -ieq $root)
 }
 
-# Layer 1: Prune fully-merged stale worktrees to prevent grepai auto-discovery
-try {
-    $gitRoot = git -C "$scriptDir" rev-parse --show-toplevel 2>$null
-    if ($gitRoot) {
-        $mainHead = git -C "$gitRoot" rev-parse HEAD 2>$null
-        $worktreeDirs = git -C "$gitRoot" worktree list --porcelain 2>$null |
-            Where-Object { $_ -match '^worktree ' } |
-            ForEach-Object { ($_ -split ' ', 2)[1] } |
-            Where-Object { $_ -ne $gitRoot }
-        foreach ($wt in $worktreeDirs) {
-            $wtHead = git -C "$wt" rev-parse HEAD 2>$null
-            if ($wtHead -and $wtHead -eq $mainHead) {
-                # Never --force-remove a worktree holding uncommitted changes.
-                $dirty = @(git -C "$wt" status --porcelain 2>$null)
-                if ($dirty.Count -gt 0) {
-                    Write-Warning "Skipping worktree '$wt': HEAD matches main but uncommitted changes exist."
-                    continue
-                }
-                $branch = git -C "$wt" rev-parse --abbrev-ref HEAD 2>$null
-                Write-Host "Pruning stale worktree '$wt' (HEAD matches main, branch: $branch)..."
-                git -C "$gitRoot" worktree remove "$wt" --force 2>$null
-                if ($LASTEXITCODE -ne 0) {
-                    Write-Warning "Failed to remove worktree: $wt"
-                }
-            }
+# Layer 2 (reordered to run second). Drops a stale .grepai/index.gob left in a
+# surviving linked worktree that has no .grepai/config.yaml.
+function Invoke-GrepaiWorktreeValidate {
+    param([string]$RepoRoot)
+    $gitRoot = git -C "$RepoRoot" rev-parse --show-toplevel 2>$null
+    if (-not $gitRoot) { return }
+    $gitRootFull = [System.IO.Path]::GetFullPath($gitRoot).TrimEnd('\', '/')
+    $worktreeDirs = git -C "$gitRoot" worktree list --porcelain 2>$null |
+        Where-Object { $_ -match '^worktree ' } |
+        ForEach-Object { ($_ -split ' ', 2)[1] } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    foreach ($wt in $worktreeDirs) {
+        $candFull = [System.IO.Path]::GetFullPath($wt).TrimEnd('\', '/')
+        if ($candFull -ieq $gitRootFull) { continue }
+        $idx = Join-Path $wt '.grepai/index.gob'
+        $cfg = Join-Path $wt '.grepai\config.yaml'
+        if ((Test-Path $idx) -and -not (Test-Path $cfg)) {
+            Write-Host "Removing stale .grepai/index.gob in linked worktree: $wt"
+            Remove-Item $idx -Force
         }
-        git -C "$gitRoot" worktree prune 2>$null
+    }
+}
+
+# Layer 1 (runs FIRST). Removes worktrees that git reports - or that sit at the
+# launcher's own grepai worktree path - but that git cannot open as a worktree,
+# plus (unchanged) fully-merged worktrees with no uncommitted changes. Returns
+# the removed paths so a caller or test can assert on them.
+#
+# Safety: only two path sources are considered, both authoritative. (1) `git
+# worktree list --porcelain`, git's own registration. (2) -ExpectedWorktreePath,
+# provably this launcher's own scaffolding. No other path is ever removed.
+function Invoke-GrepaiWorktreePrune {
+    param(
+        [string]$RepoRoot,
+        [string]$ExpectedWorktreePath = '',
+        [string]$ProtectedPath = ''
+    )
+    $removed = @()
+    if ([string]::IsNullOrWhiteSpace($RepoRoot)) { return @() }
+    $gitRoot = git -C "$RepoRoot" rev-parse --show-toplevel 2>$null
+    if (-not $gitRoot) { return @() }
+    $gitRootFull = [System.IO.Path]::GetFullPath($gitRoot).TrimEnd('\', '/')
+    $protectFull = ''
+    if (-not [string]::IsNullOrWhiteSpace($ProtectedPath)) {
+        $protectFull = [System.IO.Path]::GetFullPath($ProtectedPath).TrimEnd('\', '/')
+    }
+
+    $candidates = New-Object System.Collections.Generic.List[string]
+    git -C "$gitRoot" worktree list --porcelain 2>$null |
+        Where-Object { $_ -match '^worktree ' } |
+        ForEach-Object { ($_ -split ' ', 2)[1] } |
+        ForEach-Object { if (-not [string]::IsNullOrWhiteSpace($_)) { $candidates.Add($_) } }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedWorktreePath)) {
+        $candidates.Add($ExpectedWorktreePath)
+    }
+
+    # `worktree list` prints forward slashes while a Join-Path candidate uses
+    # backslashes. Deduplicate on the NORMALIZED path so the same worktree is
+    # not walked twice (it was warned about twice before).
+    $seen = @{}
+    $unique = New-Object System.Collections.Generic.List[string]
+    foreach ($c in $candidates) {
+        $k = ([System.IO.Path]::GetFullPath($c).TrimEnd('\', '/')).ToLowerInvariant()
+        if (-not $seen.ContainsKey($k)) { $seen[$k] = $true; $unique.Add($c) }
+    }
+
+    $mainHead = git -C "$gitRoot" rev-parse HEAD 2>$null
+    foreach ($wt in $unique) {
+        # mcpw-759: a blank path here makes PowerShell 5.1 DROP the operand, so
+        # `git -C "$wt" rev-parse HEAD` becomes `git -C rev-parse HEAD` and
+        # fails with "fatal: cannot change to 'rev-parse'". Under
+        # $ErrorActionPreference='Stop' that aborts this whole block - the exact
+        # T6/T7 warning. Never hand git an empty -C operand.
+        if ([string]::IsNullOrWhiteSpace($wt)) { continue }
+        if (-not (Test-Path -LiteralPath $wt -PathType Container)) { continue }
+        $candFull = [System.IO.Path]::GetFullPath($wt).TrimEnd('\', '/')
+        # Never remove the main worktree: that IS the repository.
+        if ($candFull -ieq $gitRootFull) { continue }
+        # Never remove the workspace we run in, or any parent of it.
+        if ($protectFull -and ($candFull -ieq $protectFull -or
+            $protectFull.StartsWith($candFull + '\', [System.StringComparison]::OrdinalIgnoreCase))) { continue }
+
+        if (Test-GitWorktreeUsable -Path $wt) {
+            $wtHead = git -C "$wt" rev-parse HEAD 2>$null
+            if (-not $wtHead -or $wtHead -ne $mainHead) { continue }
+            # Never --force-remove a worktree holding uncommitted changes.
+            $dirty = @(git -C "$wt" status --porcelain 2>$null)
+            if ($dirty.Count -gt 0) {
+                Write-Warning "Skipping worktree '$wt': HEAD matches main but uncommitted changes exist."
+                continue
+            }
+            $branch = git -C "$wt" rev-parse --abbrev-ref HEAD 2>$null
+            Write-Host "Pruning stale worktree '$wt' (HEAD matches main, branch: $branch)..."
+            git -C "$gitRoot" worktree remove "$wt" --force 2>$null
+            if ($LASTEXITCODE -eq 0) { $removed += $wt; continue }
+            Write-Warning "Failed to remove worktree: $wt"
+            continue
+        }
+
+        # DEGRADED. git lists the path but cannot open it as a worktree, so
+        # there is no index and no HEAD here to hold uncommitted work, and
+        # `status` cannot answer at all - which is why the dirty guard cannot
+        # apply. Ask git first; it is the only tool that also unregisters the
+        # worktree cleanly. Only if git refuses do we delete the directory.
+        Write-Host "Removing degraded worktree '$wt' (not openable as a worktree)..."
+        git -C "$gitRoot" worktree remove "$wt" --force 2>$null
+        if (-not (Test-Path -LiteralPath $wt)) { $removed += $wt; continue }
+        Remove-Item -LiteralPath $wt -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $wt) {
+            Write-Warning "Failed to remove degraded worktree directory: $wt"
+            continue
+        }
+        $removed += $wt
+    }
+    git -C "$gitRoot" worktree prune 2>$null
+    return @($removed)
+}
+
+# Layer 1: Prune fully-merged stale worktrees to prevent grepai auto-discovery.
+# mcpw-759: Layer 1 now runs BEFORE Layer 2 so a degraded path is deleted
+# first and Layer 2 never validates something about to be removed.
+try {
+    $prunedWorktrees = Invoke-GrepaiWorktreePrune `
+        -RepoRoot $watchersWorkspaceRoot `
+        -ExpectedWorktreePath (Join-Path $watchersWorkspaceRoot "$workspaceKey\worktree") `
+        -ProtectedPath $watchersWorkspaceRoot
+    if (@($prunedWorktrees).Count -gt 0) {
+        Write-Host ("Worktree prune removed {0} path(s): {1}" -f @($prunedWorktrees).Count, ($prunedWorktrees -join ', '))
     }
 } catch {
     Write-Warning "Worktree pruning failed: $($_.Exception.Message)"
+}
+
+# Layer 2: Validate .grepai/ state in linked worktrees before starting grepai
+try {
+    Invoke-GrepaiWorktreeValidate -RepoRoot $watchersWorkspaceRoot
+} catch {
+    Write-Warning "Worktree .grepai validation failed: $($_.Exception.Message)"
 }
 
 # --- Log directory + paths (defined early so both the grepai launch below and the
@@ -1077,7 +1283,7 @@ if (-not $grepaiOk) {
     }
     try {
         $gp = Start-Process -FilePath (Get-Command "grepai.exe").Source -ArgumentList "watch" `
-            -WorkingDirectory $scriptDir -WindowStyle Hidden `
+            -WorkingDirectory $watchersWorkspaceRoot -WindowStyle Hidden `
             -RedirectStandardOutput $grepaiLaunchLog -RedirectStandardError $grepaiLaunchErr -PassThru
         # vad-r0i parent-death: the kill-on-close job handle is owned by THIS
         # launcher process, so a hard kill / crash of the launcher (where neither
@@ -1116,7 +1322,7 @@ if (-not $grepaiOk) {
             Start-Sleep -Seconds 1
             try {
                 $gp2 = Start-Process -FilePath (Get-Command "grepai.exe").Source -ArgumentList "watch" `
-                    -WorkingDirectory $scriptDir -WindowStyle Hidden `
+                    -WorkingDirectory $watchersWorkspaceRoot -WindowStyle Hidden `
                     -RedirectStandardOutput $grepaiLaunchLog -RedirectStandardError $grepaiLaunchErr -PassThru
                 # vad-r0i parent-death: the retried spawn is the tracked watcher
                 # now, so it must be inside the kill-on-close job too.
@@ -1498,8 +1704,51 @@ if ($grepaiOk) {
                         $consecutiveRestarts = 0
                     }
                     if ($consecutiveRestarts -ge 5) {
-                        Write-SupLog "5 consecutive failed restarts - backing off 10 minutes"
-                        Write-WatchersLog "grepai supervisor backing off 10 minutes (5 consecutive failed restarts)"
+                        # mcpw-11434 (2026-09-18): distinguish a TRANSIENT crash
+                        # from a PERMANENT misconfiguration before sleeping.
+                        #
+                        # The old loop retried blindly: five doomed relaunches,
+                        # then 10 minutes asleep, then five more - forever. When
+                        # the failure is deterministic (grepai's configured
+                        # embedder endpoint is unreachable) backoff never
+                        # converges, and the operator sees only
+                        # "supervised restart pending..." with no cause.
+                        #
+                        # Observed cost: grepai exited in <2 s on every attempt
+                        # for hours because .grepai/config.yaml pointed at
+                        # 11434 while Ollama listened on 12134. Six relaunches
+                        # produced no diagnostic. A single reachability probe
+                        # names the fault on the first cycle.
+                        #
+                        # This changes only the MESSAGE. The 10-minute sleep is
+                        # identical in both branches, deliberately: grepai may
+                        # come back on its own if the operator fixes the config.
+                        # It never skips a restart, never edits the config (grepai
+                        # owns that file), and never touches OLLAMA_HOST - the
+                        # model/endpoint configuration is the operator's.
+                        $embedderDead = $false
+                        $embedderTarget = ''
+                        try {
+                            $ghCfg = Join-Path $RepoRoot '.grepai\config.yaml'
+                            if (Test-Path -LiteralPath $ghCfg) {
+                                $cfgTxt = Get-Content -LiteralPath $ghCfg -Raw -ErrorAction SilentlyContinue
+                                if ($cfgTxt -match '(?m)^\s*endpoint:\s*"?(https?://[^"\s]+)"?\s*$') {
+                                    $embedderTarget = $Matches[1]
+                                    try {
+                                        $probe = Invoke-WebRequest -Uri "$embedderTarget/api/tags" -Method Get -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
+                                        $embedderDead = -not ($probe.StatusCode -eq 200)
+                                    } catch { $embedderDead = $true }
+                                }
+                            }
+                        } catch { $embedderDead = $false }
+                        if ($embedderDead) {
+                            Write-SupLog "5 consecutive failed restarts - embedder endpoint $embedderTarget is UNREACHABLE; backing off 10 minutes (misconfiguration, not a transient crash)"
+                            Write-WatchersLog "grepai cannot start: embedder endpoint $embedderTarget is unreachable. grepai exits immediately without a reachable Ollama. Fix .grepai/config.yaml embedder.endpoint (Ollama on this machine serves on 127.0.0.1:12134). Backing off 10 minutes - subsequent cycles will repeat until the endpoint answers."
+                            Write-Warning "grepai is misconfigured, not crashing: embedder endpoint $embedderTarget is unreachable. Correct embedder.endpoint in .grepai\config.yaml (Ollama serves on 127.0.0.1:12134 here)."
+                        } else {
+                            Write-SupLog "5 consecutive failed restarts - backing off 10 minutes"
+                            Write-WatchersLog "grepai supervisor backing off 10 minutes (5 consecutive failed restarts)"
+                        }
                         # VAD-7qf0: keep the liveness stamp fresh through the
                         # cooldown so the pane never mistakes a backed-off (still
                         # alive) supervisor for a dead one and races the heal.
@@ -1570,11 +1819,11 @@ if ($grepaiOk) {
     }
     if (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue) {
         $supervisorJob = Start-ThreadJob -ScriptBlock $supervisorScript `
-            -ArgumentList $scriptDir, $grepaiLaunchLog, $grepaiLaunchErr, $supSupervisorLog, $lockFile, $script:watchersLog, $jobHelpersModule
+            -ArgumentList $watchersWorkspaceRoot, $grepaiLaunchLog, $grepaiLaunchErr, $supSupervisorLog, $lockFile, $script:watchersLog, $jobHelpersModule
         Write-Host "grepai crash-restart supervisor spawned (job $($supervisorJob.Id)) - logs: $supSupervisorLog"
     } else {
         $supervisorJob = Start-Job -ScriptBlock $supervisorScript `
-            -ArgumentList $scriptDir, $grepaiLaunchLog, $grepaiLaunchErr, $supSupervisorLog, $lockFile, $script:watchersLog, $jobHelpersModule
+            -ArgumentList $watchersWorkspaceRoot, $grepaiLaunchLog, $grepaiLaunchErr, $supSupervisorLog, $lockFile, $script:watchersLog, $jobHelpersModule
         Write-Host "grepai crash-restart supervisor spawned (Start-Job fallback, job $($supervisorJob.Id)) - logs: $supSupervisorLog"
     }
 }
@@ -2059,7 +2308,7 @@ if (-not $litellmExe) { $litellmExe = "" }
 # Config: prefer %USERPROFILE%\litellm (current location), then next to the launcher.
 $litellmConfig = Join-Path $env:USERPROFILE "litellm\litellm_config.yaml"
 if (-not (Test-Path -LiteralPath $litellmConfig)) {
-    $litellmAlt = Join-Path $scriptDir "litellm_config.yaml"
+    $litellmAlt = Join-Path $watchersWorkspaceRoot "litellm_config.yaml"
     if (Test-Path -LiteralPath $litellmAlt) { $litellmConfig = $litellmAlt }
 }
 $litellmLog = Join-Path $logsDir "litellm-proxy.log"
@@ -2353,7 +2602,7 @@ function Import-EnvFile {
         }
     }
 }
-Import-EnvFile (Join-Path $scriptDir ".env")
+Import-EnvFile (Join-Path $watchersWorkspaceRoot ".env")
 
 # -- fallback proxy: ensure 11436 is up before gm semantic build (and repowise) --
 # PS 5.1 fix (2026-08-27): `??` is a PS 7-only operator and a hard parse error
@@ -2437,7 +2686,10 @@ $global:gmSemState = @{
 # exclusion list.
 try {
     $script:gmFsw = New-Object System.IO.FileSystemWatcher
-    $script:gmFsw.Path = $scriptDir
+    # mcpw-ybs.7: watch the REPOSITORY the operator launched from, not the folder
+    # holding this script. Otherwise edits in repo B never trigger a rebuild and
+    # edits in repo A trigger one for the wrong workspace.
+    $script:gmFsw.Path = $watchersWorkspaceRoot
     $script:gmFsw.IncludeSubdirectories = $true
     $script:gmFsw.NotifyFilter = [System.IO.NotifyFilters]::FileName -bor [System.IO.NotifyFilters]::LastWrite
     $script:gmFsw.Filter = '*'
@@ -2535,9 +2787,9 @@ $gmSemScriptBlock = {
     }
 }
 if (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue) {
-    $gmSemJob = Start-ThreadJob -ArgumentList $global:gmSemState, (${function:Invoke-GmSemanticBuild}.ToString()), (${function:Test-LlmProxyReady}.ToString()), $scriptDir, $gmRunLog -ScriptBlock $gmSemScriptBlock -ErrorAction SilentlyContinue
+    $gmSemJob = Start-ThreadJob -ArgumentList $global:gmSemState, (${function:Invoke-GmSemanticBuild}.ToString()), (${function:Test-LlmProxyReady}.ToString()), $watchersWorkspaceRoot, $gmRunLog -ScriptBlock $gmSemScriptBlock -ErrorAction SilentlyContinue
 } else {
-    $gmSemJob = Start-Job -ArgumentList $global:gmSemState, (${function:Invoke-GmSemanticBuild}.ToString()), (${function:Test-LlmProxyReady}.ToString()), $scriptDir, $gmRunLog -ScriptBlock $gmSemScriptBlock -ErrorAction SilentlyContinue
+    $gmSemJob = Start-Job -ArgumentList $global:gmSemState, (${function:Invoke-GmSemanticBuild}.ToString()), (${function:Test-LlmProxyReady}.ToString()), $watchersWorkspaceRoot, $gmRunLog -ScriptBlock $gmSemScriptBlock -ErrorAction SilentlyContinue
 }
 if (-not $gmSemJob) { Write-Warning "[gm-semantic] could not start incremental loop (Start-ThreadJob unavailable). Semantic graph will refresh only on next launcher start." }
 elseif ($gmSemJob.State -eq 'Failed') { Write-Warning ("[gm-semantic] incremental loop job failed at start: " + (($gmSemJob | Receive-Job -Keep -ErrorAction SilentlyContinue) | Out-String)) }
@@ -2550,8 +2802,8 @@ $graphifyWrapper = Join-Path $scriptDir "dev_tools\graphify-watch-wrapper.ps1"
 if (Test-Path -LiteralPath $graphifyWrapper) {
     Write-Host "Starting graphify-rs ignore-aware watcher (detached, logging to $graphifyLog)..."
     $wp = Start-Process -FilePath "powershell.exe" `
-        -ArgumentList @("-NoProfile", "-WindowStyle", "Hidden", "-File", "`"$graphifyWrapper`"", "-WatchMode", "-Repo", "`"$scriptDir`"") `
-        -WorkingDirectory $scriptDir -WindowStyle Hidden `
+        -ArgumentList @("-NoProfile", "-WindowStyle", "Hidden", "-File", "`"$graphifyWrapper`"", "-WatchMode", "-Repo", "`"$watchersWorkspaceRoot`"") `
+        -WorkingDirectory $watchersWorkspaceRoot -WindowStyle Hidden `
         -RedirectStandardOutput $graphifyLog -RedirectStandardError "$graphifyLog.err" -PassThru
     if ($wp) { $script:childProcs += $wp; $global:WatcherChildren += $wp.Id }
     $script:graphifyProc = $wp
@@ -2628,8 +2880,8 @@ if ($repowiseExe -and (Test-Path -LiteralPath $repowiseExe)) {
 # Resolve the repo's git top-level so the Memtrace state file lives at the
 # repo root even if this launcher script is in a subfolder. Fall back to the
 # script's own directory when not inside a git work tree.
-$script:memtraceGitRoot = git -C "$scriptDir" rev-parse --show-toplevel 2>$null
-if (-not $script:memtraceGitRoot) { $script:memtraceGitRoot = $scriptDir }
+$script:memtraceGitRoot = git -C "$watchersWorkspaceRoot" rev-parse --show-toplevel 2>$null
+if (-not $script:memtraceGitRoot) { $script:memtraceGitRoot = $watchersWorkspaceRoot }
 $script:memtraceStateFile = Join-Path $script:memtraceGitRoot ".memdb\daemon-state.json"
 $memtraceJobScript = {
     param($ScriptDir)
@@ -2646,15 +2898,49 @@ $memtraceJobScript = {
 
     # Resolve the memtrace command (npm shim: memtrace.cmd/.ps1, not a bare
     # .exe on PATH). Prefer a real .exe, fall back to the shim.
-    $memtraceCmd = Get-Command "memtrace.exe" -ErrorAction SilentlyContinue
-    if (-not $memtraceCmd) { $memtraceCmd = Get-Command "memtrace.cmd" -ErrorAction SilentlyContinue }
-    if (-not $memtraceCmd) { $memtraceCmd = Get-Command "memtrace"     -ErrorAction SilentlyContinue }
-    if (-not $memtraceCmd) {
-        Write-Warning "memtrace command not found on PATH (looked for memtrace.exe / memtrace.cmd / memtrace). Skipping Memtrace index (repo root)."
-        return
+    #
+    # PATHEXT HARDENING (2026-09-18): Get-Command resolves a bare name by
+    # searching $env:PATHEXT. When PATHEXT arrives here degraded to just ".CPL"
+    # (seen on this box), Get-Command finds NOTHING, the shim itself fails with
+    #  '"node"' is not recognized , `memtrace start` dies in ~1s, ports
+    # :50051/:3030 never bind, and this supervisor's 30s auto-heal retry leaks an
+    # orphaned pwsh.exe every cycle. Pin the launcher to ABSOLUTE paths instead:
+    # absolute paths are resolved by the OS loader and never consult PATHEXT.
+    $script:memtraceNode = $null
+    $script:memtraceJs   = $null
+    foreach ($nodeCand in @(
+        "C:\nvm4w\nodejs\node.exe",
+        "$env:ProgramFiles\nodejs\node.exe",
+        "C:\Program Files\nodejs\node.exe"
+    )) {
+        if ($nodeCand -and (Test-Path -LiteralPath $nodeCand)) { $script:memtraceNode = $nodeCand; break }
     }
-    $memtraceExe   = $memtraceCmd.Source
-    $memtraceIsExe = ($memtraceExe -match '\.exe$')
+    foreach ($jsCand in @(
+        "J:\Programs\npm-global\node_modules\memtrace\bin\memtrace.js",
+        "$env:APPDATA\npm\node_modules\memtrace\bin\memtrace.js"
+    )) {
+        if ($jsCand -and (Test-Path -LiteralPath $jsCand)) { $script:memtraceJs = $jsCand; break }
+    }
+
+    $memtraceExe   = $null
+    $memtraceIsExe = $false
+    if ($script:memtraceNode -and $script:memtraceJs) {
+        # Absolute node + absolute CLI entrypoint: immune to PATHEXT and to PATH.
+        $memtraceExe   = $script:memtraceNode
+        $memtraceIsExe = $true
+        $script:memtraceArgPrefix = @($script:memtraceJs)
+    } else {
+        $memtraceCmd = Get-Command "memtrace.exe" -ErrorAction SilentlyContinue
+        if (-not $memtraceCmd) { $memtraceCmd = Get-Command "memtrace.cmd" -ErrorAction SilentlyContinue }
+        if (-not $memtraceCmd) { $memtraceCmd = Get-Command "memtrace"     -ErrorAction SilentlyContinue }
+        if (-not $memtraceCmd) {
+            Write-Warning "memtrace command not found on PATH (looked for memtrace.exe / memtrace.cmd / memtrace, and no absolute node+memtrace.js pair exists). Skipping Memtrace index (repo root)."
+            return
+        }
+        $memtraceExe   = $memtraceCmd.Source
+        $memtraceIsExe = ($memtraceExe -match '\.exe$')
+        $script:memtraceArgPrefix = @()
+    }
 
     # Self-healing dedup: reuse an already-healthy root .memdb daemon.
     # NOTE: daemon-state.json can report status='healthy' while the port is
@@ -2741,7 +3027,7 @@ $memtraceJobScript = {
     }
 
     function Start-MemtraceHidden {
-        param($Exe, $WorkDir, $OutLog, $ErrLog)
+        param($Exe, $WorkDir, $OutLog, $ErrLog, $ArgPrefix = @())
         $DETACHED_PROCESS     = 0x00000008
         $CREATE_NO_WINDOW     = 0x08000000
         $STARTF_USESHOWWINDOW = 0x00000001
@@ -2752,10 +3038,21 @@ $memtraceJobScript = {
         $si.wShowWindow = 0   # SW_HIDE
         $pi = New-Object Win32.MemtraceLaunch+PROCESS_INFORMATION
 
+        # PATHEXT HARDENING (2026-09-18): `cmd /c "<bare name>"` cannot resolve
+        # anything when PATHEXT is degraded to ".CPL", which is how the shim died
+        # with '"node"' is not recognized. $ArgPrefix carries the absolute
+        # memtrace.js path when we launch absolute node.exe directly; building the
+        # command line from explicit quoted absolute paths keeps this working
+        # whether PATHEXT is sane or broken.
+        $parts = @()
+        foreach ($a in $ArgPrefix) { $parts += "`"$a`"" }
+        $parts += 'start', '--headless'
+        $argLine = $parts -join ' '
+
         $comspec = $env:ComSpec
         $ok = [Win32.MemtraceLaunch]::CreateProcess(
             $comspec,
-            "`"$comspec`" /c `"$Exe`" start --headless > `"$OutLog`" 2> `"$ErrLog`"",
+            "`"$comspec`" /c `"$Exe`" $argLine > `"$OutLog`" 2> `"$ErrLog`"",
             [IntPtr]::Zero, [IntPtr]::Zero, $false,
             ($DETACHED_PROCESS -bor $CREATE_NO_WINDOW),
             [IntPtr]::Zero, $WorkDir, [ref]$si, [ref]$pi)
@@ -2817,7 +3114,7 @@ $memtraceJobScript = {
 
     try {
         Write-Host "Starting Memtrace index for repo root (headless, no console window, working dir = $repoDir)..."
-        $p = Start-MemtraceHidden $memtraceExe $repoDir $launchLog $launchErr
+        $p = Start-MemtraceHidden $memtraceExe $repoDir $launchLog $launchErr $script:memtraceArgPrefix
         Write-Host "Memtrace launcher invoked. Startup log: $launchLog"
         # Force-hide any window the detached process tree may have popped.
         try { Hide-MemtraceWindows $p.Id } catch {}
@@ -2855,16 +3152,72 @@ $memtraceJobScript = {
         Write-Warning "Failed to launch Memtrace: $($_.Exception.Message). Continuing without it."
     }
 }
+
+# mcpw-anw (2026-09-18): defensive sweep for memtrace shim hosts leaked by
+# EARLIER builds. On 2026-09-18 09:16 this box carried 104 orphaned shell hosts
+# running the npm shim J:\Programs\npm-global\memtrace.ps1, oldest 16.2h, one
+# per heal cycle: the shim is a SCRIPT, so invoking it created a host process,
+# and the host was never joined. Current builds resolve an absolute node.exe
+# and never invoke the shim, so this cleans up leftovers from builds that
+# already leaked rather than papering over a live leak.
+#
+# SAFETY - the match is deliberately narrow. A host is swept only when BOTH:
+#   1. it is a SHELL HOST (powershell.exe / pwsh.exe) whose command line names
+#      the memtrace shim script, and
+#   2. its parent process is GONE.
+# A live launcher's children always have a live parent (this process), so they
+# are never matched; the memtrace daemon is node.exe / memtrace.exe and is
+# never a shell host, so it is never matched either. This is PID-scoped, not a
+# name sweep, so a sibling launcher's watchers survive.
+function Get-OrphanedMemtraceHostPids {
+    param([string]$ShimPattern = 'memtrace\.ps1')
+    $found = @()
+    try {
+        $hosts = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -eq 'powershell.exe' -or $_.Name -eq 'pwsh.exe' })
+        foreach ($h in $hosts) {
+            if ([string]$h.CommandLine -notmatch $ShimPattern) { continue }
+            $id = [uint32]$h.ProcessId
+            if ($id -eq [uint32]$PID) { continue }
+            $ppid = [uint32]$h.ParentProcessId
+            if ($ppid -eq 0) { continue }
+            if (Get-Process -Id $ppid -ErrorAction SilentlyContinue) { continue }
+            $found += [int]$id
+        }
+    } catch {}
+    return @($found)
+}
+
+function Stop-OrphanedMemtraceHosts {
+    param([string]$ShimPattern = 'memtrace\.ps1')
+    $victims = @(Get-OrphanedMemtraceHostPids -ShimPattern $ShimPattern)
+    $killed = 0
+    foreach ($id in $victims) {
+        try { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue; $killed++ } catch {}
+    }
+    if ($killed -gt 0) {
+        Write-Host "mcpw-anw: reaped $killed orphaned memtrace shim host(s) left by an earlier build (PIDs: $($victims -join ', '))."
+    }
+    return $killed
+}
+
 Write-Host "Starting Memtrace index for repo root (background; modules-level index removed)..."
+# Sweep BEFORE the start job / auto-heal supervisor run, so leftover shim hosts
+# from a previous build cannot survive past this launch.
+Stop-OrphanedMemtraceHosts | Out-Null
+# mcpw-d0m: NO -DeferToHealthy here. memtrace is REPO-SCOPED (store in
+# <repo>\.memdb), so a foreign memtrace on :50051 serves the wrong repo's
+# store. Kill-and-replace stays correct for this port. See the staleness rule
+# comment above Test-HttpPortAnswering.
 Exit-IfPortHeldByLauncherDaemon -Port 50051 -DaemonProcessNames @('memtrace','memcore','memcortex') -Label 'memtrace' -AutoHeal
 # VAD-v14z.4: memtrace daemon runs inside this one-shot job (daemon PID in
 # .memdb/daemon-state.json, path persisted to teardown-state.json
 # MemtraceStatePath for PID-scoped teardown step 4). Keep the job handle so
 # the start is tracked, not fire-and-forget.
 if (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue) {
-    $script:memtraceStartJob = Start-ThreadJob -ScriptBlock $memtraceJobScript -ArgumentList $scriptDir
+    $script:memtraceStartJob = Start-ThreadJob -ScriptBlock $memtraceJobScript -ArgumentList $watchersWorkspaceRoot
 } else {
-    $script:memtraceStartJob = Start-Job -ScriptBlock $memtraceJobScript -ArgumentList $scriptDir
+    $script:memtraceStartJob = Start-Job -ScriptBlock $memtraceJobScript -ArgumentList $watchersWorkspaceRoot
 }
 
 # --- Memtrace auto-heal supervisor (in-process child job) -------------------
@@ -2893,6 +3246,46 @@ $memtraceHealScript = {
     # via the literal path bound in -ArgumentList (VAD-v14z.5 - replaces the
     # copy-pasted bodies).
     . $JobHelpersModule
+    # mcpw-anw (2026-09-18): Stop-WatcherTree (tree-kill by PID) lives in
+    # Modules\watcher_teardown.ps1. Derive its path from the helpers module we
+    # were already handed - both ship side by side - and dot-source it so the
+    # reap below removes grandchildren too. Safe to dot-source: that module has
+    # no top-level side effects.
+    $teardownModule = Join-Path (Split-Path -Parent $JobHelpersModule) 'watcher_teardown.ps1'
+    if ($teardownModule -and (Test-Path -LiteralPath $teardownModule)) { . $teardownModule }
+
+    # mcpw-anw (2026-09-18): TRACKED HEAL CHILD.
+    # Every Start-Process below now captures -PassThru. Without it the caller
+    # gets nothing back, so a relaunch that fails leaves its host running
+    # forever with nobody tracking it - exactly how 104 orphaned memtrace.ps1
+    # shell hosts accumulated (one per heal cycle, oldest 16.2h).
+    # The tracker is a HASHTABLE (not a plain variable) so any scope can mutate
+    # .Proc without PowerShell creating a scope-local copy.
+    # NOTE ON SCOPE: the tracker is RUNSPACE-LOCAL on purpose. This ThreadJob
+    # inherits none of the launcher's variables, so it cannot reach
+    # $global:WatcherChildren, and the launcher rewrites teardown-state.json
+    # AFTER this job starts - appending PIDs there would race and be lost.
+    # So the supervisor reaps its OWN children instead.
+    $memtraceHealChild = @{ Proc = $null }
+    function Stop-MemtraceHealChild {
+        param($Proc, [string]$Reason)
+        if (-not $Proc) { return 0 }
+        $childId = 0
+        try { $childId = [int]$Proc.Id } catch { return 0 }
+        if ($childId -le 0) { return 0 }
+        $exited = $false
+        try { $exited = $Proc.HasExited } catch {}
+        if ($exited) { return 0 }
+        Write-HealLog "reaping heal child pid $childId ($Reason)"
+        # Tree-kill, not a single kill: a failed relaunch's descendants
+        # (memtrace.exe, memcore-server.exe, rail-lifecycle node) are garbage
+        # too. Fall back to one kill when the teardown module is unavailable.
+        if (Get-Command Stop-WatcherTree -ErrorAction SilentlyContinue) {
+            try { Stop-WatcherTree -RootPid $childId | Out-Null } catch {}
+        }
+        try { Stop-Process -Id $childId -Force -ErrorAction SilentlyContinue } catch {}
+        return 1
+    }
     function Write-HealLog {
         param([string]$Msg)
         Limit-LogSize -Path $HealLog
@@ -2911,10 +3304,39 @@ $memtraceHealScript = {
             return $false
         } catch { return $false } finally { if ($s) { try { $s.Close() } catch {} } }
     }
+    # PATHEXT HARDENING (2026-09-18): this runspace inherits no script-scope
+    # variables, so resolve node + memtrace.js by ABSOLUTE path here. Absolute
+    # paths never consult PATHEXT, so the launcher survives PATHEXT being
+    # degraded to ".CPL" (which broke Get-Command and made every heal attempt
+    # fail in ~1s while leaking a pwsh.exe per 30s cycle).
+    function Get-MemtraceLaunchSpec {
+        $nd = $null
+        foreach ($c in @("C:\nvm4w\nodejs\node.exe", "$env:ProgramFiles\nodejs\node.exe", "C:\Program Files\nodejs\node.exe")) {
+            if ($c -and (Test-Path -LiteralPath $c)) { $nd = $c; break }
+        }
+        $js = $null
+        foreach ($c in @("J:\Programs\npm-global\node_modules\memtrace\bin\memtrace.js", "$env:APPDATA\npm\node_modules\memtrace\bin\memtrace.js")) {
+            if ($c -and (Test-Path -LiteralPath $c)) { $js = $c; break }
+        }
+        if ($nd -and $js) { return @{ File = $nd; Prefix = @($js); Absolute = $true } }
+        $cmd = Get-Command "memtrace.exe" -ErrorAction SilentlyContinue
+        if (-not $cmd) { $cmd = Get-Command "memtrace.cmd" -ErrorAction SilentlyContinue }
+        if (-not $cmd) { $cmd = Get-Command "memtrace" -ErrorAction SilentlyContinue }
+        if (-not $cmd) { return $null }
+        return @{ File = $cmd.Source; Prefix = @(); Absolute = $false }
+    }
     function Invoke-MemtraceStop {
         try {
-            $cmd = Get-Command "memtrace" -ErrorAction SilentlyContinue
-            if ($cmd) { Start-Process -FilePath $cmd.Source -ArgumentList "stop" -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue | Out-Null }
+            $spec = Get-MemtraceLaunchSpec
+            if (-not $spec) { Write-HealLog "memtrace not resolvable (absolute pair missing, PATH lookup failed) - cannot stop"; return }
+            $spArgs = @()
+            $spArgs += $spec.Prefix
+            $spArgs += 'stop'
+            # -Wait already joins this child, so `stop` cannot leak by itself.
+            # -PassThru is captured anyway so the invariant holds uniformly:
+            # nothing this runspace spawns outlives the call.
+            $stopProc = Start-Process -FilePath $spec.File -ArgumentList $spArgs -WindowStyle Hidden -Wait -PassThru -ErrorAction SilentlyContinue
+            Stop-MemtraceHealChild -Proc $stopProc -Reason 'stop did not exit under -Wait' | Out-Null
         } catch {
             Write-HealLog "memtrace stop failed: $($_.Exception.Message)"
         }
@@ -2924,17 +3346,47 @@ $memtraceHealScript = {
         try { New-Item -ItemType Directory -Path $memdbDir -Force | Out-Null } catch {}
         $launchLog = Join-Path $memdbDir "memtrace-launch.log"
         $launchErr = Join-Path $memdbDir "memtrace-launch.log.err"
-        $cmd = Get-Command "memtrace.exe" -ErrorAction SilentlyContinue
-        if (-not $cmd) { $cmd = Get-Command "memtrace.cmd" -ErrorAction SilentlyContinue }
-        if (-not $cmd) { $cmd = Get-Command "memtrace" -ErrorAction SilentlyContinue }
-        if (-not $cmd) { Write-HealLog "memtrace command not found on PATH - cannot heal"; return }
+        $spec = Get-MemtraceLaunchSpec
+        if (-not $spec) { Write-HealLog "memtrace not resolvable (absolute node+memtrace.js pair missing AND PATH lookup failed) - cannot heal"; return }
         $env:MEMTRACE_OFFLINE      = "1"
         $env:MEMTRACE_NO_HEARTBEAT = "1"
         $env:MEMTRACE_TELEMETRY    = "off"
-        Start-Process -FilePath $cmd.Source -ArgumentList "start", "--headless" `
+        $spArgs = @()
+        $spArgs += $spec.Prefix
+        $spArgs += 'start'
+        $spArgs += '--headless'
+        # mcpw-anw: -PassThru, so the child is TRACKED from here on. Whatever
+        # it is (absolute node.exe today, the npm shim host as a fallback), the
+        # verdict path below can now stop it instead of abandoning it.
+        $child = Start-Process -FilePath $spec.File -ArgumentList $spArgs `
             -WorkingDirectory $RepoRoot -WindowStyle Hidden `
-            -RedirectStandardOutput $launchLog -RedirectStandardError $launchErr | Out-Null
-        Write-HealLog "relaunched 'memtrace start --headless' (cwd=$RepoRoot)"
+            -RedirectStandardOutput $launchLog -RedirectStandardError $launchErr -PassThru -ErrorAction SilentlyContinue
+        $memtraceHealChild.Proc = $child
+        Write-HealLog "relaunched 'memtrace start --headless' via $($spec.File) (absolute=$($spec.Absolute), cwd=$RepoRoot, child pid=$(if ($child) { $child.Id } else { 'none' }))"
+
+        # PERMANENT-FAILURE DETECTION (2026-09-18).
+        # Some failures can NEVER be fixed by retrying, and retrying them is what
+        # leaked an orphaned pwsh.exe every 30s for 16+ hours. The big one:
+        #   "refusing to open MemDB store ... because its declared repository scope
+        #    does not match the requested ... scope"
+        # That is a store/manifest mismatch, not a transient. Detect it and report
+        # a terminal condition instead of looping.
+        Start-Sleep -Seconds 8
+        try {
+            if (Test-Path -LiteralPath $launchErr) {
+                $errText = Get-Content -LiteralPath $launchErr -Raw -ErrorAction SilentlyContinue
+                if ($errText -and $errText -match 'declared repository scope does not match') {
+                    Write-HealLog "PERMANENT FAILURE: memtrace refused the store scope for this workspace (repo not in the union manifest). Retrying cannot succeed - stopping heal attempts. Add '$RepoRoot' to $(Join-Path $env:USERPROFILE '.config\memtrace\workspace.toml') (store rebuild required) or run a separate daemon for it."
+                    # mcpw-anw: the relaunch we just made is garbage (it will
+                    # never serve this workspace). Reap it - this is the exit
+                    # path that used to abandon one host per cycle.
+                    Stop-MemtraceHealChild -Proc $memtraceHealChild.Proc -Reason 'permanent store-scope refusal' | Out-Null
+                    $memtraceHealChild.Proc = $null
+                    return $false
+                }
+            }
+        } catch { }
+        return $true
     }
     Write-HealLog "memtrace auto-heal supervisor started (ports 50051 + 3030, poll 30s)"
     $consecutiveFails = 0
@@ -2954,16 +3406,36 @@ $memtraceHealScript = {
                 Write-HealLog "memtrace down ($( $which -join ', ' )) fail#$consecutiveFails - healing (stop clears stale lock, then start)"
                 Invoke-MemtraceStop
                 Start-Sleep -Seconds 1
-                Restart-MemtraceDaemon
+                $restarted = Restart-MemtraceDaemon
+                if ($restarted -eq $false) {
+                    # Terminal condition (e.g. store-scope refusal). Every further
+                    # attempt spawns a pwsh.exe that immediately dies and orphans,
+                    # so stop the loop instead of leaking processes forever.
+                    Write-HealLog "supervisor stopping - permanent failure, no further restarts"
+                    return
+                }
                 # Give the daemon up to 45s to come back before the next verdict.
                 $deadline = (Get-Date).AddSeconds(45)
+                $healedInWindow = $false
                 while ((Get-Date) -lt $deadline) {
                     Start-Sleep -Seconds 3
                     if ((Test-PortListening -Port 50051) -and (Test-PortListening -Port 3030)) {
                         Write-HealLog "memtrace healed - both ports listening again"
                         $consecutiveFails = 0
+                        $healedInWindow = $true
                         break
                     }
+                }
+                # mcpw-anw: a child that never brought the ports up is not a
+                # daemon, it is refuse - stop it (and its tree) instead of
+                # leaving it behind for the next cycle to collide with. A child
+                # that DID heal is the daemon we asked for: drop the handle so
+                # nothing ever reaps it.
+                if ($healedInWindow) {
+                    $memtraceHealChild.Proc = $null
+                } else {
+                    Stop-MemtraceHealChild -Proc $memtraceHealChild.Proc -Reason "ports still down after 45s (fail#$consecutiveFails)" | Out-Null
+                    $memtraceHealChild.Proc = $null
                 }
                 if ($consecutiveFails -ge 5) {
                     # Back off instead of tight-looping against a permanently
@@ -3072,7 +3544,10 @@ $cerememoryJobScript = {
     }
 }
 Write-Host "Starting Cerememory backend (background)..."
-Exit-IfPortHeldByLauncherDaemon -Port 8420 -DaemonProcessNames @('cerememory') -Label 'cerememory' -AutoHeal
+# mcpw-d0m: cerememory is a machine-wide PERSISTENT singleton
+# (Modules\watcher_patterns.ps1, cerememory.exe / Persistent = $true). A
+# healthy, answering :8420 resident is adopted, never killed.
+Exit-IfPortHeldByLauncherDaemon -Port 8420 -DaemonProcessNames @('cerememory') -Label 'cerememory' -AutoHeal -DeferToHealthy
 # VAD-v14z.4: cerememory is a port-singleton persistent service (:8420). The
 # in-job port probe reuses an already-listening backend, so it PERSISTS after
 # the launcher exits and is intentionally NOT added to
@@ -3085,9 +3560,15 @@ if (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue) {
 }
 
 # --- Claude MCP Server (HTTP-based MCP server on :8080, canonical vad-10m.1) -----
-# The claude-mcp-server is an HTTP-based MCP server that provides tools for
-# Claude Desktop / TRAE integration. It listens on http://127.0.0.1:8080/mcp
-# and is required for MCP client connections to work properly.
+# claude-mcp-server (npm v0.1.0) is a headless HTTP MCP server. It runs
+# `node dist/cli.js` and listens on http://127.0.0.1:8080/mcp. MCP clients
+# (Claude Desktop, TRAE) connect TO this port; it launches no GUI of its own.
+# NAME COLLISION: "claude" here is only the npm package name. This block does
+# NOT start Claude Desktop, and no file in this repo does. Claude Desktop
+# launches come from its own Squirrel updater - Update.exe
+# --processStartAndWait claude.exe, recorded in
+# %LOCALAPPDATA%\AnthropicClaude\Squirrel-ProcessStart.log (traced 2026-09-18).
+# Required for MCP clients that attach to :8080/mcp.
 # vad-10m.1: :8080 is canonical per Toolport registry (registry.json claude-mcp-server
 # url http://localhost:8080/mcp), .trae-mcp-probe.ps1 :8080, ###9 SSE :8080.
 # start_backends.bat used :8291 (stale HTTP.SYS 7991-8090 exclusion, now free
@@ -3232,7 +3713,10 @@ try {
         if ($legacyProcs.Count -gt 0) { Write-Host "[claude-mcp-server vad-10m.1] reaped $($legacyProcs.Count) legacy :8291 instance(s) - canonical :8080 wins." }
     }
 } catch {}
-Exit-IfPortHeldByLauncherDaemon -Port 8080 -DaemonProcessNames @('claude-mcp-server','node') -Label 'claude-mcp-server' -AutoHeal
+# mcpw-d0m: claude-mcp-server is a machine-wide PERSISTENT singleton
+# (Modules\watcher_patterns.ps1, node.exe / claude-mcp-server / Persistent =
+# $true). A healthy, answering :8080 resident is adopted, never killed.
+Exit-IfPortHeldByLauncherDaemon -Port 8080 -DaemonProcessNames @('claude-mcp-server','node') -Label 'claude-mcp-server' -AutoHeal -DeferToHealthy
 if (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue) {
     $script:claudeMcpStartJob = Start-ThreadJob -ScriptBlock $claudeMcpJobScript -ArgumentList $scriptDir
 } else {
@@ -3797,7 +4281,7 @@ if (-not $logFile) { $logFile = $grepaiLaunchLog }
 # label), so pointing it at the caller workspace only makes `grepai status` /
 # `grepai watch` fail with "no grepai project found" when the caller is not
 # grepai-init'd. The other three panes intentionally stay on $watchersWorkspaceRoot.
-$tailGrepai      = New-WatcherPaneScript -Label "grepai"      -LogPath $logFile            -ErrPath ""                 -RepoRoot $scriptDir -HeartbeatPath (Join-Path $hbDir "grepai.hb") -SupervisorLog $supSupervisorLog -LaunchLog $grepaiLaunchLog -LaunchErr $grepaiLaunchErr -LockFile $lockFile
+$tailGrepai      = New-WatcherPaneScript -Label "grepai"      -LogPath $logFile            -ErrPath ""                 -RepoRoot $watchersWorkspaceRoot -HeartbeatPath (Join-Path $hbDir "grepai.hb") -SupervisorLog $supSupervisorLog -LaunchLog $grepaiLaunchLog -LaunchErr $grepaiLaunchErr -LockFile $lockFile
 $tailGraphenium  = New-WatcherPaneScript -Label "graphenium"  -LogPath $gmLog              -ErrPath "$gmLog.err"      -RepoRoot $watchersWorkspaceRoot -HeartbeatPath (Join-Path $hbDir "graphenium.hb")  -WatchPid $gmWatchPid -LockFile $lockFile
 $tailGraphifyRs  = New-WatcherPaneScript -Label "graphify-rs" -LogPath $graphifyLog        -ErrPath "$graphifyLog.err" -RepoRoot $watchersWorkspaceRoot -HeartbeatPath (Join-Path $hbDir "graphify-rs.hb") -WatchPid $graphifyWatchPid
 $tailRepowise    = New-WatcherPaneScript -Label "repowise"    -LogPath $repowiseLog        -ErrPath "$repowiseLog.err" -RepoRoot $watchersWorkspaceRoot -HeartbeatPath (Join-Path $hbDir "repowise.hb")   -WatchPid $repowiseWatchPid

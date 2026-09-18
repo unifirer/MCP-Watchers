@@ -6,6 +6,12 @@ reasoning: auto
 distill:
   commands:
     enabled: true
+# Route repowise's LLM calls through the local fallback proxy (###2.llm_fallback_proxy.py).
+# The launcher gates repowise behind Ensure-LlmProxyRunning, so repowise must use the
+# proxy, not a direct upstream. Mirrors J:\audio\VAD\.repowise\config.yaml.
+# The model name above is unchanged -- this sets routing only.
+litellm:
+  base_url: http://127.0.0.1:11436/v1
 hooks:
   read_skeleton: true
   search_digest: true

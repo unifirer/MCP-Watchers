@@ -16,7 +16,10 @@ Describe 'fallback proxy wiring' {
     It 'proxy gate runs before gm semantic warm-up' {
         $c = Get-Content -LiteralPath $launcher -Raw
         $gateIdx = $c.IndexOf('Ensure-LlmProxyRunning')
-        $warmIdx = $c.IndexOf('Invoke-GmSemanticBuild -Mode "full"')
+        # mcpw-d76: the call form is now -BuildDir/-RunLog/-BuildKey/-State.
+        # The old `-Mode "full"` literal exists nowhere in the launcher, so the
+        # anchor returned -1 and the ordering assertion failed on a stale string.
+        $warmIdx = $c.IndexOf('Invoke-GmSemanticBuild -BuildDir')
         $gateIdx | Should BeGreaterThan -1
         $warmIdx | Should BeGreaterThan -1
         $gateIdx | Should BeLessThan $warmIdx

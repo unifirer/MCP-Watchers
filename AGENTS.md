@@ -114,6 +114,11 @@ Complete this cognitive process before taking any action.
 - Testing: Run tests minimized or headless. Verify a file only once per
   session. Test all bug fixes. Add regression tests.
 
+- Test Result Reporting: State test results as counts out of the total.
+  Write "10 of 12 tests passed; 2 failed". Never write a bare pair such as
+  "10/2" or "5/0". A bare pair reads as a ratio and hides the total. When a
+  test fails, name the suite and the test.
+
 - Script Usability: Add a double-click-to-open function for user-facing
   scripts.
 
@@ -244,6 +249,14 @@ Commands: /ponytail lite|full|ultra|off
 - RTK location: installed at `%USERPROFILE%\.local\bin\rtk.exe`. If `rtk` is not on PATH, use the full path or add `%USERPROFILE%\.local\bin` to PATH.
 
 - PATH verification: both `%USERPROFILE%\.declick\bin` and `%USERPROFILE%\.local\bin` are on PATH. Bare `rtk` resolves by name. If a shell reports `rtk` as not found, that shell's PATH is missing `.local/bin` — the install is fine.
+
+- PATH position: `.local/bin` is the **last** PATH entry. A shadowing `rtk` earlier in PATH would win. Check with `type rtk` if behavior looks wrong.
+
+- Passthrough: RTK falls back to direct exec when it cannot resolve a target. A line like `rtk: Failed to resolve 'echo' via PATH` is expected for shell builtins. Exit code is preserved. The rule stays satisfied.
+
+- Shell scope: verified in **both** Git Bash **and** Windows PowerShell on 2026-09-18. `C:\Users\yuni\.local\bin` appears in both the process PATH and the user PATH. The claim that the rtk rule is unsatisfiable is **false** in both shells.
+
+- PowerShell stdout: the PowerShell tool in this environment can return exit code 0 with **empty stdout**. Redirect output to a file and read the file instead. Do not conclude "not on PATH" from empty PowerShell output.
 
 > **Important:** even in command chains with `&&`, use `rtk` on every command.
 >
@@ -885,4 +898,145 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 - Do not commit or push without clear authority from the active profile or the current user request.
 - If a required sync or push is blocked, stop and report the exact command and error.
 <!-- END BEADS INTEGRATION -->
+
+
+
+
+
+
+
+
+
+## Code Exploration Policy
+
+Always use jCodeMunch-MCP for code navigation. Never fall back to Read, Grep, Glob, or Bash for code exploration.
+**Exception:** use `Read` when you are about to edit a file — the harness requires a `Read` before `Edit`/`Write`. Use jCodeMunch to *find and understand* code, then `Read` only the file you are changing.
+
+This server runs the **front door** surface: three tools reach every jCodeMunch capability, so the tool list stays small and the catalogue is fetched only when you need it.
+
+**Start any session:**
+1. `order { "action": "resolve_repo", "args": { "path": "." } }` — confirm the project is indexed. If it is not: `order { "action": "index_folder", "args": { "path": "." } }`
+
+**Then, for any task:**
+- Know what you want → `order { "action": "<name>", "args": { ... } }`
+- Know the goal, not the tool → `route { "query": "your task in a sentence" }` picks the action and shapes the arguments
+- Want to see what exists → `menu { "query": "what you are trying to do" }` returns matching actions with example arguments
+- Want the whole catalogue and the usage rules → `jcodemunch_guide`
+
+`menu` and `jcodemunch_guide` list every action this server can run, including ones absent from your tool list. That is expected: the front door is the way to call them.
+
+**Interpreting results:**
+- A `verdict` of `no_implementation_found` is evidence of absence. Report the gap; do not re-search with different wording.
+- A `verdict` of `degraded` means a channel was unavailable, so absence is NOT proven. Read the note before relying on the result.
+- `source: ""` alongside `source_status` means the body could not be read, not that the symbol is empty.
+
+**After editing files:**
+- With PostToolUse hooks installed (Claude Code), edited files are reindexed automatically.
+- Otherwise `order { "action": "register_edit", "args": { "paths": [...] } }` after an edit, batched for bulk changes.
+
+**Announce your model once per session** so the server can size its answers: `announce_model { "model": "<your-model-id>" }`.
+
+
+
+
+
+
+
+
+## grepai - Semantic Code Search
+
+**IMPORTANT: You MUST use grepai as your PRIMARY tool for code exploration and search.**
+
+### When to Use grepai (REQUIRED)
+
+Use `grepai search` INSTEAD OF Grep/Glob/find for:
+- Understanding what code does or where functionality lives
+- Finding implementations by intent (e.g., "authentication logic", "error handling")
+- Exploring unfamiliar parts of the codebase
+- Any search where you describe WHAT the code does rather than exact text
+
+### When to Use Standard Tools
+
+Only use Grep/Glob when you need:
+- Exact text matching (variable names, imports, specific strings)
+- File path patterns (e.g., `**/*.go`)
+- Intent with a canonical syntax anchor (`@main`, `func main(`) - an exact-match query in disguise
+
+### Completeness Check (recall-safe)
+
+grepai returns the top ~10 ranked chunks - a ranking, not an exhaustive list.
+When completeness matters (audits, refactors, "find ALL X"), pair it with a
+file-names-only grep - exhaustive recall at almost no token cost:
+
+```bash
+grepai search "where errors are handled" --json --compact   # ranked starting points
+git grep -ilE 'error|handl|logg' | head -50                 # exhaustive checklist (names only)
+```
+
+Read ranked hits first, then any relevant-looking checklist file grepai did
+not rank. Never dump full grep content output for an intent query.
+
+### Fallback
+
+If grepai fails (not running, index unavailable, or errors), fall back to standard Grep/Glob tools.
+
+### Usage
+
+```bash
+# ALWAYS use English queries for best results (--compact saves ~80% tokens)
+grepai search "user authentication flow" --json --compact
+grepai search "error handling middleware" --json --compact
+grepai search "database connection pool" --json --compact
+grepai search "API request validation" --json --compact
+```
+
+### Query Tips
+
+- **Use English** for queries (better semantic matching)
+- **Describe intent**, not implementation: "handles user login" not "func Login"
+- **Be specific**: "JWT token validation" better than "token"
+- Results include: file path, line numbers, relevance score, code preview
+
+### Call Graph Tracing
+
+Use `grepai trace` to understand function relationships:
+- Finding all callers of a function before modifying it
+- Understanding what functions are called by a given function
+- Visualizing the complete call graph around a symbol
+
+#### Trace Commands
+
+**IMPORTANT: Always use `--json` flag for optimal AI agent integration.**
+
+```bash
+# Find all functions that call a symbol
+grepai trace callers "HandleRequest" --json
+
+# Find all functions called by a symbol
+grepai trace callees "ProcessOrder" --json
+
+# Build complete call graph (callers + callees)
+grepai trace graph "ValidateToken" --depth 3 --json
+```
+
+### Property/Data Usage Tracing
+
+Use `grepai refs` to find non-call property/state usage (reads/writes):
+
+```bash
+# Find where a property is read
+grepai refs readers "uid" --json
+
+# Find where a property is written
+grepai refs writers "uid" --json
+```
+
+### Workflow
+
+1. Start with `grepai search` to find relevant code
+2. Add `git grep -ilE '<keywords>'` for the exhaustive file checklist when completeness matters
+3. Use `grepai trace` to understand function relationships
+4. Use `grepai refs` for property/state readers and writers
+5. Use `Read` tool to examine files from results
+6. Use Grep directly for exact strings and syntax anchors
 

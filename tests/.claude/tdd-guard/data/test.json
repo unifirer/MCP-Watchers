@@ -1,0 +1,29 @@
+{
+  "testModules": [
+    {
+      "moduleId": "test_git_slash_branch_ref.py",
+      "tests": [
+        {
+          "name": "test_branch_with_slash_writes_a_real_ref",
+          "fullName": "test_git_slash_branch_ref.py::test_branch_with_slash_writes_a_real_ref",
+          "state": "passed"
+        },
+        {
+          "name": "test_worktree_add_with_slash_branch_writes_a_real_ref",
+          "fullName": "test_git_slash_branch_ref.py::test_worktree_add_with_slash_branch_writes_a_real_ref",
+          "state": "passed"
+        },
+        {
+          "name": "test_switch_c_in_a_detached_worktree_is_not_rootless",
+          "fullName": "test_git_slash_branch_ref.py::test_switch_c_in_a_detached_worktree_is_not_rootless",
+          "state": "passed"
+        },
+        {
+          "name": "test_environment_is_writable_for_nested_refs",
+          "fullName": "test_git_slash_branch_ref.py::test_environment_is_writable_for_nested_refs",
+          "state": "passed"
+        }
+      ]
+    }
+  ]
+}

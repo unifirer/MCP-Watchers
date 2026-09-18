@@ -48,7 +48,11 @@ def test_git_path_operands_are_quoted():
     assert not re.search(r"git -C \$", src), (
         "found an unquoted `git -C $path` operand."
     )
-    assert 'git -C "$scriptDir" rev-parse --show-toplevel 2>$null' in src
+    # mcpw-759: commit 026765e re-rooted the repository-scoped paths from
+    # $scriptDir to $watchersWorkspaceRoot. This pin tracked the old root.
+    assert (
+        'git -C "$watchersWorkspaceRoot" rev-parse --show-toplevel 2>$null' in src
+    )
     assert 'git -C "$gitRoot" worktree list --porcelain 2>$null' in src
     assert 'git -C "$wt" rev-parse HEAD 2>$null' in src
     assert 'git -C "$wt" status --porcelain 2>$null' in src

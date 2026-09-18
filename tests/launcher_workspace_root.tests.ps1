@@ -30,10 +30,20 @@ Describe 'mcpw-ybs.1: panes follow the workspace, modules follow the launcher' {
         ([regex]::Matches($c, "'-d', '\.'")).Count | Should Be 0
     }
 
-    It 'three non-grepai pane tailers work at the workspace root (grepai heals at its index dir)' {
+    It 'all four pane tailers work at the workspace root (grepai heals at its index dir)' {
         $c = Get-Content -LiteralPath $launcher -Raw
-        ([regex]::Matches($c, '-RepoRoot \$watchersWorkspaceRoot')).Count | Should Be 3
-        ([regex]::Matches($c, '-RepoRoot \$scriptDir')).Count | Should Be 1
+        # mcpw-ybs.1 originally sent only the THREE non-grepai tailers to the
+        # workspace and pinned grepai's to $scriptDir. Grepai's heal was then
+        # moved to its index dir (020c191, "heal at index dir, not workspace
+        # root"), after which grepai's pane tailer takes the workspace root too
+        # and no tailer is pinned to the launcher folder at all. Count the
+        # New-WatcherPaneScript lines rather than every occurrence, so unrelated
+        # -RepoRoot uses (worktree validate) cannot move the number.
+        $paneLines = @($c -split "`n" | Where-Object {
+            $_ -match 'New-WatcherPaneScript' -and $_ -match '-RepoRoot \$watchersWorkspaceRoot'
+        })
+        $paneLines.Count | Should Be 4
+        ([regex]::Matches($c, '-RepoRoot \$scriptDir')).Count | Should Be 0
     }
 
     It 'module loads still resolve from the launcher folder' {

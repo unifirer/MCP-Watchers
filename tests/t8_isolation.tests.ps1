@@ -25,6 +25,14 @@ Describe 'T8 pane block is fully isolated from the user''s ###1 window' {
         $vadPanes   = 'vad-watchers' + $BS + '[0-9a-f]{8}' + $BS + 'panes'
         $sharedPaneDirLiteral = '$wtPaneDir = Join-Path $scratchRoot "vad-watchers'
         $tailMarker = 'panes' + $BS + 'tail_'
+        # REGEX form for the live matcher below. A literal backslash in a .NET
+        # pattern is TWO backslashes: a single one makes '\p' the start of a
+        # Unicode property escape, and -match dies with
+        # "parsing ... Malformed \p{X} character escape". The header's
+        # [char]92 trick keeps '\p' out of the SOURCE; this keeps it valid in the
+        # runtime pattern.
+        $BSre = $BS + $BS
+        $vadPanesRe = 'vad-watchers' + $BSre + '[0-9a-f]{8}' + $BSre + 'panes' + $BSre + 'tail_'
 
         # Bind to the REAL implementation under test. Dot-sourced INSIDE the It
         # because Pester 6's two-phase discovery nulls file-scope definitions
@@ -70,13 +78,13 @@ Describe 'T8 pane block is fully isolated from the user''s ###1 window' {
         # --- guarded live-run (skips unless the block is isolated, so RED is safe) ---
         if (-not $scoped) { return }
         $before = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
-            Where-Object { $_.CommandLine -and $_.CommandLine -match ($vadPanes + $BS + 'tail_') } |
+            Where-Object { $_.CommandLine -and $_.CommandLine -match $vadPanesRe } |
             Select-Object -ExpandProperty CommandLine)
         $null = New-Item -ItemType Directory -Path (Join-Path $env:TEMP ('t8_' + $guid)) -Force -ErrorAction SilentlyContinue
         try { Invoke-Expression $isolated } catch { }
         Start-Sleep -Seconds 2
         $after = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
-            Where-Object { $_.CommandLine -and $_.CommandLine -match ($vadPanes + $BS + 'tail_') } |
+            Where-Object { $_.CommandLine -and $_.CommandLine -match $vadPanesRe } |
             Select-Object -ExpandProperty CommandLine)
         Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
             Where-Object { $_.CommandLine -and $_.CommandLine -match [regex]::Escape(('t8_' + $guid + $BS + 'panes' + $BS + 'tail_')) } |

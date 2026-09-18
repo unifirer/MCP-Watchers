@@ -31,12 +31,37 @@ $jobCalls = @($ast.FindAll({ param($a)
 }, $true))
 
 function Get-ScriptBlockArg {
-    param($CommandAst)
+    param($CommandAst, $RootAst)
     for ($i = 1; $i -lt $CommandAst.CommandElements.Count; $i++) {
         $el = $CommandAst.CommandElements[$i]
         if (($el -is [System.Management.Automation.Language.CommandParameterAst]) -and ($el.ParameterName -eq 'ScriptBlock')) {
             $next = $CommandAst.CommandElements[$i + 1]
             if ($next -is [System.Management.Automation.Language.ScriptBlockExpressionAst]) { return $next }
+            # VAD-k9fix (2026-09-07): the gm-semantic scriptblock is now defined
+            # ONCE in a variable ($gmSemScriptBlock) and reused for both
+            # Start-ThreadJob and the Start-Job fallback, so -ScriptBlock binds a
+            # VariableExpressionAst rather than an inline scriptblock. Resolve it
+            # back to its assignment, otherwise this lock silently asserts
+            # nothing ($sb is $null) instead of checking param() comes first.
+            if ($next -is [System.Management.Automation.Language.VariableExpressionAst]) {
+                $varName = '$' + $next.VariablePath.UserPath
+                $assign = @($RootAst.FindAll({
+                    param($a)
+                    ($a -is [System.Management.Automation.Language.AssignmentStatementAst]) -and
+                    ($a.Left.Extent.Text -eq $varName)
+                }, $true))
+                foreach ($asg in $assign) {
+                    # `$x = { ... }` parses the right-hand side as a
+                    # CommandExpressionAst WRAPPING the ScriptBlockExpressionAst,
+                    # so unwrap before type-checking (verified against the real
+                    # launcher: RightType=CommandExpressionAst).
+                    $right = $asg.Right
+                    if ($right -is [System.Management.Automation.Language.CommandExpressionAst]) {
+                        $right = $right.Expression
+                    }
+                    if ($right -is [System.Management.Automation.Language.ScriptBlockExpressionAst]) { return $right }
+                }
+            }
         }
     }
     return $null
@@ -52,7 +77,7 @@ Describe 'gm-semantic thread job regression lock (VAD-3apv)' {
     }
 
     It 'thread-job scriptblock starts with param() as its FIRST statement' {
-        $sb = Get-ScriptBlockArg $jobCalls[0]
+        $sb = Get-ScriptBlockArg $jobCalls[0] $ast
         $sb | Should Not Be $null
         $sast = $sb.ScriptBlock
         $sast | Should Not Be $null

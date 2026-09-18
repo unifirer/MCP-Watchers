@@ -186,9 +186,18 @@ python dev_tools/scan_stale_anchors.py  # source-wiring anchors that no longer m
 ```
 
 `sweep_pester.py` **must not** trust exit codes — see the section above on the
-self-invoking `Invoke-Pester` pattern. It counts `[-]` lines and de-duplicates
-them. Remember `t8_isolation.tests.ps1` targets Pester 6 and is red under the
-3.4.0 pin for that reason alone.
+self-invoking `Invoke-Pester` pattern. It counts `[-]` lines for failures and
+`[+]` lines for passes, de-duplicating both, because the self-invocation runs
+every test twice. A suite prints one shape or the other, never both: detailed
+output has `[+]` lines but its summary reads `Passed: 0` (the inner summary is
+swallowed), while default output has no `[+]` at all but does print
+`Tests Passed: N`. The sweeper takes the max of the two sources.
+
+For the Pester version it also mostly keeps its hands off. If a suite contains
+`Import-Module Pester`, the sweeper just runs the file and lets it choose —
+forcing a version from outside actively breaks suites that do a bare import and
+expect the newest. Only when a suite does NOT import Pester does the sweeper
+pick, by sniffing for `Should -` (6.1.0) versus the legacy idiom (3.4.0).
 
 `scan_stale_anchors.py` finds positive anchors (`IndexOf` / `Contains` /
 `-match` / `Should Match`) whose literal no longer appears in the launcher or
@@ -196,6 +205,13 @@ them. Remember `t8_isolation.tests.ps1` targets Pester 6 and is red under the
 is the passing state. It reports leads, not verdicts — confirm a suite actually
 fails before changing anything.
 
-Single-suite runners (`run_pester.py`, `run_pester6.py`, `run_launcher_suite.py`,
-`ps_query.py`) are currently in `temp/`, which is gitignored and wiped. If you
-need them again, recreate from `sweep_pester.py` — or promote them properly.
+`dev_tools/run_pester_suite.py` runs one suite and takes an optional version
+argument; without it, it sniffs for `Should -` and picks 6.1.0, else 3.4.0.
+Prefer it over the sweeper when iterating on a single file. Older single-suite
+runners (`run_pester.py`, `run_pester6.py`, `run_launcher_suite.py`,
+`ps_query.py`) were left in `temp/`, which is gitignored and wiped — recreate
+from `run_pester_suite.py` if you need them again.
+
+Current baseline: 35 suites, 234 passed, 2 failed. Both failures are the
+`mcpw-lqy` teardown suites, which are red by design pending a decision — see
+`docs/changelogs/2026-09-19-pester-sweep.md`.

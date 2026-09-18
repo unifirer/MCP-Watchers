@@ -179,3 +179,47 @@ Both promoted to `dev_tools/` (was `temp/`, which is gitignored and wiped):
   AUTO-DETECTION: it sniffs for `Should -` and picks 6.1.0, else 3.4.0. That
   alone removes the `t8_isolation` false red. Verified: `t8_isolation` -> 6.1.0,
   1 passed, rc 0; `launcher_lock_keying` -> 3.4.0, rc 0.
+
+## Correction 3: the pass count was a parsing loss, not swallowed output
+
+The earlier `Passed=138` (and `94` mid-way) were both wrong. Re-probing one
+suite raw settled it — there are TWO output shapes and each hides one source:
+
+- **Detailed** (`launcher_proxy_wiring`): prints `[+] name 123ms` per test, but
+  the OUTER Pester then summarises `Passed: 0` — the inner summary is
+  swallowed. Summary alone reports 0 for a suite that really passes 8.
+- **Default** (`launcher_equal_quarters`): prints no `[+]` at all, but does
+  print `Tests Passed: 15`. Counting `[+]` alone reports 0.
+
+`parse()` now takes `max(summary, unique [+] count)`, de-duplicating both,
+because the self-invocation runs every test twice. Result: **234 passed,
+2 failed, 35 suites** — up from a floor of 138.
+
+## Correction 4: choosing the Pester version — the discriminator is the import
+
+Neither rule I tried first was right.
+
+- Pinning 3.4.0 for everything: `t8_isolation` red all session on
+  `'-Be' is not a valid Should operator` (runner mismatch, not a defect).
+- Auto-detecting `Should -` per suite: `launcher_equal_quarters` broke. It does
+  a bare `Import-Module Pester` with no version, so it gets the newest and is
+  green at 15 passes; forcing 6.1.0 from outside turns it red.
+- Executing self-invoking suites directly: `launcher_repowise_wiring` broke —
+  it does NOT import Pester, so it gets whatever autoload picks (6.1.0), and
+  its `Should Match` / `Should Not BeNullOrEmpty` fail all 4 under 6.
+
+The discriminator is **whether the file imports Pester itself**, not whether it
+self-invokes. If it imports, leave it alone (`v=file`). If it does not, choose
+by `Should -` sniffing (6.1.0) else 3.4.0.
+
+## Final state after correction
+
+35 suites. 33 green, 2 red — and both reds are `mcpw-lqy`, the known
+outstanding decision, not new damage:
+
+- `launcher_watcher_teardown` — 13 pass, 1 fail
+- `launcher_watcher_teardown_sweep` — 2 pass, 1 fail
+
+`launch_watcher_for_grepai` reports P=0 legitimately: it self-skips with
+`SKIP: launcher under test is not shipped by this checkout`. That is the
+intended fix from the earlier pass, not a gap.

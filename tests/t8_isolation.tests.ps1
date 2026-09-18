@@ -4,12 +4,22 @@
 # so it can neither kill ###1's panes nor flake on PID-delta scoping.
 # Run: powershell -NoProfile -File tests/t8_isolation.tests.ps1
 #
+# RUN UNDER PESTER 6 (Import-Module Pester -RequiredVersion 6.1.0). This file
+# uses the `Should -Be` form; under Pester 3.4.0 every assertion dies with
+# "'-Be' is not a valid Should operator", which is a runner mismatch, not a
+# failure of the code under test. A sweep that pins 3.4.0 will report this suite
+# red for exactly that reason. Pester 6 also dropped -EnableExit: use -PassThru
+# and exit on $r.FailedCount.
+#
 # Pester 6.0.1/6.1.0 WORKAROUND (github.com/pester/Pester/issues/2669 + two-phase
 # discovery): the discovery walker (a) throws "break/continue escaped" on files
 # with >1 Describe or >1 It, and (b) nulls file-scope function/variable defs
 # inside It blocks. Keep this file to EXACTLY ONE Describe and ONE It, and put
 # ALL logic (including the helper and $repoRoot) INSIDE the It. Backslash
-# literals are built from [char]92 so '\p' never appears raw in source.
+# literals are built from [char]92 so '\p' never appears raw in source — but
+# note that only keeps '\p' out of the SOURCE: the runtime regex still needs a
+# DOUBLED backslash (see $BSre below), or -match dies with
+# "Malformed \p{X} character escape".
 Describe 'T8 pane block is fully isolated from the user''s ###1 window' {
     It 'rewrites window name + pane dir + scopes the reset matcher to a unique t8 sandbox (RED: still shared)' {
         # Repo root is RESOLVED, never hardcoded. This suite was extracted from

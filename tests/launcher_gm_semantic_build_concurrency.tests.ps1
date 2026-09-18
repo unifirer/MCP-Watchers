@@ -9,6 +9,12 @@
 #   2. EXECUTION: the named mutex actually serializes two concurrent processes
 #      when they both try to acquire the identical name — proving the contract.
 #
+# LOAD SENSITIVITY (observed 2026-09-19): check 2 spawns two real processes and
+# races them on the mutex, so it depends on scheduling. It failed once inside a
+# 35-suite sweep and passed twice when this file ran on its own. Re-run it alone
+# before believing a failure — under a loaded box the loser can miss the window
+# for reasons that have nothing to do with the mutex contract.
+#
 # Run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/launcher_gm_semantic_build_concurrency.tests.ps1
 
 # Pin Pester 3.4.0 (this file uses the v3 positional `Should Match` idiom).

@@ -86,6 +86,11 @@ Complete this cognitive process before taking any action.
 - State Tracking: Track tasks only in Beads (bd). Store persistent memory only
   in AutoMem.
 
+- Stale Memory: Always fix stale memory when discovered. This applies to all
+  memory storage MCPs, including AutoMem, Cerememory, and Graphiti via MCP.
+  In Jcode, use the native memory tool built into Jcode. Group memory by code
+  repository when relevant.
+
 1. Operational Constraints
 
 - Package Management: Use uvx for ephemeral tools. Use uv tool install for

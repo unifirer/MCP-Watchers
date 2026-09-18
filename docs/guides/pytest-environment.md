@@ -175,3 +175,27 @@ Before filing a bead, check which layer failed:
 | target script | does the `###`-prefixed file exist in this checkout? |
 | slow suite | is it >900 s, or did it *hang*? read the tail the shim prints |
 | share violation | `Add-Content` on a file a tailer is reading — retry, don't fail |
+
+## Tooling for the two sweeps
+
+Both live in `dev_tools/` and are plain Python 3, no dependencies:
+
+```bash
+python dev_tools/sweep_pester.py        # every tests/*.tests.ps1, ~8 min
+python dev_tools/scan_stale_anchors.py  # source-wiring anchors that no longer match
+```
+
+`sweep_pester.py` **must not** trust exit codes — see the section above on the
+self-invoking `Invoke-Pester` pattern. It counts `[-]` lines and de-duplicates
+them. Remember `t8_isolation.tests.ps1` targets Pester 6 and is red under the
+3.4.0 pin for that reason alone.
+
+`scan_stale_anchors.py` finds positive anchors (`IndexOf` / `Contains` /
+`-match` / `Should Match`) whose literal no longer appears in the launcher or
+`Modules/watcher_pane_scripts.ps1`. It skips negative assertions, where absence
+is the passing state. It reports leads, not verdicts — confirm a suite actually
+fails before changing anything.
+
+Single-suite runners (`run_pester.py`, `run_pester6.py`, `run_launcher_suite.py`,
+`ps_query.py`) are currently in `temp/`, which is gitignored and wiped. If you
+need them again, recreate from `sweep_pester.py` — or promote them properly.

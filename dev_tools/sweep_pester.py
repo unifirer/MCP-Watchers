@@ -15,6 +15,12 @@ actually failing "proxy gate runs before gm semantic warm-up".
 So: count [-] lines, and de-duplicate them, because the self-invoking pattern
 runs every test twice.
 
+The PASS COUNT IS A LOWER BOUND, the failure list is authoritative. For some
+suites the inner run's output is swallowed by the outer run, so only the outer
+"Passed: 0" survives (launcher_proxy_wiring really passes 8 tests and
+launcher_watcher_teardown 12, yet both report P=0 here). A [-] line can only
+appear if the inner run printed it, so failures are detected regardless.
+
 Pester versions
 ---------------
 This box has 6.1.0, 6.0.0 and 3.4.0. Most suites are legacy Pester 3 idiom
@@ -83,6 +89,8 @@ def main():
         "host: %s" % host,
         "suites: %d" % len(suites),
         "method: [-] line count, NOT exit code (self-invoking suites mask rc)",
+        "note:   Passed is a LOWER BOUND (inner output is sometimes swallowed);",
+        "        the failure list is authoritative.",
         "",
     ]
 

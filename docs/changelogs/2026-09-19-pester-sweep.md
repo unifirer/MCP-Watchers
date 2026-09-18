@@ -153,3 +153,29 @@ but weaker. Needs a decision: bead `mcpw-lqy`.
 
 35 suites: 33 green or explicitly skipped, 2 red on `mcpw-lqy`, 1
 (`t8_isolation`) red only under a Pester 3 pin.
+
+## Correction 2: the pass count is a lower bound
+
+`TOTAL Passed=138` understates reality. For some suites the inner run's output
+is swallowed by the outer run, so only the outer "Passed: 0" line survives:
+`launcher_proxy_wiring` actually passes 8 tests and `launcher_watcher_teardown`
+12, yet both report `P=0` in the sweep. The FAILURE list is unaffected — a `[-]`
+line can only appear if the inner run printed it — so treat the pass count as a
+floor and the failure list as authoritative. Recorded in the tool's docstring
+and in the report header.
+
+## Tooling left behind
+
+Both promoted to `dev_tools/` (was `temp/`, which is gitignored and wiped):
+
+- `dev_tools/sweep_pester.py` — all 35 suites, ~8 min. Counts `[-]` lines, never
+  exit codes; de-duplicates; per-suite timeout; running report in
+  `temp/pester_sweep.txt` so one hang does not hide the rest.
+- `dev_tools/scan_stale_anchors.py` — finds positive source-wiring anchors whose
+  literal no longer exists. Negative assertions are skipped (absence is the
+  passing state there); reports leads, not verdicts. Currently clean apart from
+  two scratch-fixture false positives in `repowise_changed_files.tests.ps1`.
+- `dev_tools/run_pester_suite.py` — one suite, with Pester version
+  AUTO-DETECTION: it sniffs for `Should -` and picks 6.1.0, else 3.4.0. That
+  alone removes the `t8_isolation` false red. Verified: `t8_isolation` -> 6.1.0,
+  1 passed, rc 0; `launcher_lock_keying` -> 3.4.0, rc 0.

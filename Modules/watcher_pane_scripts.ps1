@@ -245,6 +245,13 @@ function Invoke-GrapheniumAutoFix {
         # FULL build (never --update): gm's incremental mode REPLACES graph.json
         # with only the re-extracted files' nodes.
         $cmdLine = '/c ""' + $gmCmd.Source + '" run . --no-semantic --no-viz --no-report >> "' + $log + '" 2>> "' + $err + '""'
+        # mcpw-9lf: -WorkingDirectory with an empty operand is dropped by
+        # Windows PowerShell 5.1, so the rebuild would run in the wrong
+        # directory instead of failing. Refuse instead.
+        if ([string]::IsNullOrWhiteSpace($repo)) {
+            Write-Host "[graphenium AUTO-FIX] repo path is empty - cannot rebuild."
+            return
+        }
         Start-Process -FilePath 'cmd.exe' -ArgumentList $cmdLine -WorkingDirectory $repo -WindowStyle Hidden | Out-Null
         # Liveness grace: the respawned PID differs from the tracked one and may
         # need a moment to surface via CIM; keep the pane open for 45 s regardless.

@@ -831,7 +831,15 @@ function Test-OllamaRunning {
 # completed; repairs are side effects). Safe to call before grepai watch launches.
 function Test-GrepaiIndexHealth {
     # mcpw-ybs.7: health-check the WATCHED repo's index, not the script folder's.
-    $gitRoot = git -C "$watchersWorkspaceRoot" rev-parse --show-toplevel 2>$null
+    # mcpw-9lf: Windows PowerShell 5.1 DROPS a null operand handed to a native
+    # command, so `git -C "$null" rev-parse` becomes `git -C rev-parse` and git
+    # takes 'rev-parse' as the -C operand. The resulting stderr is a TERMINATING
+    # error under $ErrorActionPreference = Stop even with 2>$null, so the
+    # operand is checked before git is called at all.
+    $gitRoot = $null
+    if (-not ([string]::IsNullOrWhiteSpace($watchersWorkspaceRoot))) {
+        $gitRoot = git -C "$watchersWorkspaceRoot" rev-parse --show-toplevel 2>$null
+    }
     $dirs = @($watchersWorkspaceRoot)
     if ($gitRoot) {
         $dirs += git -C "$gitRoot" worktree list --porcelain 2>$null |
@@ -1086,6 +1094,10 @@ function Test-GitWorktreeUsable {
 # surviving linked worktree that has no .grepai/config.yaml.
 function Invoke-GrepaiWorktreeValidate {
     param([string]$RepoRoot)
+    # mcpw-9lf: guard the -C operand. An empty one is silently dropped by
+    # Windows PowerShell 5.1 and git then fails with "cannot change to
+    # 'rev-parse'", which is terminating under $ErrorActionPreference = Stop.
+    if ([string]::IsNullOrWhiteSpace($RepoRoot)) { return }
     $gitRoot = git -C "$RepoRoot" rev-parse --show-toplevel 2>$null
     if (-not $gitRoot) { return }
     $gitRootFull = [System.IO.Path]::GetFullPath($gitRoot).TrimEnd('\', '/')
@@ -2685,6 +2697,10 @@ $global:gmSemState = @{
 # thread job (thread-job scope rule), mirroring the pane's Add-RecentChange
 # exclusion list.
 try {
+    # mcpw-9lf: arm nothing on an empty root. FileSystemWatcher throws on an
+    # empty Path, and the same empty value handed to a native command is
+    # dropped by Windows PowerShell 5.1, which turns a guard into a bug.
+    if ([string]::IsNullOrWhiteSpace($watchersWorkspaceRoot)) { throw "watchersWorkspaceRoot is empty" }
     $script:gmFsw = New-Object System.IO.FileSystemWatcher
     # mcpw-ybs.7: watch the REPOSITORY the operator launched from, not the folder
     # holding this script. Otherwise edits in repo B never trigger a rebuild and
@@ -2880,7 +2896,14 @@ if ($repowiseExe -and (Test-Path -LiteralPath $repowiseExe)) {
 # Resolve the repo's git top-level so the Memtrace state file lives at the
 # repo root even if this launcher script is in a subfolder. Fall back to the
 # script's own directory when not inside a git work tree.
-$script:memtraceGitRoot = git -C "$watchersWorkspaceRoot" rev-parse --show-toplevel 2>$null
+# mcpw-9lf: the -C operand is checked first. Windows PowerShell 5.1 drops an
+# empty operand instead of passing it, so git would otherwise receive
+# `git -C rev-parse --show-toplevel` and abort the block under
+# $ErrorActionPreference = Stop.
+$script:memtraceGitRoot = $null
+if (-not ([string]::IsNullOrWhiteSpace($watchersWorkspaceRoot))) {
+    $script:memtraceGitRoot = git -C "$watchersWorkspaceRoot" rev-parse --show-toplevel 2>$null
+}
 if (-not $script:memtraceGitRoot) { $script:memtraceGitRoot = $watchersWorkspaceRoot }
 $script:memtraceStateFile = Join-Path $script:memtraceGitRoot ".memdb\daemon-state.json"
 $memtraceJobScript = {
@@ -2888,7 +2911,12 @@ $memtraceJobScript = {
     # Resolve the repo's git top-level so the daemon's CWD/workspace is the
     # repo root even if this launcher script is placed in a subfolder. Fall
     # back to the script's own directory when not inside a git work tree.
-    $gitRoot = git -C "$ScriptDir" rev-parse --show-toplevel 2>$null
+    # mcpw-9lf: same guard as the launcher-side copy. This scriptblock runs in
+    # a fresh runspace, so it cannot call a shared helper - the check is inline.
+    $gitRoot = $null
+    if (-not ([string]::IsNullOrWhiteSpace($ScriptDir))) {
+        $gitRoot = git -C "$ScriptDir" rev-parse --show-toplevel 2>$null
+    }
     $repoDir  = if ($gitRoot) { $gitRoot } else { $ScriptDir }
     $memdbDir = Join-Path $repoDir ".memdb"
     try { New-Item -ItemType Directory -Path $memdbDir -Force | Out-Null } catch {}

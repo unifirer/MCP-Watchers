@@ -7,15 +7,27 @@ reflog entries, but `.git/refs/heads/fix-tests/` and the ref file never appeared
 same name silently failed again through `git worktree add -b` and `git switch -c`
 inside a linked worktree (which produced a rootless branch: "No commits yet").
 
-CAVEAT, added 2026-09-18 22:12 -- the defect is VOLUME-SPECIFIC, not gone. The
-tests below build their scratch repo with tempfile.mkdtemp(), which is %TEMP%
-and therefore C:. Re-measured with the same git build (2.55.0.windows.3):
-a fresh repo on C: writes slash-named refs correctly; a fresh repo on J: does
-not -- not at drive root, not nested. So these tests only ever probe C: and
-cannot fail on the J: case. `test_branch_with_slash_..._on_the_repo_volume`
-below closes that hole by putting the scratch repo on the repo's own volume;
-it is marked xfail(strict=True) because the J: defect is live, so it fails as
-recorded and turns into a loud failure the day someone actually fixes it.
+CORRECTION, 2026-09-19 -- the "VOLUME-SPECIFIC" claim below was WRONG. It was
+inferred from a scratch repo built with tempfile.mkdtemp() (%TEMP%, C:) versus
+one on J:, but the real variable is the INVOKING ENVIRONMENT, not the volume.
+Measured 2026-09-19 on J:, identical directory, same nominal version
+(2.55.0.windows.3), scratch repos created the same way:
+
+  * git spawned by Python subprocess (PortableGit 1.2.0) -- 13/13 refs written
+  * `git` as Git Bash resolves it (/mingw64/bin/git)   --  0/7 refs written
+  * explicit C:\\Program Files\\Git\\mingw64\\bin\\git.exe --  2/2 refs written
+  * explicit PortableGit 1.2.0 git.exe                 --  0/2 refs written
+
+So the same binary both writes and drops depending on how it is reached, and
+the drop is NOT tied to J: -- C: scratch repos only ever looked clean because
+they were always driven from Python. Root cause is still unidentified; this is
+an observation, not an explanation.
+
+`test_branch_with_slash_..._on_the_repo_volume` below keeps probing the repo's
+own volume, but is marked xfail(strict=False): with strict=True an ordinary
+passing run is reported as a failure, which is what happened on 2026-09-19.
+Non-strict keeps the case visible in the summary as XFAIL or XPASS without
+turning the suite red while the cause is unknown.
 
 This module is the tripwire: if the condition returns, these tests fail loudly
 instead of the branch silently vanishing again. It exercises all three forms the
@@ -98,8 +110,9 @@ def _repo_volume_tmp() -> Path:
 
 
 @pytest.mark.xfail(
-    reason="mcpw-sr4: slash-named branches are silently discarded on the J: volume",
-    strict=True,
+    reason="mcpw-sr4: slash-named branches are silently dropped by some git "
+    "invocations; see the module docstring for the 2026-09-19 measurements",
+    strict=False,
 )
 def test_branch_with_slash_writes_a_real_ref_on_the_repo_volume():
     tmp = _repo_volume_tmp()

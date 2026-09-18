@@ -27,6 +27,12 @@ $script:WatcherSweepPatterns = @(
     # 'codegraph watch', NOT 'codegraph': the codegraph MCP backend runs as
     # `npx @optave/codegraph mcp --multi-repo` and must never be swept.
     @{ Name = 'node.exe';        Pattern = 'codegraph watch' },
+    # codegraph REAL CLI (`npm install -g @optave/codegraph`): Resolve-CodegraphLaunch
+    # re-expresses the npm bin shim as node.exe <...>\@optave\codegraph\dist\cli.js
+    # watch <root>. Package path + verb, NOT the bare 'codegraph' token: the MCP
+    # backend command line carries the same cli.js but ends `cli.js" mcp --multi-repo`,
+    # so it cannot match this entry.
+    @{ Name = 'node.exe';        Pattern = 'codegraph\dist\cli.js watch' },
     @{ Name = 'cerememory.exe';  Pattern = 'cerememory'; Persistent = $true },     # vad-10m.3: backend singleton (:8420), token-scoped
     @{ Name = 'python.exe';      Pattern = 'mcp_agent_mail'; Persistent = $true }, # vad-10m.3: mail singleton (:8765), token-scoped
     @{ Name = 'python.exe';      Pattern = 'embed_server'; Persistent = $true }, # graphiti embed proxy (:8003), token-scoped

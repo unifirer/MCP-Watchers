@@ -2081,15 +2081,28 @@ function Test-LlmProxyReady {
 # Returns @{ Exe = <absolute image>; Prefix = @(<arg>, ...) } or $null.
 #
 # WHY THIS EXISTS: Start-WatcherDetached spawns with UseShellExecute=$false,
-# so it can only start a real PE image. On this box `codegraph` is NOT one -
-# Get-Command finds no codegraph.exe, only the declick shim
-#   C:\Users\yuni\.declick\bin\codegraph      (bash: exec node "<cli>" codegraph "$@")
-#   C:\Users\yuni\.declick\bin\codegraph.cmd  (cmd:  node "<cli>" codegraph %*)
-# Handing either to Process.Start fails, and the watcher would silently never
-# start. So the shim is parsed and re-expressed as
-#   node.exe <cli entrypoint> codegraph <args>
-# which IS spawnable, is immune to the degraded PATHEXT here ('.CPL'), and
-# matches the node+entrypoint idiom already used for memtrace.
+# so it can only start a real PE image. On this box `codegraph` is never one -
+# there is no codegraph.exe, only .cmd / extension-less shims. TWO shapes exist:
+#
+#   (a) npm bin shim = the REAL CLI (`npm install -g @optave/codegraph`, 3.17.0):
+#         J:\Programs\npm-global\codegraph.cmd
+#           ... "%_prog%"  "%dp0%\node_modules\@optave\codegraph\dist\cli.js" %*
+#       Re-expressed as `node.exe <cli.js> <args>` - NO adapter name, because the
+#       entrypoint IS the CLI. This shape has build/watch/update/embed/mcp.
+#
+#   (b) declick's MCP adapter launcher - 35 MCP tool verbs, NONE of them watch:
+#         <user home>\.declick\bin\codegraph.cmd
+#           node "J:\Programs\npm-global\node_modules\declick\bin\run.mjs" codegraph %*
+#       Re-expressed as `node.exe <run.mjs> codegraph <args>`. Test-CodegraphReady's
+#       verb gate then refuses to launch `watch` and warns instead of spawning a
+#       child that dies immediately.
+#
+# PATH already orders (a) before (b), so `Get-Command codegraph.cmd` picks (a) and
+# (b) is only a fallback for a box without the global install. Handing either shim
+# to Process.Start fails, and the watcher would silently never start. So the shim
+# is parsed and re-expressed as `node.exe <entry> ...`, which IS spawnable, is
+# immune to the degraded PATHEXT here ('.CPL'), and matches the node+entrypoint
+# idiom already used for memtrace.
 function Resolve-CodegraphLaunch {
     $native = Get-Command 'codegraph.exe' -ErrorAction SilentlyContinue
     if ($native -and $native.Source) {
@@ -2106,11 +2119,28 @@ function Resolve-CodegraphLaunch {
         if (Test-Path -LiteralPath $cmdPath) { $shimPath = $cmdPath }
     }
     $js = $null
-    $sub = 'codegraph'
+    $sub = $null
     try {
         $text = Get-Content -LiteralPath $shimPath -Raw -ErrorAction Stop
+        # Shape (b), declick's adapter: the adapter NAME is a mandatory first
+        # argument of run.mjs, so it must ride in Prefix ahead of the verb.
         $m = [regex]::Match($text, 'node\s+"?(?<js>[^"\s]+\.(?:mjs|js))"?\s+(?<sub>\S+)')
-        if ($m.Success) { $js = $m.Groups['js'].Value; $sub = $m.Groups['sub'].Value }
+        if ($m.Success) {
+            $js = $m.Groups['js'].Value
+            $sub = $m.Groups['sub'].Value
+        }
+        # Shape (a), npm bin shim: no adapter name - the entrypoint IS the CLI.
+        # %dp0% is the shim's own directory and must be expanded, or node receives
+        # a literal '%dp0%\node_modules\...' path and exits 1. The quote-then-%*
+        # tail is what keeps this pattern disjoint from shape (b), whose token
+        # after the .mjs path is the adapter name, never %*.
+        if (-not $js) {
+            $m2 = [regex]::Match($text, '"(?<js>[^"]*\.(?:mjs|js))"\s+%')
+            if ($m2.Success) {
+                $js = $m2.Groups['js'].Value.Replace('%dp0%', (Split-Path -Parent $shimPath))
+                $sub = $null
+            }
+        }
     } catch { $js = $null }
     if (-not $js) { return $null }
     $node = $null
@@ -2126,7 +2156,13 @@ function Resolve-CodegraphLaunch {
         if ($nodeCmd -and $nodeCmd.Source) { $node = $nodeCmd.Source }
     }
     if (-not $node) { return $null }
-    return @{ Exe = $node; Prefix = @($js, $sub) }
+    # A missing entrypoint means the shim is STALE (package uninstalled after the
+    # shim was written). Launching it would register a dead PID in
+    # teardown-state.json and print a false "launched" line, so refuse here and
+    # let the caller fall through to its "not resolvable" warning.
+    if (-not (Test-Path -LiteralPath $js)) { return $null }
+    if ($sub) { return @{ Exe = $node; Prefix = @($js, $sub) } }
+    return @{ Exe = $node; Prefix = @($js) }
 }
 
 # --- Codegraph prerequisite probe ------------------------------------------

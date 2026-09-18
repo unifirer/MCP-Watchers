@@ -58,6 +58,24 @@ Describe 'watcher_patterns shared sweep list' {
         $broad.Count | Should Be 0
     }
 
+    It 'sweeps the codegraph REAL CLI shape but never the MCP backend' {
+        . $patternsModule
+        # Resolve-CodegraphLaunch re-expresses the npm bin shim (the real CLI,
+        # installed by `npm install -g @optave/codegraph`) as
+        #   node.exe <...>\@optave\codegraph\dist\cli.js watch <root>
+        $real = @($script:WatcherSweepPatterns | Where-Object {
+            $_.Name -eq 'node.exe' -and $_.Pattern -eq 'codegraph\dist\cli.js watch' })
+        $real.Count | Should Be 1
+        # The watcher shape must match...
+        $watcher = 'C:\nvm4w\nodejs\node.exe J:\Programs\npm-global\node_modules\@optave\codegraph\dist\cli.js watch J:\audio\MCP-Watchers'
+        Test-WatcherSweepMatch -CommandLine $watcher -Pattern 'codegraph\dist\cli.js watch' | Should Be $true
+        # ...and the codegraph MCP backend must NOT: same cli.js, `mcp --multi-repo`
+        # instead of `watch`. Shape copied verbatim from temp\proc-snapshot.csv.
+        $backend = '"node"   "J:\Programs\npm-global\_npx\3739334a42fe877a\node_modules\.bin\..\@optave\codegraph\dist\cli.js" mcp --multi-repo'
+        Test-WatcherSweepMatch -CommandLine $backend -Pattern 'codegraph\dist\cli.js watch' | Should Be $false
+        Test-WatcherSweepMatch -CommandLine $backend -Pattern 'codegraph watch' | Should Be $false
+    }
+
     It 'contains a dedicated entry for the grepai supervisor sweep' {
         . $patternsModule
         $sup = @($script:WatcherSweepPatterns | Where-Object {

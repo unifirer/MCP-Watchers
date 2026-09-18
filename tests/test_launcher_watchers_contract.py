@@ -78,13 +78,30 @@ def test_launcher_launches_every_watcher_except_destructive_gm_watch():
     assert "start --headless" in src, "memtrace must launch headless."
     assert "50051" in src, "memtrace readiness port 50051 must be referenced."
     # codegraph: opt-in freshness watcher (headless, 2x2 grid intact).
-    # Resolution is shim-aware: `codegraph` has no native .exe on this box (it
-    # is a declick shim), so it is re-expressed as node.exe <cli.mjs> codegraph.
+    # Resolution is shim-aware: `codegraph` has no native .exe on this box, so it
+    # is re-expressed as node.exe <entry> [adapter-name] <args>. TWO shim shapes
+    # exist (2026-09-19): the npm bin shim of the REAL CLI
+    # (`npm install -g @optave/codegraph`) -> no adapter name, and declick's MCP
+    # adapter launcher -> adapter name 'codegraph' kept. Only the real CLI has
+    # build/watch, which is why the outage below was possible.
     assert "function Resolve-CodegraphLaunch" in src, "codegraph launcher resolution missing."
     assert 'Start-WatcherDetached $cgExeName "codegraph"' in src, "codegraph launch missing."
     assert "Resolve-CodegraphLaunch" in src, "codegraph must resolve via the shim-aware helper."
     assert "Test-CodegraphReady" in src, "codegraph build prerequisite probe missing."
     assert "graph.db" in src, "codegraph must reference .codegraph/graph.db."
+    # The npm bin shim branch: %dp0% is the shim's own directory and must be
+    # expanded, or node is handed a literal '%dp0%\...' path and exits 1.
+    assert "%dp0%" in src, "codegraph resolver must handle the npm shim's %dp0% entrypoint."
+    assert "Split-Path -Parent $shimPath" in src, "codegraph resolver must expand %dp0% to the shim dir."
+    # A stale shim (package uninstalled) must be refused rather than launched:
+    # a dead child would register a dead PID in teardown-state.json.
+    assert "if (-not (Test-Path -LiteralPath $js)) { return $null }" in src, (
+        "codegraph resolver must refuse a stale shim entrypoint."
+    )
+    # The adapter-name prefix is conditional: shape (a) must NOT receive it.
+    assert "if ($sub) { return @{ Exe = $node; Prefix = @($js, $sub) } }" in src, (
+        "codegraph resolver must only prepend the adapter name for declick shims."
+    )
     # The absolute workspace root (not ".") keeps the command line attributable
     # so the startup sweep can prove ownership before killing a stale node.
     assert "'watch', $watchersWorkspaceRoot" in src, "codegraph must watch the absolute workspace root."

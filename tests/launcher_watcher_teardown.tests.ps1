@@ -93,6 +93,31 @@ Describe 'graphify_ignore_gate excludes test artifacts' {
         # A real source change must still pass the gate (NOT ignored -> rebuild).
         Test-PathIgnoredByGraphify -Repo $repo -RelativePath 'src/grepai/foo.cs'       | Should Be $false
     }
+
+    # mcpw-msy: the graphify-rs pane died ~1 min after the grid was built and the
+    # launcher never respawned it. dev_tools\graphify-watch-wrapper.ps1 line 28
+    # dot-sources Modules\graphify_ignore_gate.ps1, which was never ported to
+    # this repo (it exists in VAD; the two wrappers are byte-identical). The
+    # dot-source failed, then the first batched flush called
+    # Test-PathsIgnoredByGraphify, got CommandNotFoundException, and the wrapper
+    # exited - so the tailer saw its PID gone and closed the pane. These two
+    # tests pin both halves: the file the wrapper depends on, and the batch form
+    # whose absence actually killed the process.
+    It 'the gate module the wrapper dot-sources exists' {
+        $wrapper = Join-Path $repo 'dev_tools\graphify-watch-wrapper.ps1'
+        $src = Get-Content -LiteralPath $wrapper -Raw
+        if ($src -notmatch 'graphify_ignore_gate\.ps1') {
+            throw 'the wrapper no longer dot-sources graphify_ignore_gate.ps1 - update this test'
+        }
+        (Test-Path -LiteralPath $gate) | Should Be $true
+    }
+
+    It 'Test-PathsIgnoredByGraphify (batch form) resolves and returns only ignored paths' {
+        . $gate
+        $batch = Test-PathsIgnoredByGraphify -Repo $repo -RelativePaths @('tests/_full_run_v2.txt', 'src/grepai/foo.cs')
+        ($batch -contains 'tests/_full_run_v2.txt') | Should Be $true
+        ($batch -contains 'src/grepai/foo.cs')      | Should Be $false
+    }
 }
 
 Describe 'WT-tab heartbeat guard detects a closed tab' {

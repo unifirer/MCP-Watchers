@@ -16,7 +16,12 @@ Describe 'fallback proxy wiring' {
     It 'proxy gate runs before gm semantic warm-up' {
         $c = Get-Content -LiteralPath $launcher -Raw
         $gateIdx = $c.IndexOf('Ensure-LlmProxyRunning')
-        $warmIdx = $c.IndexOf('Invoke-GmSemanticBuild -Mode "full"')
+        # Invoke-GmSemanticBuild no longer takes a -Mode parameter at all: the
+        # "full" warm-up was replaced by the incremental daemon, which calls
+        # Invoke-GmSemanticBuild -BuildDir ... (launcher line 2795). Anchoring on
+        # '-Mode "full"' made $warmIdx -1, so this test failed on a string that
+        # no longer exists rather than on the ordering it is meant to lock.
+        $warmIdx = $c.IndexOf('Invoke-GmSemanticBuild -BuildDir')
         $gateIdx | Should BeGreaterThan -1
         $warmIdx | Should BeGreaterThan -1
         $gateIdx | Should BeLessThan $warmIdx

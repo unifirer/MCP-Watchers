@@ -107,3 +107,49 @@ the malformed live matcher, and with that fixed the suite is GREEN.
 All five red suites are now green or explicitly skipped. Re-sweeping under a
 3.4.0 pin will still report t8_isolation red on `'-Be'`; see the version note
 above.
+
+## Correction: the first sweep under-reported, because it trusted exit codes
+
+The first sweep (results above) used `-EnableExit` and trusted `rc`. That is
+unsound for this repo: most suites end with a self-invoking
+`Invoke-Pester -Path $MyInvocation.MyCommand.Path` guarded by an env var, so the
+OUTER run reports "Passed: 0 Failed: 0" and exits 0 while the INNER run's
+failures never reach the exit code. `launcher_proxy_wiring.tests.ps1` was green
+on `rc=0` while actually failing.
+
+Re-swept counting `[-]` lines instead (and de-duplicating, since the
+self-invoking pattern runs every test twice). That surfaced a different set:
+
+| Suite | Failure | Disposition |
+|---|---|---|
+| `launcher_proxy_wiring` | `proxy gate runs before gm semantic warm-up` | FIXED — stale anchor |
+| `launcher_gm_semantic_build_concurrency` | named mutex serializes two concurrent processes | flaky under load; passes alone |
+| `launcher_watcher_teardown` | kills a wrapper host found only by the sweep | filed as `mcpw-lqy` |
+| `launcher_watcher_teardown_sweep` | kills a live pane-tailer | filed as `mcpw-lqy` |
+| `t8_isolation` | `'-Be' is not a valid Should operator` | runner artifact, Pester 3 pin |
+
+**`launcher_proxy_wiring` (fixed).** It anchored on
+`Invoke-GmSemanticBuild -Mode "full"`, but that parameter no longer exists: the
+"full" warm-up was replaced by the incremental daemon, which calls
+`Invoke-GmSemanticBuild -BuildDir ...` (launcher line 2795). `$warmIdx` was -1,
+so the test failed on a string that is gone rather than on the ordering it
+locks. Re-anchored on `-BuildDir`.
+
+**The two teardown suites (filed, not fixed).** Both call `Stop-AllWatchers`
+with no `RootPids` and no teardown-state.json. `Stop-AllWatchers` is now
+PID-scoped — `$ourPids = Get-DescendantPidSet -RootPids $RootPids`, and both the
+wrapper-host tree-kill (step 1b) and the pattern sweep (step 2) are gated on
+`$ourPids.Count -gt 0`. With no scope, nothing is killed. Probed directly:
+`Get-DescendantPidSet -RootPids @()` returns 0 and the state file does not
+exist. `launcher_watcher_teardown_sweep.tests.ps1:44` still documents the old
+contract ("Empty RootPids -> the tree-kill loop does nothing; only the pattern
+sweep can kill this process"). The scoping is deliberate — it is what stops one
+launcher killing another's watchers — so the tests are stale, not the module.
+Any repair changes what a safety-critical kill path asserts, and the obvious
+rewrite would make the process die in step 1 rather than the sweep, i.e. green
+but weaker. Needs a decision: bead `mcpw-lqy`.
+
+## Final state
+
+35 suites: 33 green or explicitly skipped, 2 red on `mcpw-lqy`, 1
+(`t8_isolation`) red only under a Pester 3 pin.

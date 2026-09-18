@@ -77,6 +77,18 @@ def test_launcher_launches_every_watcher_except_destructive_gm_watch():
     # memtrace headless daemon + readiness port.
     assert "start --headless" in src, "memtrace must launch headless."
     assert "50051" in src, "memtrace readiness port 50051 must be referenced."
+    # codegraph: opt-in freshness watcher (headless, 2x2 grid intact).
+    assert 'Start-WatcherDetached "codegraph"' in src, "codegraph launch missing."
+    assert 'Start-WatcherDetached "codegraph" "codegraph" @("watch", ".")' in src, (
+        "codegraph must launch via Start-WatcherDetached with 'watch .' args."
+    )
+    assert '"watch", "."' in src, "codegraph must watch the workspace root."
+    assert "Test-CodegraphReady" in src, "codegraph build prerequisite probe missing."
+    assert "graph.db" in src, "codegraph must reference .codegraph/graph.db."
+    # No 5th pane: codegraph stays headless like memtrace.
+    assert 'New-WatcherPaneScript -Label "codegraph"' not in src, (
+        "codegraph must NOT take a WT pane (2x2 grid intact)."
+    )
 
 
 def test_launcher_spawns_grepai_supervisor():

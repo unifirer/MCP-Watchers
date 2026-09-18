@@ -81,8 +81,14 @@ launcher. Leave it unset for normal use.
 The launcher does not bundle the watchers it supervises. Install these
 separately and keep them on `PATH`:
 
-`memtrace`, `grepai`, `gm` (graphenium), `repowise`, `litellm`, `cerememory`,
+`memtrace`, `grepai`, `gm` (graphenium), `repowise`, `codegraph`, `litellm`, `cerememory`,
 `ollama`, `node`, `python`, and Windows Terminal (`wt.exe`).
+
+`codegraph watch` is opt-in freshness only: `codegraph build` creates
+`.codegraph/graph.db` once and every query works without the watcher (data just
+goes stale). The launcher runs `codegraph watch .` headless when `codegraph` is
+on PATH; otherwise it warns and continues. If the graph looks stale, run
+`codegraph build` (or `codegraph update <files>`) manually.
 
 ## Tests
 

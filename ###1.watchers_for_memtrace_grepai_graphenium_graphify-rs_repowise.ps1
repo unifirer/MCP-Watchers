@@ -1952,7 +1952,8 @@ function Start-WatcherDetached {
         [string]$Label,
         [string[]]$ArgsList,
         [string]$LogFile,
-        [string]$ExePath = ""
+        [string]$ExePath = "",
+        [string]$WorkingDirectory = ""
     )
     try {
         # Resolve the real .exe. NOTE: 'gm' is PowerShell's built-in alias for
@@ -2012,7 +2013,7 @@ function Start-WatcherDetached {
         } else {
             $psi.Arguments = ($ArgsList | ForEach-Object { if ("$_" -match '\s') { '"{0}"' -f $_ } else { "$_" } }) -join ' '
         }
-        $psi.WorkingDirectory = $scriptDir
+        if ($WorkingDirectory) { $psi.WorkingDirectory = $WorkingDirectory } else { $psi.WorkingDirectory = $scriptDir }
         $psi.UseShellExecute = $false
         $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
         $psi.RedirectStandardOutput = $true
@@ -2876,6 +2877,30 @@ try { Ensure-LlmProxyRunning -Port ([int]$env:LLM_PROXY_PORT) -TimeoutSec 15 } c
 # Export the same base_url env some repowise builds read (harmless if ignored, required if config is missing).
 $env:REPOWISE_LITELLM_BASE_URL = "http://127.0.0.1:$env:LLM_PROXY_PORT/v1"
 $script:repowiseProc = Start-WatcherDetached "repowise" "repowise" @("watch", ".", "--index-only", "--debounce", "30000") $repowiseLog -ExePath $repowiseExe
+# -- codegraph: opt-in freshness watcher (headless, no 5th pane; 2x2 grid intact) --
+# `codegraph build` (see Test-CodegraphReady) is the only prerequisite for
+# queries; `codegraph watch` just debounces file changes into incremental
+# `update` so the graph does not go stale during long sessions. Without it
+# queries still work from the last build/update. Memtrace precedent: headless
+# child, log under $logsDir, PID tracked for teardown, no WT pane.
+$codegraphLog = Join-Path $logsDir 'codegraph.log'
+$codegraphExe = ""
+try {
+    $cgCmd = Get-Command 'codegraph.exe' -ErrorAction SilentlyContinue
+    if (-not $cgCmd) { $cgCmd = Get-Command 'codegraph' -ErrorAction SilentlyContinue }
+    if ($cgCmd -and $cgCmd.Source) { $codegraphExe = $cgCmd.Source }
+} catch { $codegraphExe = "" }
+$script:codegraphProc = $null
+if (Test-CodegraphReady) {
+    # Pass "." (watch the workspace root via WorkingDirectory); do NOT pass
+    # --db here: older builds lack watch --db/-d (#984/#987). Running with
+    # WorkingDirectory = workspace root makes the default .codegraph/graph.db
+    # resolve correctly on every version.
+    $script:codegraphProc = Start-WatcherDetached "codegraph" "codegraph" @("watch", ".") $codegraphLog -ExePath $codegraphExe -WorkingDirectory $watchersWorkspaceRoot
+    if (-not $script:codegraphProc) { Write-Warning "codegraph watch did not start. Queries still work; run 'codegraph build' manually for fresh data." }
+} else {
+    Write-Host "codegraph watch skipped (see warning above). Queries still work from the last build."
+}
 # -- repowise embeddings: `repowise watch` is index-only (no vectors) --
 # Chain a low-frequency `repowise reindex --embedder ollama` loop so the
 # LanceDB vector store stays fresh with zero manual runs. Ollama is local

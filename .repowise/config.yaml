@@ -6,6 +6,8 @@ reasoning: auto
 distill:
   commands:
     enabled: true
+litellm:
+  base_url: http://127.0.0.1:11436/v1
 hooks:
   read_skeleton: true
   search_digest: true

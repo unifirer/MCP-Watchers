@@ -78,13 +78,27 @@ def test_launcher_launches_every_watcher_except_destructive_gm_watch():
     assert "start --headless" in src, "memtrace must launch headless."
     assert "50051" in src, "memtrace readiness port 50051 must be referenced."
     # codegraph: opt-in freshness watcher (headless, 2x2 grid intact).
-    assert 'Start-WatcherDetached "codegraph"' in src, "codegraph launch missing."
-    assert 'Start-WatcherDetached "codegraph" "codegraph" @("watch", ".")' in src, (
-        "codegraph must launch via Start-WatcherDetached with 'watch .' args."
-    )
-    assert '"watch", "."' in src, "codegraph must watch the workspace root."
+    # Resolution is shim-aware: `codegraph` has no native .exe on this box (it
+    # is a declick shim), so it is re-expressed as node.exe <cli.mjs> codegraph.
+    assert "function Resolve-CodegraphLaunch" in src, "codegraph launcher resolution missing."
+    assert 'Start-WatcherDetached $cgExeName "codegraph"' in src, "codegraph launch missing."
+    assert "Resolve-CodegraphLaunch" in src, "codegraph must resolve via the shim-aware helper."
     assert "Test-CodegraphReady" in src, "codegraph build prerequisite probe missing."
     assert "graph.db" in src, "codegraph must reference .codegraph/graph.db."
+    # The absolute workspace root (not ".") keeps the command line attributable
+    # so the startup sweep can prove ownership before killing a stale node.
+    assert "'watch', $watchersWorkspaceRoot" in src, "codegraph must watch the absolute workspace root."
+    # -SkipStaleKill: ExeName is the SHARED node.exe interpreter, so the
+    # per-binary "watch" dedup in Start-WatcherDetached must be opted out of.
+    assert "-SkipStaleKill" in src, "codegraph must skip the node-wide stale-kill."
+    # Verb-capability gate: some installs expose only the MCP query surface and
+    # have no `watch` verb, so `codegraph watch` would spawn a child that dies
+    # with exit 2 and leave a dead PID in teardown-state.json.
+    assert '"name"\\s*:\\s*"watch"' in src, "codegraph must gate on the watch verb existing."
+    # The gate must only fire when the probe really enumerated a verb list
+    # ('"verbs": ['), otherwise a native CLI that prints a plain version string
+    # would be skipped even though it does carry watch/build.
+    assert '"verbs"\\s*:\\s*\\[' in src, "codegraph verb gate must require an enumerated verb list."
     # No 5th pane: codegraph stays headless like memtrace.
     assert 'New-WatcherPaneScript -Label "codegraph"' not in src, (
         "codegraph must NOT take a WT pane (2x2 grid intact)."

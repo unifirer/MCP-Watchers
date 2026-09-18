@@ -1953,7 +1953,8 @@ function Start-WatcherDetached {
         [string[]]$ArgsList,
         [string]$LogFile,
         [string]$ExePath = "",
-        [string]$WorkingDirectory = ""
+        [string]$WorkingDirectory = "",
+        [switch]$SkipStaleKill
     )
     try {
         # Resolve the real .exe. NOTE: 'gm' is PowerShell's built-in alias for
@@ -1976,21 +1977,30 @@ function Start-WatcherDetached {
         # --provider` that lingers alive). The kill is scoped per-binary by
         # $ExeName, so only this tool's own watcher is affected. This guarantees
         # a broken watcher can never block the correct one from starting.
-        try {
-            $ps = Get-CimInstance Win32_Process -Filter "Name = '$($ExeName).exe'" -ErrorAction SilentlyContinue
-            $killed = 0
-            foreach ($p in $ps) {
-                if ($p.CommandLine -and $p.CommandLine -match 'watch') {
-                    try { Invoke-CimMethod -InputObject $p -MethodName Terminate | Out-Null; $killed++ }
-                    catch { Write-Warning "$($Label): failed to terminate stale watcher PID $($p.ProcessId): $($_.Exception.Message)" }
+        #
+        # -SkipStaleKill opts out. Needed when $ExeName is a SHARED interpreter
+        # (codegraph runs as `node.exe <cli.mjs> codegraph watch <root>`): the
+        # filter would then match EVERY node.exe whose command line contains
+        # "watch", i.e. unrelated dev servers and test runners. Codegraph's
+        # stale instances are already covered by the workspace-attributed
+        # startup sweep in Stop-PriorLauncherInstances.
+        if (-not $SkipStaleKill) {
+            try {
+                $ps = Get-CimInstance Win32_Process -Filter "Name = '$($ExeName).exe'" -ErrorAction SilentlyContinue
+                $killed = 0
+                foreach ($p in $ps) {
+                    if ($p.CommandLine -and $p.CommandLine -match 'watch') {
+                        try { Invoke-CimMethod -InputObject $p -MethodName Terminate | Out-Null; $killed++ }
+                        catch { Write-Warning "$($Label): failed to terminate stale watcher PID $($p.ProcessId): $($_.Exception.Message)" }
+                    }
                 }
+                if ($killed -gt 0) {
+                    Write-Host "$($Label): terminated $killed stale/broken watcher process(es) before relaunch."
+                    Start-Sleep -Milliseconds 300
+                }
+            } catch {
+                Write-Warning "$($Label): stale-watcher sweep failed: $($_.Exception.Message)"
             }
-            if ($killed -gt 0) {
-                Write-Host "$($Label): terminated $killed stale/broken watcher process(es) before relaunch."
-                Start-Sleep -Milliseconds 300
-            }
-        } catch {
-            Write-Warning "$($Label): stale-watcher sweep failed: $($_.Exception.Message)"
         }
         Write-Host "Starting $Label watch (detached, logging to $LogFile)..."
         # Spawn via System.Diagnostics.Process (NOT Start-Process -RedirectStandardOutput)
@@ -2066,6 +2076,58 @@ function Test-LlmProxyReady {
     }
 }
 
+# --- Codegraph launch resolution ------------------------------------------
+# Returns @{ Exe = <absolute image>; Prefix = @(<arg>, ...) } or $null.
+#
+# WHY THIS EXISTS: Start-WatcherDetached spawns with UseShellExecute=$false,
+# so it can only start a real PE image. On this box `codegraph` is NOT one -
+# Get-Command finds no codegraph.exe, only the declick shim
+#   C:\Users\yuni\.declick\bin\codegraph      (bash: exec node "<cli>" codegraph "$@")
+#   C:\Users\yuni\.declick\bin\codegraph.cmd  (cmd:  node "<cli>" codegraph %*)
+# Handing either to Process.Start fails, and the watcher would silently never
+# start. So the shim is parsed and re-expressed as
+#   node.exe <cli entrypoint> codegraph <args>
+# which IS spawnable, is immune to the degraded PATHEXT here ('.CPL'), and
+# matches the node+entrypoint idiom already used for memtrace.
+function Resolve-CodegraphLaunch {
+    $native = Get-Command 'codegraph.exe' -ErrorAction SilentlyContinue
+    if ($native -and $native.Source) {
+        return @{ Exe = $native.Source; Prefix = @() }
+    }
+    $shim = Get-Command 'codegraph.cmd' -ErrorAction SilentlyContinue
+    if (-not $shim) { $shim = Get-Command 'codegraph' -ErrorAction SilentlyContinue }
+    if (-not $shim -or -not $shim.Source) { return $null }
+    $shimPath = $shim.Source
+    if ($shimPath -notmatch '\.cmd$') {
+        # Extension-less twin is a bash script; the .cmd sibling sits beside it
+        # and carries the same node invocation in a parseable form.
+        $cmdPath = $shimPath + '.cmd'
+        if (Test-Path -LiteralPath $cmdPath) { $shimPath = $cmdPath }
+    }
+    $js = $null
+    $sub = 'codegraph'
+    try {
+        $text = Get-Content -LiteralPath $shimPath -Raw -ErrorAction Stop
+        $m = [regex]::Match($text, 'node\s+"?(?<js>[^"\s]+\.(?:mjs|js))"?\s+(?<sub>\S+)')
+        if ($m.Success) { $js = $m.Groups['js'].Value; $sub = $m.Groups['sub'].Value }
+    } catch { $js = $null }
+    if (-not $js) { return $null }
+    $node = $null
+    foreach ($cand in @(
+        'C:\nvm4w\nodejs\node.exe',
+        "$env:ProgramFiles\nodejs\node.exe",
+        'C:\Program Files\nodejs\node.exe'
+    )) {
+        if ($cand -and (Test-Path -LiteralPath $cand)) { $node = $cand; break }
+    }
+    if (-not $node) {
+        $nodeCmd = Get-Command 'node.exe' -ErrorAction SilentlyContinue
+        if ($nodeCmd -and $nodeCmd.Source) { $node = $nodeCmd.Source }
+    }
+    if (-not $node) { return $null }
+    return @{ Exe = $node; Prefix = @($js, $sub) }
+}
+
 # --- Codegraph prerequisite probe ------------------------------------------
 # `codegraph build` creates .codegraph/graph.db ONCE; `codegraph watch` only
 # keeps that database fresh. Every query works without the watcher - the data
@@ -2073,8 +2135,7 @@ function Test-LlmProxyReady {
 # hard dependency: on any miss it warns and returns $false so the caller
 # skips the watcher and the rest of the launcher keeps running.
 function Test-CodegraphReady {
-    $cg = Get-Command 'codegraph.exe' -ErrorAction SilentlyContinue
-    if (-not $cg) { $cg = Get-Command 'codegraph' -ErrorAction SilentlyContinue }
+    $cg = Resolve-CodegraphLaunch
     if (-not $cg) {
         Write-Warning "codegraph not found on PATH. Skipping codegraph watch (run 'npm install -g @optave/codegraph' and 'codegraph build' to enable)."
         return $false
@@ -2084,7 +2145,8 @@ function Test-CodegraphReady {
         Write-Host "codegraph graph.db missing - running one-time 'codegraph build'..."
         try {
             $bl = Join-Path $logsDir 'codegraph-build.log'
-            $bp = Start-Process -FilePath $cg.Source -ArgumentList @('build', '.') -WorkingDirectory $watchersWorkspaceRoot -WindowStyle Hidden -RedirectStandardOutput $bl -RedirectStandardError "$bl.err" -PassThru
+            $bArgs = @($cg.Prefix) + @('build', '.')
+            $bp = Start-Process -FilePath $cg.Exe -ArgumentList $bArgs -WorkingDirectory $watchersWorkspaceRoot -WindowStyle Hidden -RedirectStandardOutput $bl -RedirectStandardError "$bl.err" -PassThru
             if ($bp) { $bp.WaitForExit(120000) | Out-Null }
         } catch {
             Write-Warning ("codegraph build failed: " + $_.Exception.Message + ". Continuing without codegraph watch.")
@@ -2095,14 +2157,36 @@ function Test-CodegraphReady {
             return $false
         }
     }
+    # VERB CAPABILITY GATE (2026-09-19): an installed `codegraph` may expose
+    # ONLY its MCP query surface. Verified on this box: declick's build lists
+    # 35 verbs (query, path, structure, triage, ...) and NONE of them is
+    # watch/build/update - `codegraph watch .` answers
+    #   {"ok":false,"error":"unknown verb watch; ...","exit":2}
+    # and the child dies immediately. Launching it anyway would register a dead
+    # PID in teardown-state.json and print a false "launched" line, so the verb
+    # is probed before any launch is attempted.
+    # The gate only fires when the probe ACTUALLY ENUMERATED verbs (declick
+    # emits {"data":{"verbs":[...]}}). A native CLI that prints a plain version
+    # string exposes no verb list, so it is assumed to carry the upstream
+    # watch/build subcommands and is left alone. An empty/unreadable probe also
+    # fails OPEN - absence of the verb is never assumed from a failed probe.
+    $vOut = ''
+    try {
+        $vArgs = @($cg.Prefix) + @('--version')
+        $vOut = (& $cg.Exe $vArgs 2>$null | Out-String)
+    } catch { $vOut = '' }
+    if ($vOut -and $vOut -match '"verbs"\s*:\s*\[' -and $vOut -notmatch '"name"\s*:\s*"watch"') {
+        Write-Warning "This codegraph install has no 'watch' verb (MCP query surface only). Skipping codegraph watch - queries still work, and build/update are unavailable in this install."
+        return $false
+    }
     # Upstream caveats: #979 (incremental update leaked duplicate edges per
     # run) and #984/#987 (`watch --db/-d` missing in older builds). Both are
-    # non-blocking; the version line tells a long session when to prefer a
+    # non-blocking; the built timestamp tells a long session when to prefer a
     # periodic full `codegraph build` over the incremental watcher.
-    try {
-        $v = & $cg.Source --version 2>$null | Out-String
-        Write-Host ("codegraph ready (" + $v.Trim() + "). Watch is opt-in freshness only.")
-    } catch { Write-Host "codegraph ready. Watch is opt-in freshness only." }
+    $built = ''
+    if ($vOut -match '"builtAt"\s*:\s*"([^"]+)"') { $built = $Matches[1] }
+    if ($built) { Write-Host "codegraph ready (built $built). Watch is opt-in freshness only." }
+    else { Write-Host "codegraph ready. Watch is opt-in freshness only." }
     return $true
 }
 
@@ -2286,14 +2370,31 @@ function Stop-WatcherOrphans {
     # evidence (2+ token matches, or legacy :8291 live while :8080 canonical).
     # Keep ONE (the canonical-port owner, oldest on ties), reap extras via CIM.
     $backendDupes = @(
-        @{ Name = 'cerememory.exe'; Token = 'cerememory'; Port = 8420 },
-        @{ Name = 'python.exe'; Token = 'mcp_agent_mail'; Port = 8765 },
-        @{ Name = 'node.exe'; Token = 'claude-mcp-server'; Port = 8080 }
+        @{ Name = 'cerememory.exe'; Token = 'cerememory'; Port = 8420; Exclude = 'mcp --server-url' },
+        @{ Name = 'python.exe'; Token = 'mcp_agent_mail'; Port = 8765; Exclude = '' },
+        @{ Name = 'node.exe'; Token = 'claude-mcp-server'; Port = 8080; Exclude = '' }
     )
     foreach ($spec in $backendDupes) {
         try {
             $cands = @(Get-CimInstance Win32_Process -Filter "Name='$($spec.Name)'" -ErrorAction SilentlyContinue |
                 Where-Object { $_.CommandLine -and ($_.CommandLine -like ('*' + $spec.Token + '*')) })
+            # mcpw-ttl.1 (2026-09-19): a backend and its OWN companion process are
+            # ONE server, not two. Counting them as duplicates made this sweep reap
+            # a healthy singleton -- observed as mcp-agent-mail (:8765) dying every
+            # 20-40 min and Toolport's cerememory pipe closing mid-session.
+            #   - cerememory.exe: `serve --config` (the :8420 server) plus
+            #     `mcp --server-url` (Toolport's stdio bridge) both match the token.
+            #   - mail/claude: the server spawns a child that carries the same
+            #     command line, so parent and child both match.
+            # Drop the bridge by role regex, then collapse any remaining
+            # parent/child pair to the parent. Only genuine second servers reach
+            # the duplicate test below.
+            if ($spec.Exclude) {
+                $cands = @($cands | Where-Object { -not ($_.CommandLine -match $spec.Exclude) })
+            }
+            $candParentIds = @{}
+            foreach ($cand in $cands) { $candParentIds[[uint32]$cand.ParentProcessId] = $true }
+            $cands = @($cands | Where-Object { -not $candParentIds.ContainsKey([uint32]$_.ProcessId) })
             $legacyLive = $false
             if ($spec.Port -eq 8080) {
                 $up8080 = @(Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue)
@@ -2884,19 +2985,23 @@ $script:repowiseProc = Start-WatcherDetached "repowise" "repowise" @("watch", ".
 # queries still work from the last build/update. Memtrace precedent: headless
 # child, log under $logsDir, PID tracked for teardown, no WT pane.
 $codegraphLog = Join-Path $logsDir 'codegraph.log'
-$codegraphExe = ""
-try {
-    $cgCmd = Get-Command 'codegraph.exe' -ErrorAction SilentlyContinue
-    if (-not $cgCmd) { $cgCmd = Get-Command 'codegraph' -ErrorAction SilentlyContinue }
-    if ($cgCmd -and $cgCmd.Source) { $codegraphExe = $cgCmd.Source }
-} catch { $codegraphExe = "" }
 $script:codegraphProc = $null
-if (Test-CodegraphReady) {
-    # Pass "." (watch the workspace root via WorkingDirectory); do NOT pass
-    # --db here: older builds lack watch --db/-d (#984/#987). Running with
-    # WorkingDirectory = workspace root makes the default .codegraph/graph.db
-    # resolve correctly on every version.
-    $script:codegraphProc = Start-WatcherDetached "codegraph" "codegraph" @("watch", ".") $codegraphLog -ExePath $codegraphExe -WorkingDirectory $watchersWorkspaceRoot
+$cgLaunch = Resolve-CodegraphLaunch
+if (-not $cgLaunch) {
+    Write-Host "codegraph not resolvable (no codegraph.exe and no parseable shim). Queries still work from the last build."
+} elseif (Test-CodegraphReady) {
+    # Watch the ABSOLUTE workspace root, not ".": the command line then carries
+    # the root, so the attribution gate in Stop-PriorLauncherInstances can
+    # prove a stale codegraph node belongs to THIS workspace before killing it.
+    # Do NOT pass --db: older builds lack watch --db/-d (#984/#987); the
+    # WorkingDirectory + absolute root make the default graph.db resolve.
+    $cgArgs = @($cgLaunch.Prefix) + @('watch', $watchersWorkspaceRoot)
+    # "node" when re-expressed from the shim, "codegraph" for a native install.
+    $cgExeName = if ($cgLaunch.Prefix.Count -gt 0) { 'node' } else { 'codegraph' }
+    # -SkipStaleKill: Start-WatcherDetached's dedup kills every <ExeName>.exe
+    # whose command line contains "watch". With ExeName="node" that would hit
+    # unrelated dev servers; the workspace-attributed startup sweep covers it.
+    $script:codegraphProc = Start-WatcherDetached $cgExeName "codegraph" $cgArgs $codegraphLog -ExePath $cgLaunch.Exe -WorkingDirectory $watchersWorkspaceRoot -SkipStaleKill
     if (-not $script:codegraphProc) { Write-Warning "codegraph watch did not start. Queries still work; run 'codegraph build' manually for fresh data." }
 } else {
     Write-Host "codegraph watch skipped (see warning above). Queries still work from the last build."

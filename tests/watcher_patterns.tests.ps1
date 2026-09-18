@@ -41,6 +41,23 @@ Describe 'watcher_patterns shared sweep list' {
         $cg.Count | Should Be 1
     }
 
+    It 'contains a dedicated entry for the codegraph npm-shim sweep (node.exe)' {
+        . $patternsModule
+        # codegraph has no native .exe here: it runs as
+        # node.exe <cli.mjs> codegraph watch <root>, so the sweep must match
+        # the node image or a stale watcher is never reaped. The token is the
+        # TWO-word 'codegraph watch' on purpose: the codegraph MCP backend
+        # (`npx @optave/codegraph mcp --multi-repo`) also carries 'codegraph'
+        # and must never be swept.
+        $cg = @($script:WatcherSweepPatterns | Where-Object {
+            $_.Name -eq 'node.exe' -and $_.Pattern -eq 'codegraph watch' })
+        $cg.Count | Should Be 1
+        # ...and the bare 'codegraph' token must NOT be a node.exe sweep entry.
+        $broad = @($script:WatcherSweepPatterns | Where-Object {
+            $_.Name -eq 'node.exe' -and $_.Pattern -eq 'codegraph' })
+        $broad.Count | Should Be 0
+    }
+
     It 'contains a dedicated entry for the grepai supervisor sweep' {
         . $patternsModule
         $sup = @($script:WatcherSweepPatterns | Where-Object {

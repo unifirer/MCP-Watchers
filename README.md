@@ -86,9 +86,18 @@ separately and keep them on `PATH`:
 
 `codegraph watch` is opt-in freshness only: `codegraph build` creates
 `.codegraph/graph.db` once and every query works without the watcher (data just
-goes stale). The launcher runs `codegraph watch .` headless when `codegraph` is
-on PATH; otherwise it warns and continues. If the graph looks stale, run
+goes stale). The launcher runs `codegraph watch <root>` headless when `codegraph`
+is on PATH; otherwise it warns and continues. If the graph looks stale, run
 `codegraph build` (or `codegraph update <files>`) manually.
+
+Two install shapes are handled. A native `codegraph.exe` is spawned directly.
+An npm shim (`codegraph.cmd`) is not a PE image, so it is re-expressed as
+`node.exe <cli-entrypoint> codegraph ...` before spawning - the launcher parses
+the shim rather than hardcoding a package path. Some installs expose only the
+MCP query surface and have **no `watch` verb** (verified 2026-09-19: 35 verbs,
+none of them watch/build/update - `codegraph watch .` returns
+`unknown verb watch` and exits 2). In that case the launcher warns and skips
+instead of registering a dead PID; use the MCP server for freshness there.
 
 ## Tests
 

@@ -23,6 +23,10 @@ $script:WatcherSweepPatterns = @(
     @{ Name = 'memcortex-daemon.exe'; Pattern = '' },
     @{ Name = 'claude-mcp.exe';  Pattern = '--port'; Persistent = $true }, # backend singleton family, never swept on takeover
     @{ Name = 'node.exe';        Pattern = 'claude-mcp-server'; Persistent = $true }, # vad-10m.1: node hosts dist/cli.js --port (never claude-mcp.exe)
+    # codegraph npm shim: node.exe <cli.mjs> codegraph watch <root>. Token is
+    # 'codegraph watch', NOT 'codegraph': the codegraph MCP backend runs as
+    # `npx @optave/codegraph mcp --multi-repo` and must never be swept.
+    @{ Name = 'node.exe';        Pattern = 'codegraph watch' },
     @{ Name = 'cerememory.exe';  Pattern = 'cerememory'; Persistent = $true },     # vad-10m.3: backend singleton (:8420), token-scoped
     @{ Name = 'python.exe';      Pattern = 'mcp_agent_mail'; Persistent = $true }, # vad-10m.3: mail singleton (:8765), token-scoped
     @{ Name = 'python.exe';      Pattern = 'embed_server'; Persistent = $true }, # graphiti embed proxy (:8003), token-scoped

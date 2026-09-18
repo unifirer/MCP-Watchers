@@ -111,6 +111,28 @@ Complete this cognitive process before taking any action.
 - Git Rules: Commit AGENTS.md and words.ahk directly. Use stacked flags: git
   commit -m "subject" -m "body".
 
+- Git Safety (added 2026-09-18 after a total object-DB loss — read before any
+  git write):
+  * This repository is worked by more than one agent at a time. Before ANY git
+    write, run `git status --porcelain` and check whether another agent has
+    uncommitted edits. Work in a worktree; never write to a dirty shared tree.
+  * NEVER run `git gc`, `git prune`, `git reflog expire`, `git worktree prune`,
+    or delete anything under `.git/`. A single one of these destroyed the
+    object database on 2026-09-18: `.git/objects/pack/` was emptied, 176
+    objects went missing, and every commit in the last 15 hours became
+    unreadable. `git fetch` cannot repair that — the incoming pack has
+    unresolved deltas against the missing objects.
+  * Use FLAT branch names. Slash-named branches are silently discarded on the
+    J: volume (mcpw-sr4): exit 0, no ref, no error.
+  * Before trusting history, run `git fsck --connectivity-only`. If it reports
+    broken entries, STOP and report — do not commit on top.
+  * PUSH at least daily, and always after a batch of fixes. Remotes exist:
+    `github` and `gitlab`. The local object store is not durable; a push is the
+    only copy that survives a local loss. Prefer `git push github <branch>`
+    over rewriting local history that nobody else has.
+  * If a probe needs a scratch repository, build it on the volume under test.
+    `tempfile.mkdtemp()` is C:, so it cannot detect a J:-only defect.
+
 - Testing: Run tests minimized or headless. Verify a file only once per
   session. Test all bug fixes. Add regression tests.
 

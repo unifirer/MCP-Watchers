@@ -22,13 +22,19 @@ Environment rules (bead mcpw-tao -- do not re-diagnose these as code bugs):
     import time can drop it out from under a LIVE holder in a concurrent run.
     An earlier revision did exactly that, and the delete made pytest abort
     during collection in sandboxes that intercept unlink.
+  * The suite is slow and its runtime is load-dependent: 160 s alone, but it
+    blew a 300 s ceiling inside a full pytest run where other modules were
+    driving the same watchers. The ceiling is 900 s. The suite's stdout goes
+    to a file so that a timeout still leaves partial output to diagnose.
 
 See docs/guides/pytest-environment.md for the full write-up.
 """
 
+import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -71,28 +77,50 @@ def test_launcher_powershell_suite_passes():
         pytest.skip(
             "no PowerShell host on PATH (tried: %s)" % ", ".join(_PS_HOST_NAMES)
         )
-    # Hold the shared watcher lock for the WHOLE suite run: T8 stops/starts the
-    # global watchers, and that is exactly the window the other watcher tests
-    # must not overlap with.
-    with _grepai_lock:
-        result = subprocess.run(
-            [
-                ps_host,
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(PS_SUITE),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=300,  # widened from 120: launcher_tests.ps1 exceeds 120s under watcher contention
-            creationflags=0x08000000,  # CREATE_NO_WINDOW
+    # Stream to a file rather than capture_output: on a timeout, capture_output
+    # yields NOTHING at all, and a suite that can legitimately run for minutes
+    # is exactly the case where partial output is what tells you where it hung.
+    fd, out_path = tempfile.mkstemp(prefix="launcher_tests_", suffix=".log")
+    os.close(fd)
+    timed_out = False
+    result = None
+    with _grepai_lock, open(out_path, "w", encoding="utf-8", errors="replace") as sink:
+        # Hold the shared watcher lock for the WHOLE suite run: T8 stops/starts
+        # the global watchers, and that is exactly the window the other watcher
+        # tests must not overlap with.
+        try:
+            result = subprocess.run(
+                [
+                    ps_host,
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(PS_SUITE),
+                ],
+                stdout=sink,
+                stderr=subprocess.STDOUT,
+                text=True,
+                # Raised from 120 -> 300 -> 900. Measured 160 s running this
+                # module alone, but over 300 s inside a full pytest run where
+                # sibling modules drive the same watchers; the ceiling has to
+                # survive the loaded case, or a slow run reads as a failure.
+                timeout=900,
+                creationflags=0x08000000,  # CREATE_NO_WINDOW
+            )
+        except subprocess.TimeoutExpired:
+            timed_out = True
+    captured = Path(out_path).read_text(encoding="utf-8", errors="replace")
+    try:
+        os.unlink(out_path)
+    except BaseException:
+        pass  # sandbox intercepts unlink; the file is a temp leftover at worst
+    print(captured)
+    if timed_out:
+        tail = "\n".join(captured.splitlines()[-40:])
+        pytest.fail(
+            "launcher_tests.ps1 exceeded the 900 s ceiling. Last output:\n" + tail
         )
-    print(result.stdout)
-    if result.stderr.strip():
-        print("STDERR:", result.stderr, file=sys.stderr)
     assert result.returncode == 0, (
-        f"launcher_tests.ps1 failed (exit {result.returncode})\n"
-        f"{result.stdout}\n{result.stderr}"
+        f"launcher_tests.ps1 failed (exit {result.returncode})\n{captured}"
     )

@@ -107,6 +107,62 @@ could not help. Because the failure happens at import, it aborts collection and
 **Fix in repo.** `test_watcher_allocator.py` falls back to
 `importlib.util.spec_from_file_location` when the plain import cannot find it.
 
+## 5. `launcher_tests.ps1` takes longer than the shim allowed
+
+**Symptom.** `test_launcher.py` fails with `subprocess.TimeoutExpired` and
+*no output at all* — the printed suite log is empty even though the suite ran
+for minutes.
+
+Two separate causes, both fixed:
+
+1. **The ceiling was too low for the loaded case.** Measured 2026-09-19: the
+   suite runs 160 s when this module runs alone, but blew a 300 s ceiling
+   inside a full `pytest -c pytest.ini -q` run where sibling modules drive the
+   same watchers. The ceiling is 900 s.
+2. **`capture_output=True` throws away the evidence.** On timeout,
+   `subprocess.run` discards the pipe contents, so a slow-but-otherwise-healthy
+   run and a hung run look identical. The shim now redirects the suite's stdout
+   (and stderr) to a temp file and, on timeout, `pytest.fail`s with the last 40
+   lines — which is what tells you *where* it hung.
+
+Do not "fix" a timeout by adding `-SkipSmoke` to the shim: T20/T21 are the only
+tests that spawn the real launcher, and they self-skip when a live launcher is
+already running.
+
+## 6. `dev_tools/gm-ollama-bridge.ps1` is not in this checkout
+
+**Symptom.** `test_launcher_proxy_wiring.py::test_bridge_upstream_points_to_proxy`
+raises `FileNotFoundError` on `dev_tools/gm-ollama-bridge.ps1`.
+
+**Root cause.** MCP-Watchers is a stripped extraction of VAD; the sibling
+checkout `J:\audio\VAD\dev_tools` has a large tool tree this one lacks. The
+file is absent from git history entirely (`git log --all -- <path>` is empty),
+so it was never lost — it was never here.
+
+**Fix in repo.** SKIP when the bridge is absent, matching section 3. A
+`FileNotFoundError` on a file the checkout never shipped says nothing about the
+launcher.
+
+## 7. Real finding, deliberately NOT auto-fixed: repowise routing
+
+`test_repowise_watch_wired_to_proxy` checks two things. The launcher half
+passes (`Ensure-LlmProxyRunning` at offset 150092 precedes
+`Start-WatcherDetached "repowise"` at 168492). The config half fails:
+
+```
+.repowise/config.yaml has no litellm.base_url
+(provider='openai' model='poolside/laguna-xs-2.1:free')
+```
+
+`.repowise/config.yaml` is the repowise MCP's own LLM-routing config, and
+changing an MCP's LLM endpoint is an operator decision — see the standing
+instruction in `AGENTS.md` ("Model Config Stability"). The test therefore
+**reports** the gap instead of writing the config, and checks the launcher half
+first so a genuine code regression is no longer masked by the config assertion.
+
+Tracked as bead **mcpw-1lr**. This one is expected to stay red until someone
+approves adding `litellm.base_url: http://127.0.0.1:11436/v1`.
+
 ## Reporting a new failure
 
 Before filing a bead, check which layer failed:
@@ -117,3 +173,5 @@ Before filing a bead, check which layer failed:
 | nested spawn | `$env:PATHEXT` from inside the host |
 | collection | `pytest -c pytest.ini --collect-only -q` (aborts => import-time defect) |
 | target script | does the `###`-prefixed file exist in this checkout? |
+| slow suite | is it >900 s, or did it *hang*? read the tail the shim prints |
+| share violation | `Add-Content` on a file a tailer is reading — retry, don't fail |

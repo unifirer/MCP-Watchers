@@ -1846,7 +1846,22 @@ try {
     # Truncate below the watermark, then append a marker line.
     Set-Content -LiteralPath $t23log -Value @('post-trunc-a','post-trunc-b','post-trunc-c') -Encoding UTF8
     Start-Sleep -Seconds 1
-    Add-Content -LiteralPath $t23log -Value 'TRUNC-MARKER-resumed-line' -Encoding UTF8
+    # Append the marker with retries. watch.log can be held open for an instant
+    # (the tailer's read window, or the AV indexer on a freshly written temp
+    # file), and Add-Content has no retry of its own: a single share violation
+    # aborts it and the whole T23 block then fails on a plumbing error rather
+    # than on the truncation behaviour under test. The tail module itself
+    # treats a share violation as "retry next tick" -- same rule here.
+    $t23appendOk = $false
+    for ($t23i = 0; $t23i -lt 20 -and -not $t23appendOk; $t23i++) {
+        try {
+            Add-Content -LiteralPath $t23log -Value 'TRUNC-MARKER-resumed-line' -Encoding UTF8 -ErrorAction Stop
+            $t23appendOk = $true
+        } catch {
+            Start-Sleep -Milliseconds 250
+        }
+    }
+    Assert ($t23appendOk) 'T23 resume marker appended to watch.log' ('append-failed')
     # Poll instead of a fixed sleep: the tailer's poll interval is host
     # dependent, and a hard 3s deadline killed it before the resume marker was
     # flushed -- a false FAIL on a run whose other two T23 assertions passed.

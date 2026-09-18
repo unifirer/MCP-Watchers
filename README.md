@@ -27,12 +27,17 @@ The launcher also supervises the backends:
 | claude-mcp | 8080 |
 | memtrace | 3030 |
 | graphiti embed proxy | 8003 |
+| graphiti MCP proxy | 8004 |
 
 `graphiti-mcp` (:8002) is a Docker container (`restart: always`, native HTTP
 container :8000 -> host :8002). Toolport reaches it at
-`http://127.0.0.1:8002/mcp`. The launcher does not spawn or supervise it.
-It still depends on the host embed proxy (:8003), litellm (:4000) and
-FalkorDB (:6379) via `host.docker.internal`.
+`http://127.0.0.1:8002/mcp`. The launcher does not spawn or supervise the
+container. It still depends on the host embed proxy (:8003), litellm (:4000)
+and FalkorDB (:6379) via `host.docker.internal`.
+
+The host-side MCP proxy (:8004) is the Toolport -> docker session adapter:
+docker's endpoint is session-based and Toolport is stateless, so the proxy
+pins the session id. It IS spawned and supervised, like the embed proxy.
 
 ## Layout
 
@@ -95,14 +100,20 @@ goes stale). The launcher runs `codegraph watch <root>` headless when `codegraph
 is on PATH; otherwise it warns and continues. If the graph looks stale, run
 `codegraph build` (or `codegraph update <files>`) manually.
 
-Two install shapes are handled. A native `codegraph.exe` is spawned directly.
-An npm shim (`codegraph.cmd`) is not a PE image, so it is re-expressed as
-`node.exe <cli-entrypoint> codegraph ...` before spawning - the launcher parses
-the shim rather than hardcoding a package path. Some installs expose only the
-MCP query surface and have **no `watch` verb** (verified 2026-09-19: 35 verbs,
-none of them watch/build/update - `codegraph watch .` returns
-`unknown verb watch` and exits 2). In that case the launcher warns and skips
-instead of registering a dead PID; use the MCP server for freshness there.
+Three install shapes are handled. A native `codegraph.exe` is spawned directly.
+An npm bin shim of the **real CLI** (`npm install -g @optave/codegraph`) is not a
+PE image, so it is re-expressed as `node.exe <cli.js> <args>` - the launcher parses
+the shim and expands its `%dp0%` entrypoint rather than hardcoding a package path.
+A **declick adapter shim** (`~/.declick/bin/codegraph`, created by wrapping the
+codegraph MCP server) is re-expressed as `node.exe <run.mjs> codegraph <args>`.
+That adapter exposes only the MCP query surface and has **no `watch` verb**
+(verified 2026-09-19: 35 verbs, none of them watch/build/update - `codegraph watch .`
+returns `unknown verb watch` and exits 2), so the launcher warns and skips instead of
+registering a dead PID. `PATH` must resolve the real shim first;
+`J:\Programs\npm-global` (index 58) already precedes `~/.declick\bin` (index 95) here.
+On a box where the real CLI is missing, the adapter shim owns the bare name and
+`codegraph build` fails with `unknown verb build` - install the real CLI to fix it.
+A stale shim whose entrypoint no longer exists is refused rather than spawned.
 
 ## Tests
 

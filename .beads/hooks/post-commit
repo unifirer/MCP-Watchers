@@ -18,10 +18,34 @@
   } >> "$LOG" 2>/dev/null || true
   (
     cd "$ROOT" || exit 1
-    if command -v repowise >/dev/null 2>&1; then
-      repowise update >> "$LOG" 2>&1
+    # FIX mcpw-33m: resolve the real repowise CLI by absolute path.
+    # Bare `repowise` on PATH resolves to the declick MCP shim
+    # (%USERPROFILE%\.declick\bin\repowise -> node run.mjs), whose engine is
+    # `mcp` and which has NO `update` verb -> exit 2 "unknown verb update".
+    # Pin the same uv-tools install the launcher uses
+    # (%APPDATA%\uv\tools\repowise\Scripts\repowise.exe) so the shim cannot
+    # shadow it; only fall back to `uv run repowise update`.
+    REPOWISE_EXE=""
+    _profile_posix=""
+    if [ -n "$USERPROFILE" ]; then
+      _profile_posix=$(printf '%s' "$USERPROFILE" \
+        | sed -e 's|\\|/|g' -e 's|^\([A-Za-z]\):|/\L\1|' 2>/dev/null)
+    fi
+    for _cand in \
+      "$HOME/AppData/Roaming/uv/tools/repowise/Scripts/repowise.exe" \
+      "${_profile_posix:+$_profile_posix/AppData/Roaming/uv/tools/repowise/Scripts/repowise.exe}" \
+      "${APPDATA:+$APPDATA/uv/tools/repowise/Scripts/repowise.exe}"; do
+      if [ -n "$_cand" ] && [ -x "$_cand" ]; then
+        REPOWISE_EXE="$_cand"
+        break
+      fi
+    done
+    if [ -n "$REPOWISE_EXE" ]; then
+      "$REPOWISE_EXE" update >> "$LOG" 2>&1
     elif command -v uv >/dev/null 2>&1; then
       uv run repowise update >> "$LOG" 2>&1
+    else
+      printf 'repowise update: no repowise CLI found (declick shim correctly bypassed; real binary missing)\n' >> "$LOG" 2>&1
     fi
   ) &
 } >/dev/null 2>&1

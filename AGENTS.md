@@ -73,10 +73,9 @@ Complete this cognitive process before taking any action.
 - State Tracking: Track tasks only in Beads (bd). Store persistent memory only
   in AutoMem.
 
-- Stale Memory: Always fix stale memory when discovered. This applies to all
-  memory storage MCPs, including AutoMem, Cerememory, and Graphiti via MCP.
-  In Jcode, use the native memory tool built into Jcode. Group memory by code
-  repository when relevant.
+- Stale Memory: Always fix stale memory when discovered. This applies to all memory storage MCPs, including AutoMem, Cerememory, and Graphiti via MCP. In Jcode, use the native memory tool built into Jcode. Group memory by code repository when relevant.
+
+- Memory Storage: When storing memory, always write to all available memory backends — AutoMem, Graphiti MCP, plus jcode's native memory if running in jcode. Group entries by code repository where relevant.
 
 1. Operational Constraints
 

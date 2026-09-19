@@ -388,7 +388,9 @@ function Get-GrepaiWatchStartTime {
 # <repo>\.grepai\config.yaml on every index operation and stamps
 # watch.last_index_time there, so this clock is authoritative AND independent of
 # how the watcher was launched - a watcher started with -RedirectStandardOutput
-# still updates it. Returns $null when the value is absent or unparseable.
+# still updates it. Returns $null when the value is absent, unparseable, or
+# (mcpw-3si) older than the live watcher's own start - a stamp left by a dead
+# instance cannot prove the watcher running now has been idle.
 #
 # VAD-1ak (2026-09-17): this is the fix for the reap loop. The log clock below
 # only works for an UN-redirected watcher; every launcher-spawned watcher is
@@ -404,6 +406,17 @@ function Get-GrepaiIdleMinutesFromConfig {
         if ($txt -match '(?m)^\s*last_index_time:\s*(\S+)\s*$') {
             $ts = [datetime]::MinValue
             if ([datetime]::TryParse($Matches[1], [ref]$ts)) {
+                # mcpw-3si freshness guard (mirrors VAD-1ak on the log clock).
+                # last_index_time is written by whichever instance last indexed,
+                # so after a reap it still carries the DEAD instance's stamp. A
+                # supervisor that just adopted a fresh watcher would read it and
+                # declare hours of idleness - the live outage recorded "182 min"
+                # one second after startup. A stamp older than the watcher
+                # running now proves nothing about that watcher: the clock is
+                # UNKNOWN, so return $null (excluded by Get-GrepaiIdleMinutes,
+                # which then reports -1 = do not reap) instead of a stale age.
+                $watchStart = Get-GrepaiWatchStartTime
+                if ($watchStart -and $ts -lt $watchStart) { return $null }
                 return [math]::Round(((Get-Date) - $ts).TotalMinutes, 1)
             }
         }

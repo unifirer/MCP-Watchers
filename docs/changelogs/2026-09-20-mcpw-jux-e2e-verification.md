@@ -240,3 +240,113 @@ the shared union store, and `daemon.pid: Access is denied` during the cold start
 4. Re-run checks 3 and 4 once `:50051` is stably owned by the union daemon.
 
 Checks 1, 2 and 5 stand as recorded; the `--workspace` repair itself is behaving correctly.
+
+---
+
+## Independent re-verification (general-purpose-7), 2026-09-20 05:23–06:05
+
+A second, independent run of the same five checks from the `general-purpose-7` slot. It
+**corroborates the verdict above**: the `--workspace` repair behaves correctly, checks 3 and 4
+fail on the same non-repair fault, and `mcpw-jux` must stay **open**.
+
+My results: (1) repair criterion PASS, launcher's own daemon binding NOT PROVEN; (2) PASS —
+shape verified while up, down again by 06:04; (3) FAIL, but *flapping* — see below; (4) FAIL;
+(5) PASS.
+
+### 1. Check 3 was observed PASSING earlier in the same window
+
+```
+2026-09-20T05:37:42 mcp: [memtrace] attaching to existing workspace owner pid 46820 (http://127.0.0.1:50051)
+2026-09-20T05:37:42 mcp: [memtrace] MemDB ready
+2026-09-20T05:37:42 proxy->mcp method=tools/list id='proxy-schemas-1789839462605165700'
+2026-09-20T05:37:42 tool schemas loaded: 90 tools, 61 repo-scoped
+```
+
+So the check-3 fault is a **state** fault (which process holds `daemon.pid` at that instant),
+not a permanent one: the identical attach path succeeded at 05:37 and failed from 05:59 on.
+No 180 s timeout was waited out at any point in my window — `e2ed191`'s fail-fast was in effect
+throughout (`mcp child gone ... failing fast`, ~25 s to verdict).
+
+### 2. The 8-member union scope is confirmed three independent ways
+
+`workspace.toml` (8 quoted members), `.memtrace-store-scope.json` (8 `repo_id` entries:
+diffusers, mcp-watchers, nforma, opencode-mcp, orpheustts-webui, sesame, vad, vibevoice), **and**
+the mcp child's own stderr, which is new evidence:
+
+```
+◆  Workspace manifest portable workspace: 8 member(s)  (data anchor: \\?\C:\Users\yuni\.config\memtrace;
+   file: \\?\C:\Users\yuni\.config\memtrace\workspace.toml)
+```
+
+### 3. Cause of the concurrent-start storm, traced to its parent process
+
+The repeated launcher spawns came from a **teammate's Bash tool call**, identified by parent PID:
+
+```
+bash.exe -c "... eval 'cd /j/audio/MCP-Watchers && \"###1.watchers_for_memtrace_...bat\" > temp/jux_launcher.out 2>&1;
+            echo \"LAUNCHER_EXIT=$?\" >> temp/jux_launcher.out'"
+  -> cmd.exe /c J:\audio\MCP-Watchers\###1.watchers_for_memtrace_...bat
+  -> pwsh.exe "J:\audio\MCP-Watchers\###1.watchers_for_memtrace_....ps1"
+```
+
+Three launcher `pwsh.exe` processes were resident simultaneously (73200 @05:41:01,
+76020 @05:44:19, 36464 @05:44:22). The 05:41:01 instance is the one whose run appears in the
+Check 1 section above. This is why the Check 1 evidence timestamps cluster in 05:39–05:54.
+
+### 4. Orphan leak quantified, and why the launcher's sweep cannot fix it
+
+At 05:41 there were **45** resident `node.exe memtrace.js start --headless --bless-workspace`
+processes, one per 5-minute hermes tick from 23:19 onward (23:19, 23:40, 23:45, 23:51, 23:56,
+00:01 … 05:40). By 06:04 only **2** remained — they do exit on their own, so the leak is real
+but self-limiting. The launcher's `Stop-OrphanedMemtraceHosts` cannot reap them: it matches only
+**shell hosts** whose command line names `memtrace.ps1` (launcher lines 3465–3495), and these are
+`node.exe` running `memtrace.js`. That is the remaining gap in `mcpw-anw`.
+
+### 5. Check 5 canonical gate needed one environment normalisation (no file edited)
+
+First attempt aborted, rc=1, at `tests\launcher_tests.ps1:1552`:
+
+```
+Start-Process : Item has already been added. Key in dictionary: 'https_proxy'  Key being added: 'HTTPS_PROXY'
+```
+
+The box exports both casings and Windows PowerShell 5.1 builds a case-insensitive environment
+dictionary for `Start-Process`, so the child could not be spawned at all. Re-running with the
+lowercase proxy duplicates dropped from the child environment gave:
+
+```
+=== T10 summary: PASS=153 FAIL=0 ===      rc=0
+```
+
+(153 rather than the stated 152 because T8 self-skips and counts the skip as a PASS while a live
+launcher session exists.) Heal suite: `VERDICT : passed=5 failed=0`. My clean run did **not**
+reproduce the T23 truncation flake recorded above, which supports the "load-induced, not a
+regression" reading.
+
+### 6. A genuine live `tools/call` was attempted twice, directly against the MCP child
+
+I drove `memtrace.exe mcp --workspace C:/Users/yuni/.config/memtrace/workspace.toml` over stdio
+with `initialize` + `notifications/initialized` + `tools/list` + `tools/call`. Both attempts died
+before `initialize` could be answered, so **no live result was served**:
+
+| attempt | window | child error |
+|---------|--------|-------------|
+| 1 | 06:01:5x | `could not acquire runtime owner lock at \\?\C:\Users\yuni\.config\memtrace\.memdb\daemon.pid: Access is denied. (os error 5)` |
+| 2 | 06:03:0x | `timed out waiting for store-scope lock ...\.memtrace-store-scope.lock; another Memtrace startup or reset is still changing this store` |
+
+In both, the union scope resolved correctly ("8 member(s)"), which is itself further proof that
+the `--workspace` fix is doing its job — the failure is now entirely downstream of scope
+resolution. Cached-vs-live: `cwd-proxy-tools-cache.json` stores only `tools/list` schemas, so a
+`tools/call` can never be replayed from it; no `tools/call` was served from cache in my window.
+
+### Negative controls
+
+No `memtrace reset` was run by me. No daemon, watchdog, or proxy was stopped by me. No model/LLM
+configuration was read or modified. The only writes I made were `C:\Temp\*` scratch files and
+this document.
+
+### Commit note
+
+This section was appended after `4891fe0`. The commit carrying it therefore also carries the
+post-`4891fe0` working-tree edits to this file made by the first verifier, which were still
+uncommitted when I appended (`git status` showed ` M` on this path).

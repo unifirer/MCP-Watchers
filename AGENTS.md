@@ -1,4 +1,4 @@
-1. System Directives and Communication
+1. System Directives
 
 - Repository Scope: Stop reading this file after the `<!-- END AUTOMEM RULES -->` marker if the current directory is the desktop or not a git repository. The sections after that marker apply only to code repositories.
 
@@ -9,20 +9,7 @@
   favor of Read for source inspection. Using Read immediately before an edit
   is the correct procedure. It requires no explanation to the user.
 
-- Mandatory Prefix: Start responses longer than one sentence with the exact
-  ================================================================
-  string. Add three blank lines after it.
-
-- Language: Write only in English. Use ASD-STE100 Simplified Technical
-  English.
-
-- Sentence Limits: Write one idea per sentence. Lead with the action or
-  outcome. Keep instructions under 20 words. Keep descriptions under 25 words.
-
-- Verification: Provide fresh terminal output to prove task completion.
-  Include exact dates and times for commits.
-
-1. Reasoning and Planning Protocol
+1. Reasoning and Planning Protocol1. Reasoning and Planning Protocol
 
 Complete this cognitive process before taking any action.
 
@@ -1052,4 +1039,3 @@ grepai refs writers "uid" --json
 4. Use `grepai refs` for property/state readers and writers
 5. Use `Read` tool to examine files from results
 6. Use Grep directly for exact strings and syntax anchors
-

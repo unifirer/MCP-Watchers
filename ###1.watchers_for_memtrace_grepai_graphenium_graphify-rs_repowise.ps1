@@ -3678,12 +3678,19 @@ $memtraceHealScript = {
         #    does not match the requested ... scope"
         # That is a store/manifest mismatch, not a transient. Detect it and report
         # a terminal condition instead of looping.
+        # mcpw-3pv (2026-09-20): the advice text below used to tell the reader to
+        # add $RepoRoot to workspace.toml. That was wrong - this repo is already
+        # member #1 of that manifest - and following it would have triggered a
+        # store rebuild for a store that holds all 8 members. The real cause is
+        # the launch command, so the message now names it.
         Start-Sleep -Seconds 8
         try {
             if (Test-Path -LiteralPath $launchErr) {
                 $errText = Get-Content -LiteralPath $launchErr -Raw -ErrorAction SilentlyContinue
                 if ($errText -and $errText -match 'declared repository scope does not match') {
-                    Write-HealLog "PERMANENT FAILURE: memtrace refused the store scope for this workspace (repo not in the union manifest). Retrying cannot succeed - stopping heal attempts. Add '$RepoRoot' to $(Join-Path $env:USERPROFILE '.config\memtrace\workspace.toml') (store rebuild required) or run a separate daemon for it."
+                    $unionManifest = Join-Path $env:USERPROFILE ".config\memtrace\workspace.toml"
+                    $unionCwd      = Split-Path -Parent $unionManifest
+                    Write-HealLog "PERMANENT FAILURE: memtrace refused the union store's declared scope. The bound store ($(Join-Path $env:USERPROFILE '.config\memtrace\.memdb')) is declared for every member listed in $unionManifest, so 'memtrace start' must be launched WITH '--workspace $unionManifest' AND with its working directory set to $unionCwd. Launched from '$RepoRoot' without --workspace, memtrace derives a one-member ColdFolder scope from the launch cwd and the store refuses to open it. Retrying cannot succeed - stopping heal attempts. Remedy: pass --workspace <manifest> and the union cwd in the launch command (Restart-MemtraceDaemon here, Start-MemtraceHidden in the start job)."
                     # mcpw-anw: the relaunch we just made is garbage (it will
                     # never serve this workspace). Reap it - this is the exit
                     # path that used to abandon one host per cycle.

@@ -42,3 +42,10 @@ desktop.ini
 
 # repowise API keys (local)
 .repowise/.env
+# repowise scratch residue (mcpw-05o): `.update.lock.<pid>.<n>.tmp` is left
+# behind when an update is interrupted, and `*.pkltmp` is an interrupted pickle
+# cache write. Both are never tracked, and they otherwise bury genuine untracked
+# files in `git status`.
+.repowise/*.tmp
+.repowise/*.pkltmp
+.repowise/.update.lock.*

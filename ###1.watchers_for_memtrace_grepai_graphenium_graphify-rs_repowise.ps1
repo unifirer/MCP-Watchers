@@ -3520,7 +3520,8 @@ if (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue) {
 # by hand. This supervisor polls ~every 30s and self-heals:
 #  - MemDB (:50051) not listening -> run `memtrace stop` (clears the stale
 #    daemon-state lock; harmless when nothing holds it), then relaunch
-#    `memtrace start --headless` hidden from the repo root.
+#    `memtrace start --headless --workspace <manifest>` hidden, with its
+#    working directory set to the manifest's directory (mcpw-aez).
 #  - MCP/dashboard (:3030) not answering while MemDB is up -> same stop+start.
 # THREAD-JOB SCOPE RULE: the runspace inherits no launcher functions, so its
 # probe/relaunch helpers are defined inline and the shared log/limit/liveness

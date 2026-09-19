@@ -1592,6 +1592,14 @@ if ($grepaiOk) {
         # every PID this runspace restarts. The idle reap kills that PID tree
         # only, via Invoke-CimMethod Terminate (CimInstance has no .Kill()).
         $trackedGrepaiPid = 0
+        # mcpw-0k7: when THIS supervisor adopted or spawned the tracked watcher.
+        # The idle TTL may only act on idleness this watcher could actually have
+        # accumulated: a last_index_time written by an instance that died before
+        # this watcher existed proves nothing about the watcher running now.
+        # Clamping the idle age to the watcher's own age is what stops a
+        # one-second-old supervisor from declaring 182 minutes of idleness and
+        # reaping the healthy watcher it just adopted.
+        $trackedGrepaiStart = $null
         function Test-TrackedGrepaiWatchAlive {
             param([int]$PidToCheck)
             if ($PidToCheck -le 0) { return $false }
@@ -1663,6 +1671,9 @@ if ($grepaiOk) {
                 # we stay untracked until this runspace restarts its own child.
                 if ($trackedGrepaiPid -le 0 -and $watchProcs.Count -eq 1) {
                     $trackedGrepaiPid = [int]$watchProcs[0].ProcessId
+                    # mcpw-0k7: the idle clock is measured from THIS watcher, so
+                    # record when it started - not when this supervisor did.
+                    $trackedGrepaiStart = $watchProcs[0].CreationDate
                     Write-SupLog "tracking grepai watch PID $trackedGrepaiPid (adopted single live watcher)"
                 }
                 $trackedAlive = Test-TrackedGrepaiWatchAlive -PidToCheck $trackedGrepaiPid
@@ -1721,6 +1732,9 @@ if ($grepaiOk) {
                     }
                     # vad-v02: record the PID this supervisor restarted.
                     $trackedGrepaiPid = [int]$gp.Id
+                    # mcpw-0k7: the idle clock restarts with the watcher, not
+                    # with the supervisor. This is the watcher's actual start.
+                    $trackedGrepaiStart = Get-Date
                     Write-SupLog "restarted grepai (PID $($gp.Id))"
                     Write-WatchersLog "grepai watch restarted successfully (new PID $($gp.Id))"
                     Start-Sleep 2
@@ -1754,6 +1768,8 @@ if ($grepaiOk) {
                         }
                         # vad-v02: record the retry PID this supervisor restarted.
                         $trackedGrepaiPid = [int]$gp2.Id
+                        # mcpw-0k7: reset the idle clock to the retry's start.
+                        $trackedGrepaiStart = Get-Date
                         Write-SupLog "retry restarted grepai (PID $($gp2.Id))"
                         Write-WatchersLog "grepai retry restart completed (new PID $($gp2.Id))"
                         Start-Sleep 2
@@ -1842,6 +1858,18 @@ if ($grepaiOk) {
                                 # redirected watcher never writes - that stale-log
                                 # read reaped healthy watchers on every launch.
                                 $idleMin = Get-GrepaiIdleMinutes -ConfigPath (Join-Path $RepoRoot '.grepai\config.yaml')
+                                # mcpw-0k7: the idle age may never exceed the age of
+                                # the watcher this supervisor actually tracks. A
+                                # last_index_time (or log line) left by an instance
+                                # that died BEFORE this watcher started proves nothing
+                                # about this watcher - the most it can have been idle
+                                # is its own uptime. Without the clamp a supervisor
+                                # alive for one second declared 182 min of idleness
+                                # and reaped the healthy watcher it had just adopted.
+                                if ($null -ne $trackedGrepaiStart) {
+                                    $watcherAgeMin = [math]::Round(((Get-Date) - $trackedGrepaiStart).TotalMinutes, 1)
+                                    if ($watcherAgeMin -lt $idleMin) { $idleMin = $watcherAgeMin }
+                                }
                                 if ($idleMin -ge $idleTtlMin) {
                                     # mcpw-qfy RC1: all three exits below are
                                     # intentional idle stops (no relaunch), so

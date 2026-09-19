@@ -3087,29 +3087,46 @@ if (-not $cgLaunch) {
 # -- repowise embeddings: `repowise watch` is index-only (no vectors) --
 # Chain a low-frequency `repowise reindex --embedder ollama` loop so the
 # LanceDB vector store stays fresh with zero manual runs. Ollama is local
-# and keyless (endpoint via $env:OLLAMA_HOST). Tune with
-# $env:REPOWISE_REINDEX_MINUTES (default 10).
+# and keyless. Tune with $env:REPOWISE_REINDEX_MINUTES (default 10).
+# mcpw-0io: the endpoint is resolved once, below, into $ollamaReindexBase. It
+# used to be a literal http://127.0.0.1:11434 inside the guard only, while the
+# comment claimed $env:OLLAMA_HOST was honoured. Ollama was relocated to :12134
+# on this box, so the guard probed a dead port forever and every cycle logged
+# SKIPPED. Note repowise's own OllamaEmbedder reads $env:OLLAMA_BASE_URL
+# (core/providers/embedding/ollama.py), NOT OLLAMA_HOST, so the loop exports
+# that for the child too.
+$ollamaReindexBase = if ($env:OLLAMA_BASE_URL) { $env:OLLAMA_BASE_URL }
+    elseif ($env:OLLAMA_HOST) { if ($env:OLLAMA_HOST -match '^https?://') { $env:OLLAMA_HOST } else { "http://$($env:OLLAMA_HOST)" } }
+    else { "http://127.0.0.1:12134" }
+$ollamaReindexBase = ([string]$ollamaReindexBase).TrimEnd('/')
 $repowiseReindexScript = {
-    param($Exe, $Root, $Log, $Minutes)
+    param($Exe, $Root, $Log, $Minutes, $OllamaBase)
     $mins = 10
     try { if ($Minutes -and ([int]$Minutes) -gt 0) { $mins = [int]$Minutes } } catch {}
     while ($true) {
         Start-Sleep -Seconds ($mins * 60)
         try {
             $stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-            # vad-3ka.7: pause while repowise's ollama endpoint (default
-            # 127.0.0.1:11434) is unreachable - each run otherwise spends ~40min
-            # failing 852/852 then Aborts. Skipped runs auto-resume when it answers.
+            # vad-3ka.7: pause while repowise's ollama endpoint is unreachable -
+            # each run otherwise spends ~40min failing 852/852 then Aborts.
+            # Skipped runs auto-resume when it answers. mcpw-0io: probe the
+            # RESOLVED endpoint and name it in the log, so a wrong port can
+            # never again be silently indistinguishable from a down Ollama.
             $ollamaUp = $false
             try {
-                $r = Invoke-WebRequest -Uri "http://127.0.0.1:11434/" -Method Get -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
+                $r = Invoke-WebRequest -Uri "$OllamaBase/" -Method Get -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
                 $ollamaUp = ($r.StatusCode -eq 200)
             } catch { $ollamaUp = $false }
             if (-not $ollamaUp) {
-                "[$stamp] repowise reindex --embedder ollama SKIPPED (ollama 127.0.0.1:11434 unreachable)" | Out-File -LiteralPath $Log -Append -Encoding utf8
+                "[$stamp] repowise reindex --embedder ollama SKIPPED (ollama $OllamaBase unreachable)" | Out-File -LiteralPath $Log -Append -Encoding utf8
                 continue
             }
-            "[$stamp] repowise reindex --embedder ollama" | Out-File -LiteralPath $Log -Append -Encoding utf8
+            # repowise's OllamaEmbedder resolves its base_url from
+            # $env:OLLAMA_BASE_URL, so hand the child the endpoint this guard
+            # just proved reachable instead of letting it fall back to the
+            # upstream default (localhost:11434).
+            $env:OLLAMA_BASE_URL = $OllamaBase
+            "[$stamp] repowise reindex --embedder ollama (ollama $OllamaBase)" | Out-File -LiteralPath $Log -Append -Encoding utf8
             $out = & $Exe reindex $Root --embedder ollama 2>&1 | Out-String
             $out | Out-File -LiteralPath $Log -Append -Encoding utf8
         } catch {
@@ -3120,8 +3137,10 @@ $repowiseReindexScript = {
 $repowiseReindexLog = Join-Path $logsDir "repowise-reindex.log"
 if ($repowiseExe -and (Test-Path -LiteralPath $repowiseExe)) {
     try {
-        $script:repowiseReindexJob = Start-Job -Name "repowise-reindex" -ScriptBlock $repowiseReindexScript -ArgumentList @($repowiseExe, ".", $repowiseReindexLog, $env:REPOWISE_REINDEX_MINUTES)
-        Write-Host "repowise embedding reindex loop started (ollama, log: $repowiseReindexLog)."
+        # Start-Job runs in a fresh runspace/process, so the resolved endpoint
+        # must be forwarded explicitly (mcpw-0io) rather than read from $env.
+        $script:repowiseReindexJob = Start-Job -Name "repowise-reindex" -ScriptBlock $repowiseReindexScript -ArgumentList @($repowiseExe, ".", $repowiseReindexLog, $env:REPOWISE_REINDEX_MINUTES, $ollamaReindexBase)
+        Write-Host "repowise embedding reindex loop started (ollama $ollamaReindexBase, log: $repowiseReindexLog)."
     } catch {
         Write-Warning "repowise: failed to start embedding reindex loop: $($_.Exception.Message)"
     }

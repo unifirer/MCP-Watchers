@@ -27,7 +27,6 @@ The launcher also supervises the backends:
 | claude-mcp | 8080 |
 | memtrace | 3030 |
 | graphiti embed proxy | 8003 |
-| graphiti MCP proxy | 8004 |
 
 `graphiti-mcp` (:8002) is a Docker container (`restart: always`, native HTTP
 container :8000 -> host :8002). Toolport reaches it at
@@ -35,9 +34,13 @@ container :8000 -> host :8002). Toolport reaches it at
 container. It still depends on the host embed proxy (:8003), litellm (:4000)
 and FalkorDB (:6379) via `host.docker.internal`.
 
-The host-side MCP proxy (:8004) is the Toolport -> docker session adapter:
-docker's endpoint is session-based and Toolport is stateless, so the proxy
-pins the session id. It IS spawned and supervised, like the embed proxy.
+Toolport talks to the container's HTTP endpoint directly. The former host-side
+MCP proxy (`mcp_proxy.py`, :8004) existed to pin the docker `Mcp-Session-Id`
+for a stateless client. It was retired on 2026-09-20: an isolated probe showed
+Toolport 1.18.0 negotiates the session id itself and connects straight to
+:8002 (13 tools). The launcher no longer spawns or supervises it, the
+`MCPHttpWatchdog` target for :8004 was removed, and the `GraphitiProxy8004`
+scheduled task is disabled.
 
 ## Layout
 
@@ -55,11 +58,12 @@ docs\                                                                  guides, r
 ```
 
 The graphiti glue is shared infrastructure, not repo code. `embed_server.py`
-(:8003) and `mcp_proxy.py` (:8004) are resolved from the shared tree at
-runtime - default the `shared\graphiti` sibling of this repository's parent
+(:8003) is resolved from the shared tree at runtime - default the
+`shared\graphiti` sibling of this repository's parent
 (`J:\audio\shared\graphiti` on this machine) - with the `%LOCALAPPDATA%`
 install copy as fallback. Override the shared location with
-`$env:GRAPHITI_SHARED_DIR`.
+`$env:GRAPHITI_SHARED_DIR`. `mcp_proxy.py` still lives in that shared tree but
+is unused since 2026-09-20 (see above).
 
 ## Run
 

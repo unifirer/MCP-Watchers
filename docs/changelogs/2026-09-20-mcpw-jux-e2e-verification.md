@@ -197,6 +197,38 @@ and finally `could not acquire runtime owner lock ... daemon.pid: Access is deni
 **Not a `memtrace reset` sweep**: no `memtrace reset` process was observed, and no reset was run by
 this verification.
 
+## Determinism of checks 3 and 4
+
+The failure is **reproducible, not a flap**. The proxy drive was run twice:
+
+| run | window | result |
+|-----|--------|--------|
+| 1 | 06:00:22 → 06:00:47 | `-32603` / `could not acquire runtime owner lock at ...\daemon.pid: Access is denied. (os error 5)` |
+| 2 | 06:01:56 → 06:02:21 | identical error, identical `daemon.pid` path |
+
+`:50051` was LISTENing (pid 22624) during both runs, so the daemon was healthy — the failure is
+purely `memtrace mcp`'s inability to take the runtime owner lock.
+
+## Commit note (verification of this file)
+
+This changelog was committed as part of `4891fe0`, **not** under its own message. A concurrent agent
+(bead `mcpw-oft`, author `uni.universefire`) committed at 2026-09-20 06:01:51 while this verification
+was still running; both processes staged into the same shared git index, so the two files were
+bundled:
+
+```
+4891fe0  fix(launcher): correct union-scope text and stop killing a healthy memtrace daemon (mcpw-oft)
+  ###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1
+  docs/changelogs/2026-09-20-mcpw-jux-e2e-verification.md
+```
+
+Only the changelog was staged by this verification (`git add -- <that one path>`); the launcher change
+in that commit is mcpw-oft's own work. The launcher edits in `4891fe0` landed **after** the checks 1
+and 2 evidence above were captured, so that evidence describes the launcher as it stood at
+05:41-06:00, before `-DeferToListening` was added to the `:50051` call site. mcpw-oft's commit
+message independently reaches the same root cause recorded here (kill-and-replace being churn under
+the shared union store, and `daemon.pid: Access is denied` during the cold start).
+
 ## What is needed to close mcpw-jux
 
 1. De-conflict the store: make the hermes watchdog stop (or point it at the same `--workspace` start

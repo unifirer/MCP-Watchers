@@ -508,10 +508,15 @@ function Test-PortHeldByLauncherDaemon {
 # startup takeover sweep honours that marker. This auto-heal path honours it
 # through -DeferToHealthy below, which every PERSISTENT call site passes.
 #
-# :50051 memtrace does NOT pass it, on purpose. memtrace is REPO-SCOPED: its
-# store lives in <repo>\.memdb ($script:memtraceStateFile) and the start job is
-# handed $watchersWorkspaceRoot. A foreign memtrace holding :50051 serves the
-# WRONG repo's store, so replacing it is correct - it stays kill-on-conflict.
+# :50051 memtrace passes -DeferToListening instead of -DeferToHealthy (mcpw-oft).
+# Its store is the UNION store at <USERPROFILE>\.config\memtrace\.memdb, declared
+# for every member of <USERPROFILE>\.config\memtrace\workspace.toml (8 repos), so
+# the daemon holding :50051 is the machine-wide resident all of them share - not
+# a daemon bound to this one checkout. MemDB is probed with a raw
+# LISTEN check everywhere else in this file (the start-job dedup and the heal
+# supervisor), not with the HTTP probe, so the liveness rule for this port is
+# "the launcher-daemon holder is LISTENing" - which is exactly what
+# Test-PortHeldByLauncherDaemon already requires.
 #
 # :8765 (mcp_agent_mail) has no call site here at all. Its process is
 # python.exe, too broad a name match; the in-job port dedup covers it. See the
@@ -573,13 +578,27 @@ function Exit-IfPortHeldByLauncherDaemon {
         # holder answers an HTTP probe it is the resident singleton, not a stale
         # daemon: adopt it and return instead of killing it. See the staleness
         # rule comment above.
-        [switch]$DeferToHealthy = $false
+        [switch]$DeferToHealthy = $false,
+        # mcpw-oft: pass for a machine-wide singleton whose liveness rule is a
+        # raw LISTEN check rather than an HTTP probe (memtrace :50051). The holder
+        # was already identified by Test-PortHeldByLauncherDaemon, which matches
+        # ONLY a LISTENing socket owned by one of $DaemonProcessNames - so a match
+        # IS a live resident. Adopt it; do not kill it.
+        [switch]$DeferToListening = $false
     )
     $stalePid = 0
     $held = Test-PortHeldByLauncherDaemon -Port $Port -DaemonProcessNames $DaemonProcessNames -OwningPid ([ref]$stalePid)
     if (-not $held) { return }
 
     if ($AutoHeal) {
+        # mcpw-oft: raw-LISTEN singleton (memtrace :50051). $held is already true
+        # and only a LISTENing launcher-daemon holder can set it, so the port
+        # holder is a live resident - adopt it and return. Killed here only when
+        # this switch is absent.
+        if ($DeferToListening) {
+            Write-Host "[$Label AUTO-HEAL] port $Port held by a live resident daemon (PID $stalePid) - adopting it, not killing it."
+            return
+        }
         # PERSISTENT SINGLETON: a resident that answers is healthy. Adopt it.
         # Safe because the downstream start job dedupes against an
         # already-listening port ($cerememoryJobScript, $claudeMcpJobScript).
@@ -1879,6 +1898,28 @@ $repowiseLog = Join-Path $logsDir "repowise.log"
 # of relying on PATH. If it ever disappears, fall back to PATH resolution.
 $repowiseExe = Join-Path $env:APPDATA "uv\tools\repowise\Scripts\repowise.exe"
 if (-not (Test-Path -LiteralPath $repowiseExe)) { $repowiseExe = "" }
+
+# mcpw-qzm preflight: repowise 0.49.0 declares sqlalchemy/alembic/uvicorn/litellm as
+# CORE deps, but its uv-tool venv has silently lost them before (2026-09-19). When that
+# happens `repowise --version` still prints 0.49.0 -- it never imports those modules --
+# so the install looks healthy while EVERY real subcommand dies at import with
+# "ModuleNotFoundError: No module named 'sqlalchemy'". The watcher then crashed in under
+# a second and the repowise pane closed ~30s later (see mcpw-c1t). Probe the venv cheaply
+# (a directory stat; a real `repowise status` import probe costs ~13s) and name the fix
+# loudly, so this failure is never silent again.
+if ($repowiseExe) {
+    $repowiseSite = Join-Path $env:APPDATA "uv\tools\repowise\Lib\site-packages"
+    $repowiseMissing = @()
+    foreach ($repowiseDep in @("sqlalchemy", "alembic", "uvicorn", "litellm")) {
+        if (-not (Test-Path -LiteralPath (Join-Path $repowiseSite $repowiseDep))) { $repowiseMissing += $repowiseDep }
+    }
+    if ($repowiseMissing.Count -gt 0) {
+        Write-Warning ("repowise install is BROKEN: missing core dependency module(s) [$($repowiseMissing -join ', ')] in $repowiseSite. " +
+            "Every repowise subcommand dies at import and the repowise watcher/pane will close. Fix: uv pip install " +
+            "--python `"$env:APPDATA\uv\tools\repowise\Scripts\python.exe`" `"sqlalchemy[asyncio]<3,>=2.0`" " +
+            "`"alembic<2,>=1.13`" `"uvicorn[standard]<1,>=0.32`" `"litellm<2,>=1.84.0`"")
+    }
+}
 
 # --- Graphenium live rebuild (inline, file-change driven `gm run`) ----------
 # The gm <-> Ollama bridge and the one-time `gm run` semantic build used to live
@@ -3193,7 +3234,7 @@ $memtraceJobScript = {
         if (-not $memtraceCmd) { $memtraceCmd = Get-Command "memtrace.cmd" -ErrorAction SilentlyContinue }
         if (-not $memtraceCmd) { $memtraceCmd = Get-Command "memtrace"     -ErrorAction SilentlyContinue }
         if (-not $memtraceCmd) {
-            Write-Warning "memtrace command not found on PATH (looked for memtrace.exe / memtrace.cmd / memtrace, and no absolute node+memtrace.js pair exists). Skipping Memtrace index (repo root)."
+            Write-Warning "memtrace command not found on PATH (looked for memtrace.exe / memtrace.cmd / memtrace, and no absolute node+memtrace.js pair exists). Skipping Memtrace index (union store)."
             return
         }
         $memtraceExe   = $memtraceCmd.Source
@@ -3494,15 +3535,23 @@ function Stop-OrphanedMemtraceHosts {
     return $killed
 }
 
-Write-Host "Starting Memtrace index for repo root (background; modules-level index removed)..."
+Write-Host "Starting Memtrace index for the union store (background; modules-level index removed)..."
 # Sweep BEFORE the start job / auto-heal supervisor run, so leftover shim hosts
 # from a previous build cannot survive past this launch.
 Stop-OrphanedMemtraceHosts | Out-Null
-# mcpw-d0m: NO -DeferToHealthy here. memtrace is REPO-SCOPED (store in
-# <repo>\.memdb), so a foreign memtrace on :50051 serves the wrong repo's
-# store. Kill-and-replace stays correct for this port. See the staleness rule
-# comment above Test-HttpPortAnswering.
-Exit-IfPortHeldByLauncherDaemon -Port 50051 -DaemonProcessNames @('memtrace','memcore','memcortex') -Label 'memtrace' -AutoHeal
+# mcpw-oft: -DeferToListening, NOT -DeferToHealthy. memtrace's store is the UNION
+# store (<USERPROFILE>\.config\memtrace\.memdb, declared for the 8 members in
+# workspace.toml), so the daemon on :50051 is the machine-wide resident they all
+# share - not a daemon bound to this one checkout. Killing a live
+# one is pure churn, and during memtrace's 2-3 min cold start it kills the
+# launcher's OWN in-flight startup (mcpw-jux: daemon left DOWN with 'could not
+# acquire runtime owner lock ... daemon.pid: Access is denied (os error 5)').
+# The start job below already adopts any listening :50051 rather than starting a
+# second instance, so adopting here is consistent. This port's liveness rule is a
+# raw LISTEN check (start-job dedup + heal supervisor both use one), not the HTTP
+# probe - hence -DeferToListening. See the staleness rule comment above
+# Test-HttpPortAnswering.
+Exit-IfPortHeldByLauncherDaemon -Port 50051 -DaemonProcessNames @('memtrace','memcore','memcortex') -Label 'memtrace' -AutoHeal -DeferToListening
 # VAD-v14z.4: memtrace daemon runs inside this one-shot job (daemon PID in
 # .memdb/daemon-state.json, path persisted to teardown-state.json
 # MemtraceStatePath for PID-scoped teardown step 4). Keep the job handle so
@@ -3705,6 +3754,28 @@ $memtraceHealScript = {
     }
     Write-HealLog "memtrace auto-heal supervisor started (ports 50051 + 3030, poll 30s)"
     $consecutiveFails = 0
+    # mcpw-oft: COLD-START GRACE. memtrace's cold start is 2-3 min (open the union
+    # store + warm the index). The launcher's start job was spawned moments ago,
+    # so a verdict taken now would see :50051 down and "heal" it - killing the
+    # in-flight startup. That is how mcpw-jux left the daemon DOWN with 'could not
+    # acquire runtime owner lock ... daemon.pid: Access is denied (os error 5)':
+    # every 30s poll killed a startup that had not finished. 240s = ~1 min of
+    # margin over the 3-min upper bound. The same grace is reused as the
+    # post-restart window below, for the same reason.
+    $memtraceColdStartGraceSec = 240
+    Write-HealLog "waiting up to ${memtraceColdStartGraceSec}s for the launcher's own memtrace cold start before the first verdict"
+    $graceDeadline = (Get-Date).AddSeconds($memtraceColdStartGraceSec)
+    while ((Get-Date) -lt $graceDeadline) {
+        if (-not (Test-LauncherAlive -Path $LockFile)) {
+            Write-HealLog "launcher gone during cold-start grace - supervisor exiting"
+            return
+        }
+        if ((Test-PortListening -Port 50051) -and (Test-PortListening -Port 3030)) {
+            Write-HealLog "memtrace came up during the cold-start grace - entering the poll loop"
+            break
+        }
+        Start-Sleep -Seconds 5
+    }
     while ($true) {
         try {
             if (-not (Test-LauncherAlive -Path $LockFile)) {
@@ -3729,8 +3800,11 @@ $memtraceHealScript = {
                     Write-HealLog "supervisor stopping - permanent failure, no further restarts"
                     return
                 }
-                # Give the daemon up to 45s to come back before the next verdict.
-                $deadline = (Get-Date).AddSeconds(45)
+                # Give the daemon a full cold start to come back before the next
+                # verdict. mcpw-oft: 45s was SHORTER than the 2-3 min cold start,
+                # so this window declared its own in-flight restart "refuse" and
+                # reaped it (then the next 30s poll repeated the cycle).
+                $deadline = (Get-Date).AddSeconds($memtraceColdStartGraceSec)
                 $healedInWindow = $false
                 while ((Get-Date) -lt $deadline) {
                     Start-Sleep -Seconds 3

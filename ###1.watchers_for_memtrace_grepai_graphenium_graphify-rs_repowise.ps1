@@ -3087,14 +3087,21 @@ if ($repowiseExe -and (Test-Path -LiteralPath $repowiseExe)) {
 } else {
     Write-Warning "repowise: exe not found, skipping embedding reindex loop."
 }
-# --- Memtrace knowledge-graph index (runs from the REPO ROOT) ----------------
-# `memtrace start` has NO --path flag: it indexes whatever directory it is
-# launched from (its CWD). We launch it from the repo root so it indexes the
-# WHOLE VAD repo into root .memdb. It dedups against an already-healthy
-# root/.memdb daemon (e.g. one the gateway already started) so we never
-# launch a second conflicting instance on the same data dir.
-# (No 5th pane - the 2x2 grid is left intact; startup is logged under
-# root/.memdb/.)
+# --- Memtrace knowledge-graph index (union store) ---------------------------
+# `memtrace start` has NO --path flag: with no --workspace it indexes whatever
+# directory it is launched from (its CWD) into a one-member store below that
+# CWD. That is NOT what this box runs any more (mcpw-aez, 2026-09-20): the bound
+# store is the union store <USERPROFILE>\.config\memtrace\.memdb, whose declared
+# repository scope is the member list in
+# <USERPROFILE>\.config\memtrace\workspace.toml (8 repos; this repo is member
+# #1). So the daemon is started with --workspace <manifest> AND its CWD set to
+# the manifest's directory - the same pattern as
+# C:\Users\yuni\.local\bin\memtrace_mcp_cwd_proxy.py v1.4.0 start_daemon().
+# It still dedups against an already-healthy daemon on :50051 (e.g. one the
+# gateway/proxy already started) so we never launch a second conflicting
+# instance on the same store.
+# (No 5th pane - the 2x2 grid is left intact; launcher-owned startup logs stay
+# under <repo>\.memdb\ - see the retained-nested-store note below.)
 # The index logic was ported here from the now-deleted
 # Modules/### start memtrace.ps1 so the launcher owns the index directly
 # (no separate detached script to launch). It runs in a BACKGROUND job
@@ -3112,6 +3119,23 @@ if (-not ([string]::IsNullOrWhiteSpace($watchersWorkspaceRoot))) {
     $script:memtraceGitRoot = git -C "$watchersWorkspaceRoot" rev-parse --show-toplevel 2>$null
 }
 if (-not $script:memtraceGitRoot) { $script:memtraceGitRoot = $watchersWorkspaceRoot }
+# mcpw-aez / mcpw-uqh (2026-09-20) - WHY THIS STILL POINTS AT THE REPO-ROOT
+# .memdb EVEN THOUGH THE DAEMON NOW SERVES THE UNION STORE.
+# The authoritative daemon state file is the union store's, i.e.
+# <USERPROFILE>\.config\memtrace\.memdb\daemon-state.json (C:\Users\yuni\.memdb
+# is a junction to that same directory - identical file, verified by inode).
+# This variable deliberately does NOT point there. It is consumed by
+# teardown-state.json MemtraceStatePath -> Stop-AllWatchers step 4, which
+# Kill()s whatever healthy pid the file names. Under the union model that pid
+# is the SHARED daemon serving all 8 members, so repointing this path would make
+# MCP-Watchers teardown kill a daemon the other repos still depend on. The
+# repo-root file names a dead, repo-local daemon (pid 87920, 2026-09-18), which
+# makes step 4 a harmless no-op. The in-job dedup guard does not need this path
+# either: it also requires the loopback port to be genuinely LISTENing, and that
+# port check is what recognises the live union daemon.
+# The repo-root .memdb is therefore INTENTIONALLY RETAINED (mcpw-uqh), not
+# stale debris to delete: the launcher itself owns it for the state-file path
+# above plus its own launch/heal logs. See docs/guides/memtrace-nested-store.md.
 $script:memtraceStateFile = Join-Path $script:memtraceGitRoot ".memdb\daemon-state.json"
 $memtraceJobScript = {
     param($ScriptDir)
@@ -3177,12 +3201,35 @@ $memtraceJobScript = {
         $script:memtraceArgPrefix = @()
     }
 
-    # Self-healing dedup: reuse an already-healthy root .memdb daemon.
+    # mcpw-aez (2026-09-20): UNION-STORE SCOPE. memtrace's bound store lives at
+    # <USERPROFILE>\.config\memtrace\.memdb and its declared repository scope is
+    # the member list in <USERPROFILE>\.config\memtrace\workspace.toml (8 repos,
+    # this one is member #1). `memtrace start` therefore needs BOTH:
+    #   * --workspace <manifest>  -> request the declared union scope, and
+    #   * cwd = <manifest's dir>  -> what memtrace_mcp_cwd_proxy.py v1.4.0
+    #     (start_daemon()) does, and the known-good pattern on this box.
+    # Launched from the repo root with neither, memtrace derives a one-member
+    # ColdFolder scope from cwd, the store refuses to open, and the heal
+    # supervisor logs a PERMANENT FAILURE every cycle. This runspace inherits no
+    # launcher variables (THREAD-JOB SCOPE RULE), so resolve it here.
+    $unionManifest = Join-Path $env:USERPROFILE ".config\memtrace\workspace.toml"
+    $unionCwd      = Split-Path -Parent $unionManifest
+
+    # Self-healing dedup: reuse an already-healthy daemon instead of starting a
+    # second one on the same store.
     # NOTE: daemon-state.json can report status='healthy' while the port is
     # actually dead (zombie/orphaned PID). So we also require the loopback port
     # to be genuinely LISTENing before trusting the state file - otherwise a
     # stale 'healthy' marker would make us skip launching while a second,
     # separate invocation (e.g. the gateway) starts a conflicting daemon.
+    # mcpw-aez: $stateFile is the REPO-ROOT file (see the retained-nested-store
+    # note at the $script:memtraceStateFile computation) and names a dead
+    # repo-local daemon, so this first check no longer fires. That is fine: the
+    # belt-and-suspenders port probe immediately below is what recognises the
+    # live union daemon, and it is the check that decides. Left as-is on
+    # purpose - repointing it at the union state file would change nothing
+    # (both checks require the same LISTENing port) while inviting the teardown
+    # hazard documented above.
     $script:memtracePort = 50051
     function Test-MemtracePortListening {
         param([int]$Port)
@@ -3204,7 +3251,7 @@ $memtraceJobScript = {
         } catch {}
     }
     if ($alreadyRunning) {
-        Write-Host "Memtrace daemon already healthy for root .memdb - reusing it (no second instance started)."
+        Write-Host "Memtrace daemon already healthy (union store) - reusing it (no second instance started)."
         return
     }
 
@@ -3262,7 +3309,7 @@ $memtraceJobScript = {
     }
 
     function Start-MemtraceHidden {
-        param($Exe, $WorkDir, $OutLog, $ErrLog, $ArgPrefix = @())
+        param($Exe, $WorkDir, $OutLog, $ErrLog, $ArgPrefix = @(), $Workspace = '')
         $DETACHED_PROCESS     = 0x00000008
         $CREATE_NO_WINDOW     = 0x08000000
         $STARTF_USESHOWWINDOW = 0x00000001
@@ -3282,6 +3329,17 @@ $memtraceJobScript = {
         $parts = @()
         foreach ($a in $ArgPrefix) { $parts += "`"$a`"" }
         $parts += 'start', '--headless'
+        # mcpw-aez: the union store at <USERPROFILE>\.config\memtrace\.memdb is
+        # declared for every member in workspace.toml, so `memtrace start` MUST
+        # be handed --workspace <manifest> (mirrors memtrace_mcp_cwd_proxy.py
+        # v1.4.0 start_daemon()). Without it memtrace derives a ONE-member
+        # ColdFolder scope from the launch cwd and the bound store refuses to
+        # open ("declared repository scope does not match the requested
+        # ColdFolder scope"), which the heal supervisor then reports as a
+        # PERMANENT FAILURE. --workspace follows start/--headless in the same
+        # arg sequence so the quoted-absolute-path PATHEXT hardening above is
+        # untouched. Quoted: the manifest path is user-profile-derived.
+        if ($Workspace) { $parts += '--workspace', "`"$Workspace`"" }
         $argLine = $parts -join ' '
 
         $comspec = $env:ComSpec
@@ -3348,8 +3406,8 @@ $memtraceJobScript = {
     }
 
     try {
-        Write-Host "Starting Memtrace index for repo root (headless, no console window, working dir = $repoDir)..."
-        $p = Start-MemtraceHidden $memtraceExe $repoDir $launchLog $launchErr $script:memtraceArgPrefix
+        Write-Host "Starting Memtrace index for the union store (headless, no console window, --workspace = $unionManifest, working dir = $unionCwd)..."
+        $p = Start-MemtraceHidden $memtraceExe $unionCwd $launchLog $launchErr $script:memtraceArgPrefix $unionManifest
         Write-Host "Memtrace launcher invoked. Startup log: $launchLog"
         # Force-hide any window the detached process tree may have popped.
         try { Hide-MemtraceWindows $p.Id } catch {}
@@ -3583,6 +3641,18 @@ $memtraceHealScript = {
         $launchErr = Join-Path $memdbDir "memtrace-launch.log.err"
         $spec = Get-MemtraceLaunchSpec
         if (-not $spec) { Write-HealLog "memtrace not resolvable (absolute node+memtrace.js pair missing AND PATH lookup failed) - cannot heal"; return }
+        # mcpw-aez (2026-09-20): UNION-STORE SCOPE, same rule as the start job
+        # above (and memtrace_mcp_cwd_proxy.py v1.4.0 start_daemon()): the bound
+        # store's declared scope is the member list in workspace.toml, so the
+        # relaunch MUST carry --workspace <manifest> AND run from the manifest's
+        # directory. Relaunching from $RepoRoot with no --workspace is what made
+        # every heal cycle a guaranteed 'declared repository scope does not
+        # match' refusal. This runspace inherits no launcher variables, so the
+        # manifest is re-derived here. Launcher-owned logs stay under
+        # $RepoRoot\.memdb (see the retained-nested-store note at the
+        # $script:memtraceStateFile computation).
+        $unionManifest = Join-Path $env:USERPROFILE ".config\memtrace\workspace.toml"
+        $unionCwd      = Split-Path -Parent $unionManifest
         $env:MEMTRACE_OFFLINE      = "1"
         $env:MEMTRACE_NO_HEARTBEAT = "1"
         $env:MEMTRACE_TELEMETRY    = "off"
@@ -3590,14 +3660,16 @@ $memtraceHealScript = {
         $spArgs += $spec.Prefix
         $spArgs += 'start'
         $spArgs += '--headless'
+        $spArgs += '--workspace'
+        $spArgs += $unionManifest
         # mcpw-anw: -PassThru, so the child is TRACKED from here on. Whatever
         # it is (absolute node.exe today, the npm shim host as a fallback), the
         # verdict path below can now stop it instead of abandoning it.
         $child = Start-Process -FilePath $spec.File -ArgumentList $spArgs `
-            -WorkingDirectory $RepoRoot -WindowStyle Hidden `
+            -WorkingDirectory $unionCwd -WindowStyle Hidden `
             -RedirectStandardOutput $launchLog -RedirectStandardError $launchErr -PassThru -ErrorAction SilentlyContinue
         $memtraceHealChild.Proc = $child
-        Write-HealLog "relaunched 'memtrace start --headless' via $($spec.File) (absolute=$($spec.Absolute), cwd=$RepoRoot, child pid=$(if ($child) { $child.Id } else { 'none' }))"
+        Write-HealLog "relaunched 'memtrace start --headless --workspace $unionManifest' via $($spec.File) (absolute=$($spec.Absolute), cwd=$unionCwd, child pid=$(if ($child) { $child.Id } else { 'none' }))"
 
         # PERMANENT-FAILURE DETECTION (2026-09-18).
         # Some failures can NEVER be fixed by retrying, and retrying them is what
@@ -4080,20 +4152,15 @@ $graphitiEmbedJobScript = {
         return
     }
 
-    # Glue resolution: global shared copy first, install second. The glue left
-    # every repo on 2026-09-19 - it is shared infrastructure, not repo code.
-    # Default is the shared sibling of the repo's parent; override with
-    # $env:GRAPHITI_SHARED_DIR. The venv python stays install-resident - a venv
-    # cannot be relocated by copy, because Scripts\*.exe shims embed absolute
-    # paths.
+    # Glue resolution: the embed server lives in the graphiti-mcp install tree
+    # (%LOCALAPPDATA%\Programs\graphiti-mcp\mcp_server\embed_server.py). The
+    # former shared copy (J:\audio\shared\graphiti) was retired on 2026-09-20 -
+    # it was a byte-identical duplicate of this install copy and is no longer
+    # referenced. The venv python stays install-resident - a venv cannot be
+    # relocated by copy, because Scripts\*.exe shims embed absolute paths.
     $embedPy = Join-Path $env:LOCALAPPDATA "Programs\graphiti-mcp\mcp_server\.venv\Scripts\python.exe"
     $embedScript = $null
     $embedCands = @()
-    $sharedGraphiti = $env:GRAPHITI_SHARED_DIR
-    if (-not $sharedGraphiti -and $ScriptDir) {
-        $sharedGraphiti = Join-Path (Split-Path -Parent $ScriptDir) 'shared\graphiti'
-    }
-    if ($sharedGraphiti) { $embedCands += (Join-Path $sharedGraphiti 'embed_server.py') }
     $embedCands += (Join-Path $env:LOCALAPPDATA 'Programs\graphiti-mcp\mcp_server\embed_server.py')
     foreach ($cand in $embedCands) {
         if (Test-Path -LiteralPath $cand) { $embedScript = $cand; break }
@@ -4278,15 +4345,11 @@ $backendSupervisorScript = {
     }
     function Start-GraphitiEmbedBackend {
         $embedPy = Join-Path $env:LOCALAPPDATA "Programs\graphiti-mcp\mcp_server\.venv\Scripts\python.exe"
-        # Glue resolution: global shared copy first, install second. Override
-        # the shared location with $env:GRAPHITI_SHARED_DIR.
+        # Glue resolution: the embed server lives in the graphiti-mcp install
+        # tree. The former shared copy (J:\audio\shared\graphiti) was retired on
+        # 2026-09-20 and is no longer referenced.
         $embedScript = $null
         $embedCands = @()
-        $sharedGraphiti = $env:GRAPHITI_SHARED_DIR
-        if (-not $sharedGraphiti -and $ScriptDir) {
-            $sharedGraphiti = Join-Path (Split-Path -Parent $ScriptDir) 'shared\graphiti'
-        }
-        if ($sharedGraphiti) { $embedCands += (Join-Path $sharedGraphiti 'embed_server.py') }
         $embedCands += (Join-Path $env:LOCALAPPDATA 'Programs\graphiti-mcp\mcp_server\embed_server.py')
         foreach ($cand in $embedCands) {
             if (Test-Path -LiteralPath $cand) { $embedScript = $cand; break }

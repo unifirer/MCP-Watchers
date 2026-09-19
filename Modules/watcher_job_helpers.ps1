@@ -34,12 +34,82 @@
 
 # Clear the stale grepai lock files that make a relaunched `grepai watch` exit
 # immediately (the worktree *.pid* locks and the grepai-stop-* markers).
+#
+# mcpw-eud: %LOCALAPPDATA%\grepai\logs is MACHINE-GLOBAL - every repository on
+# this box writes there (J:\audio\VAD and J:\audio\MCP-Watchers both do). The old
+# sweep deleted every match unconditionally, so a heal in repo A destroyed repo
+# B's LIVE lock and B could then be launched a second time against a lock it
+# believed was clear. Removal is now gated on Test-GrepaiLockStale: a lock goes
+# only when it is provably stale (its owner PID is gone) or provably OURS (its
+# sibling worktree log names $ProjectRoot). Anything we cannot attribute is LEFT
+# ALONE - the same trade the mcpw-ybs.2 orphan sweep makes: a leftover lock is
+# recoverable, a sibling repository's live watcher is not.
 function Clear-StaleLocks {
+    param([string]$ProjectRoot)
     $lockDir = Join-Path $env:LOCALAPPDATA 'grepai\logs'
     $stalePatterns = @('grepai-worktree-*.pid*', 'grepai-stop-*')
     foreach ($pat in $stalePatterns) {
         Get-ChildItem -Path $lockDir -Filter $pat -ErrorAction SilentlyContinue |
+            Where-Object { Test-GrepaiLockStale -LockFile $_.FullName -ProjectRoot $ProjectRoot } |
             Remove-Item -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# mcpw-eud: is this grepai lock/stop marker safe for THIS workspace to remove?
+#
+# Two shapes live in the shared logs dir (measured 2026-09-20 against grepai
+# v1.19.0 on this box):
+#   grepai-stop-<pid>           the background watcher's PID marker. The owner
+#                               PID is IN THE NAME, so staleness is decidable
+#                               for every workspace: stale iff that PID is gone.
+#   grepai-worktree-<id>.pid*   older-build worktree locks. They carry no
+#                               project key, so the only ownership evidence is
+#                               the sibling grepai-worktree-<id>.log, whose
+#                               first line reads "Starting grepai watch in
+#                               <project>". Removable only when that log names
+#                               $ProjectRoot.
+# An unrecognised shape is never removed. Returns $true only when removal is
+# provably safe.
+function Test-GrepaiLockStale {
+    param([string]$LockFile, [string]$ProjectRoot)
+    if ([string]::IsNullOrWhiteSpace($LockFile)) { return $false }
+    $name = [System.IO.Path]::GetFileName($LockFile)
+    if ($name -match '^grepai-stop-(\d+)$') {
+        return -not [bool](Get-Process -Id ([int]$Matches[1]) -ErrorAction SilentlyContinue)
+    }
+    if ($name -match '^grepai-worktree-([^.]+)\.pid') {
+        if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { return $false }
+        $dir = [System.IO.Path]::GetDirectoryName($LockFile)
+        $sibling = Join-Path $dir ("grepai-worktree-" + $Matches[1] + ".log")
+        if (-not (Test-Path -LiteralPath $sibling)) { return $false }
+        $mine = ([System.IO.Path]::GetFullPath($ProjectRoot)).TrimEnd('\', '/').ToLowerInvariant()
+        try {
+            $txt = Get-Content -LiteralPath $sibling -Raw -ErrorAction Stop
+            return ([string]$txt).ToLowerInvariant().Contains($mine)
+        } catch { return $false }
+    }
+    return $false
+}
+
+# mcpw-0on: per-attempt redirect pair for a grepai (re)spawn.
+#
+# Start-Process -RedirectStandardOutput truncates its target and holds the handle
+# for the child's entire lifetime. Every restart path pointed at the SAME
+# grepai-launch.log / .err pair, so a retry either hit a sharing violation or
+# interleaved two children's progress bars into one file - which is why the
+# launch logs were unreadable mixtures of different runs (92 "exited immediately
+# after restart" flaps take that path). Attempt 1 keeps the canonical pair the
+# pane tailer watches; every later attempt gets its own suffixed pair, so no two
+# children ever share a redirect target and each log stays attributable to one
+# run. Nothing is overwritten, so earlier attempts stay on disk for inspection.
+function Get-GrepaiSpawnLogPair {
+    param([string]$LogPath, [string]$ErrPath, [int]$Attempt = 1)
+    if ($Attempt -le 1) {
+        return [PSCustomObject]@{ Log = $LogPath; Err = $ErrPath }
+    }
+    return [PSCustomObject]@{
+        Log = "$LogPath.attempt$Attempt"
+        Err = "$ErrPath.attempt$Attempt"
     }
 }
 

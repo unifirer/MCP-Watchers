@@ -604,6 +604,35 @@ if ($err -and (Test-Path -LiteralPath $err)) {
 # Invoke-GrepaiHealthCheck failed silently under SilentlyContinue and never
 # healed. This embedded copy also repairs a corrupt gob index BEFORE relaunch,
 # which breaks the 377-byte index.gob "unexpected EOF" crash loop.
+#
+# mcpw-eud: the pane heal runs in a standalone generated script that dot-sources
+# nothing, so the shared Test-GrepaiLockStale from Modules/watcher_job_helpers.ps1
+# is not in scope here. This is the same body, kept in sync with the shared copy:
+# the lock dir is machine-global, so a lock is removable only when it is provably
+# stale (owner PID gone) or provably ours (its sibling worktree log names
+# $RepoRoot). Anything unattributable is left alone - a leftover lock is
+# recoverable, a sibling repository's live watcher is not.
+function Test-GrepaiLockStale {
+    param([string]$LockFile, [string]$ProjectRoot)
+    if ([string]::IsNullOrWhiteSpace($LockFile)) { return $false }
+    $name = [System.IO.Path]::GetFileName($LockFile)
+    if ($name -match '^grepai-stop-(\d+)$') {
+        return -not [bool](Get-Process -Id ([int]$Matches[1]) -ErrorAction SilentlyContinue)
+    }
+    if ($name -match '^grepai-worktree-([^.]+)\.pid') {
+        if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { return $false }
+        $dir = [System.IO.Path]::GetDirectoryName($LockFile)
+        $sibling = Join-Path $dir ("grepai-worktree-" + $Matches[1] + ".log")
+        if (-not (Test-Path -LiteralPath $sibling)) { return $false }
+        $mine = ([System.IO.Path]::GetFullPath($ProjectRoot)).TrimEnd('\', '/').ToLowerInvariant()
+        try {
+            $txt = Get-Content -LiteralPath $sibling -Raw -ErrorAction Stop
+            return ([string]$txt).ToLowerInvariant().Contains($mine)
+        } catch { return $false }
+    }
+    return $false
+}
+
 function Invoke-GrepaiHealthCheck {
     param(
         [string]$RepoRoot,
@@ -642,7 +671,10 @@ function Invoke-GrepaiHealthCheck {
     Write-Host "[grepai HEALTH] watch daemon down - auto-healing (repair + relaunch)..."
     $lockDir = Join-Path $env:LOCALAPPDATA 'grepai\logs'
     foreach ($pat in @('grepai-worktree-*.pid*', 'grepai-stop-*')) {
+        # mcpw-eud: scope the sweep to THIS workspace. The dir is machine-global,
+        # so an unscoped delete let this heal destroy a sibling repo's live lock.
         Get-ChildItem -Path $lockDir -Filter $pat -ErrorAction SilentlyContinue |
+            Where-Object { Test-GrepaiLockStale -LockFile $_.FullName -ProjectRoot $RepoRoot } |
             Remove-Item -Force -ErrorAction SilentlyContinue
     }
     try {
@@ -689,9 +721,16 @@ function Invoke-GrepaiHealthCheck {
     }
     $gpCmd = Get-Command 'grepai.exe' -ErrorAction SilentlyContinue
     if (-not $gpCmd) { Write-Warning "[grepai HEALTH] grepai.exe not found on PATH"; return $false }
+    # mcpw-0on: the heal gets its OWN redirect pair (stamped, so repeated heals
+    # never reuse one). Pointing it at the canonical pair would clobber the log of
+    # the run being recovered from and, if that child still held the handle,
+    # fail with a sharing violation.
+    $healStamp = Get-Date -Format 'yyyyMMddHHmmss'
+    $healLog = "$LaunchLog.attempt$healStamp"
+    $healErr = "$LaunchErr.attempt$healStamp"
     $gp = Start-Process -FilePath $gpCmd.Source -ArgumentList @('watch') `
         -WorkingDirectory $RepoRoot -WindowStyle Hidden `
-        -RedirectStandardOutput $LaunchLog -RedirectStandardError $LaunchErr -PassThru
+        -RedirectStandardOutput $healLog -RedirectStandardError $healErr -PassThru
     Start-Sleep 2
     $alive1 = @(Get-CimInstance Win32_Process -Filter "Name='grepai.exe'" -ErrorAction SilentlyContinue |
         Where-Object { $_.CommandLine -and $_.CommandLine -match 'watch' }).Count -gt 0

@@ -1350,12 +1350,25 @@ if (-not $grepaiOk) {
                 $op = Get-Process -Id $Matches[1] -ErrorAction SilentlyContinue
                 if ($op) { try { $op.Kill() } catch { Write-Warning "Failed to kill stale grepai PID $($op.Id): $($_.Exception.Message)" } }
             }
-            Get-ChildItem -Path $grepaiLogsDir -Filter 'grepai-worktree-*.pid*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+            # mcpw-eud: this sweep is machine-global (%LOCALAPPDATA%\grepai\logs is
+            # shared by every repo on this box), so a candidate is removed only
+            # when Test-GrepaiLockStale proves it is stale or provably OURS -
+            # never another workspace's live lock.
+            Get-ChildItem -Path $grepaiLogsDir -Filter 'grepai-worktree-*.pid*' -ErrorAction SilentlyContinue |
+                Where-Object { Test-GrepaiLockStale -LockFile $_.FullName -ProjectRoot $watchersWorkspaceRoot } |
+                Remove-Item -Force -ErrorAction SilentlyContinue
+            Get-ChildItem -Path $grepaiLogsDir -Filter 'grepai-stop-*' -ErrorAction SilentlyContinue |
+                Where-Object { Test-GrepaiLockStale -LockFile $_.FullName -ProjectRoot $watchersWorkspaceRoot } |
+                Remove-Item -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 1
             try {
+                # mcpw-0on: the retry gets its own redirect pair, so the failed
+                # first launch's log survives for diagnosis and no two children
+                # ever hold the same target.
+                $recoveryLog = Get-GrepaiSpawnLogPair -LogPath $grepaiLaunchLog -ErrPath $grepaiLaunchErr -Attempt 2
                 $gp2 = Start-Process -FilePath (Get-Command "grepai.exe").Source -ArgumentList "watch" `
                     -WorkingDirectory $watchersWorkspaceRoot -WindowStyle Hidden `
-                    -RedirectStandardOutput $grepaiLaunchLog -RedirectStandardError $grepaiLaunchErr -PassThru
+                    -RedirectStandardOutput $recoveryLog.Log -RedirectStandardError $recoveryLog.Err -PassThru
                 # vad-r0i parent-death: the retried spawn is the tracked watcher
                 # now, so it must be inside the kill-on-close job too.
                 if ($null -ne $script:DeathJob -and $script:DeathJob -ne [IntPtr]::Zero) {
@@ -1567,6 +1580,11 @@ if ($grepaiOk) {
         $idleTicks = 0
         Write-SupLog "grepai idle TTL armed: $idleTtlMin minute(s) (0 = disabled)"
         $consecutiveRestarts = 0
+        # mcpw-0on: redirect-attempt counter for this supervisor runspace. The
+        # launcher's initial spawn is attempt 1 (canonical LaunchLog/LaunchErr);
+        # every restart this runspace makes takes the next number and therefore
+        # its own log pair, so two children never share a redirect target.
+        $grepaiSpawnAttempt = 1
         # vad-v02 (2026-09-15): PID-scoped idle reap. The old reap killed every
         # grepai.exe with CommandLine match watch, so a manual watch or a
         # sibling launcher watcher died too. Track only the PID this
@@ -1679,12 +1697,16 @@ if ($grepaiOk) {
                     try {
                     Write-SupLog 'grepai watch exited - restarting in 1s'
                     Write-WatchersLog 'CRITICAL: grepai watch process lost - initiating restart sequence'
-                    Clear-StaleLocks
+                    Clear-StaleLocks -ProjectRoot $RepoRoot
                     Repair-CorruptGobIndex -ProjectRoot $RepoRoot
                     Start-Sleep 1
+                    # mcpw-0on: this restart gets its OWN redirect pair, so it can
+                    # never collide with (or clobber) the run it is recovering from.
+                    $grepaiSpawnAttempt++
+                    $spawnLog = Get-GrepaiSpawnLogPair -LogPath $LaunchLog -ErrPath $LaunchErr -Attempt $grepaiSpawnAttempt
                     $gp = Start-Process -FilePath (Get-Command 'grepai.exe').Source -ArgumentList @('watch') `
                         -WorkingDirectory $RepoRoot -WindowStyle Hidden `
-                        -RedirectStandardOutput $LaunchLog -RedirectStandardError $LaunchErr -PassThru
+                        -RedirectStandardOutput $spawnLog.Log -RedirectStandardError $spawnLog.Err -PassThru
                     if ($null -ne $deathJob -and $deathJob -ne [IntPtr]::Zero) {
                         $assigned = Add-ProcessToWatcherDeathJob -Job $deathJob -ProcessId $gp.Id
                         if (-not $assigned) {
@@ -1707,12 +1729,17 @@ if ($grepaiOk) {
                         Write-SupLog "grepai (PID $($gp.Id)) exited immediately after restart - clearing locks and retrying once"
                         Write-WatchersLog "CRITICAL: grepai (PID $($gp.Id)) exited immediately - retry restart"
                         $consecutiveRestarts++
-                        Clear-StaleLocks
+                        Clear-StaleLocks -ProjectRoot $RepoRoot
                         Repair-CorruptGobIndex -ProjectRoot $RepoRoot
                         Start-Sleep 1
+                        # mcpw-0on: the retry takes yet another redirect pair, so
+                        # neither the failed restart nor the run before it is
+                        # overwritten and each log belongs to exactly one PID.
+                        $grepaiSpawnAttempt++
+                        $retryLog = Get-GrepaiSpawnLogPair -LogPath $LaunchLog -ErrPath $LaunchErr -Attempt $grepaiSpawnAttempt
                         $gp2 = Start-Process -FilePath (Get-Command 'grepai.exe').Source -ArgumentList @('watch') `
                             -WorkingDirectory $RepoRoot -WindowStyle Hidden `
-                            -RedirectStandardOutput $LaunchLog -RedirectStandardError $LaunchErr -PassThru
+                            -RedirectStandardOutput $retryLog.Log -RedirectStandardError $retryLog.Err -PassThru
                         if ($null -ne $deathJob -and $deathJob -ne [IntPtr]::Zero) {
                             $assigned = Add-ProcessToWatcherDeathJob -Job $deathJob -ProcessId $gp2.Id
                             if (-not $assigned) {

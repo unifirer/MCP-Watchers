@@ -113,6 +113,322 @@ function Get-GrepaiSpawnLogPair {
     }
 }
 
+# ---------------------------------------------------------------------------
+# mcpw-ozm (2026-09-20): the grepai SPAWN-TIME lock gate.
+#
+# THE BUG: 92 "grepai (PID n) exited immediately after restart" flaps. The
+# freshly spawned watcher is not crashing - grepai's own single-instance guard
+# refuses it, verbatim from grepai-launch.log.err:
+#
+#     Error: watcher is already running (PID 65534)
+#
+# ...naming a PID the supervisor never spawned (it spawned 6228, then 86624).
+# The lock is MACHINE-GLOBAL, so a sibling launcher or a stray grepai wins it
+# and our child exits at once; the supervisor then retried 2 s later, forever.
+# Retrying cannot clear a lock another live process holds.
+#
+# THE REAL LOCK LIFECYCLE - read from grepai v1.19.0 source (package `daemon`
+# plus `cli`, repo github.com/yoanbernabeu/grepai) and cross-checked against the
+# installed binary's symbol table. Do not replace this with a guess:
+#
+#   %LOCALAPPDATA%\grepai\logs\grepai-watch.pid
+#       machine-global watcher PID, written by daemon.WritePIDFile
+#       (non-worktree mode). Content is a bare decimal PID.
+#   %LOCALAPPDATA%\grepai\logs\grepai-watch.pid.lock
+#       the REAL mutex: LockFileEx(EXCLUSIVE|FAIL_IMMEDIATELY), held open for
+#       the process lifetime and released by the OS on exit.
+#   %LOCALAPPDATA%\grepai\logs\grepai-worktree-<id>.pid
+#       per-worktree watcher PID, daemon.WriteWorktreePIDFile. Its sibling
+#       .pid.lock is held only across the PID write and closed immediately, so
+#       it is NOT a durable mutex.
+#   %LOCALAPPDATA%\grepai\logs\grepai-worktree-<id>.log
+#       rewritten on every watch start; its first line names the project.
+#   %LOCALAPPDATA%\grepai\logs\grepai-stop-<pid>
+#       a STOP SENTINEL, not a lock: daemon.StopProcess writes it, the owner
+#       polls for it and removes it.
+#
+# THE REFUSAL GATE: cli.runWatch / cli.startBackgroundWatch refuse iff
+# daemon.GetRunning*PID() returns > 0, and that helper returns > 0 ONLY after
+# IsProcessRunning(pid) (OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION) said
+# the PID is alive. A DEAD PID is therefore cleared by grepai ITSELF and never
+# blocks a restart. With a non-empty worktree id, runWatch checks the worktree
+# PID file first and then FALLS BACK to the machine-global grepai-watch.pid -
+# which is how a live watcher belonging to a DIFFERENT repository blocks this
+# one, and why the blocking PID is not the PID we just spawned.
+#
+# THE CRUX - live vs stale. Liveness alone is NOT enough, and this is the part
+# a naive "is the PID alive?" check gets wrong:
+#
+#   IsProcessRunning() only proves that SOME process owns that PID. Windows
+#   RECYCLES PIDs. A .pid file naming a recycled, unrelated process is a lock
+#   grepai will NEVER clear (it sees "alive") and that Clear-StaleLocks can
+#   never clear either (its Get-Process -Id succeeds for the same reason). That
+#   is a permanently wedged lock: grepai refuses on every retry, forever.
+#
+# So the classifier below uses TWO independent signals and calls a lock stale
+# only when they agree:
+#   1. liveness - is the named PID alive at all?
+#   2. identity - is that PID actually a live `grepai ... watch`?
+#
+#   alive + is a watcher -> LIVE HOLDER: never clear it, never spawn over it
+#   alive + is not one   -> recycled PID: provably stale, safe to clear
+#   dead / absent / junk -> stale, safe to clear
+#
+# *.lock files are deliberately NEVER touched: the lock is the OS lock on the
+# open handle, not the file's existence, so deleting one achieves nothing and
+# deleting a live one is pure risk.
+#
+# The decision is ADOPT (a live watcher this project owns - the launcher should
+# track it, not fight it) or BACKOFF with a real, growing delay (a live watcher
+# we cannot attribute - a respawn would be refused anyway). A genuinely crashed
+# grepai leaves a dead PID, which is stale, so healing is NOT disabled.
+# ---------------------------------------------------------------------------
+
+# The machine-global grepai log dir, mirroring daemon.GetDefaultLogDir on
+# Windows. Callers may pass an explicit dir (tests do); otherwise it derives
+# from %LOCALAPPDATA%. Returns '' when neither is available.
+function Get-GrepaiLogDir {
+    param([string]$LogDir)
+    if (-not [string]::IsNullOrWhiteSpace($LogDir)) { return $LogDir }
+    if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { return '' }
+    return (Join-Path $env:LOCALAPPDATA 'grepai\logs')
+}
+
+# Name + command line for a live PID, or $null when the PID is gone. This is the
+# default process probe; every classifier below takes an injectable
+# -ProcessProbe so the identity rule can be unit-tested without spawning
+# processes. A probe returns $null for "not running", else an object carrying
+# Name and CommandLine.
+function Get-GrepaiProcessInfo {
+    param([int]$ProcessId)
+    if ($ProcessId -le 0) { return $null }
+    try {
+        $p = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction SilentlyContinue
+        if ($null -eq $p) { return $null }
+        return [PSCustomObject]@{ Name = [string]$p.Name; CommandLine = [string]$p.CommandLine }
+    } catch { return $null }
+}
+
+# The identity half of the stale/live distinction: is $ProcessId a live
+# `grepai ... watch`? Name must be grepai(.exe) and the command line must carry
+# the `watch` token as a whole argument - the same strict rule the launcher uses
+# to tell a watcher from a `grepai mcp-serve` server. A live PID that fails this
+# is a RECYCLED PID, and a PID file naming it is the one lock grepai can never
+# clear by itself.
+function Test-GrepaiWatcherProcess {
+    param([int]$ProcessId, [scriptblock]$ProcessProbe)
+    if ($ProcessId -le 0) { return $false }
+    $p = $null
+    try {
+        if ($ProcessProbe) { $p = & $ProcessProbe $ProcessId } else { $p = Get-GrepaiProcessInfo -ProcessId $ProcessId }
+    } catch { return $false }
+    if ($null -eq $p) { return $false }
+    if ([string]$p.Name -notmatch '(?i)^grepai(\.exe)?$') { return $false }
+    $cmd = [string]$p.CommandLine
+    if ([string]::IsNullOrWhiteSpace($cmd)) { return $false }
+    return [bool]($cmd -match '(?i)(^|[\s"])watch([\s"]|$)')
+}
+
+# Decimal PID stored in a grepai PID file, or 0 when the file is absent,
+# unreadable, or not a bare integer (grepai writes "%d\n" atomically).
+function Get-GrepaiPidFileValue {
+    param([string]$PidFile)
+    if ([string]::IsNullOrWhiteSpace($PidFile)) { return 0 }
+    if (-not (Test-Path -LiteralPath $PidFile)) { return 0 }
+    try {
+        $txt = [string](Get-Content -LiteralPath $PidFile -Raw -ErrorAction Stop)
+        $txt = $txt.Trim()
+        if ($txt -notmatch '^\d+$') { return 0 }
+        $ownerPid = 0
+        if (-not [int]::TryParse($txt, [ref]$ownerPid)) { return 0 }
+        return $ownerPid
+    } catch { return 0 }
+}
+
+# Is this grepai PID file provably NOT naming a live watcher, i.e. safe for THIS
+# workspace to delete? Only the two real PID-file shapes are considered; every
+# other name (notably *.pid.lock, whose existence is not the lock) returns
+# $false = "leave it alone". See the block comment above for why liveness alone
+# is not enough.
+function Test-GrepaiPidFileStale {
+    param([string]$PidFile, [scriptblock]$ProcessProbe)
+    if ([string]::IsNullOrWhiteSpace($PidFile)) { return $false }
+    $name = [System.IO.Path]::GetFileName($PidFile)
+    $isGlobal = ($name -match '^grepai-watch\.pid$') -or ($name -match '^grepai-watch\.pid\.tmp$')
+    $isWorktree = ($name -match '^grepai-worktree-[^.]+\.pid$') -or ($name -match '^grepai-worktree-[^.]+\.pid\.tmp$')
+    if (-not ($isGlobal -or $isWorktree)) { return $false }
+    # A .tmp is a partial atomic write that never became the lock - always junk.
+    if ($name -match '\.tmp$') { return $true }
+    if (-not (Test-Path -LiteralPath $PidFile)) { return $true }
+    $ownerPid = Get-GrepaiPidFileValue -PidFile $PidFile
+    if ($ownerPid -le 0) { return $true }
+    return -not (Test-GrepaiWatcherProcess -ProcessId $ownerPid -ProcessProbe $ProcessProbe)
+}
+
+# Can this worktree PID file be attributed to $ProjectRoot? A worktree PID file
+# carries no project key, so the only ownership evidence is its sibling
+# grepai-worktree-<id>.log, rewritten on each watch start, whose first line
+# reads "Starting grepai watch in <project>". The machine-global
+# grepai-watch.pid carries no evidence at all and is NEVER attributed - see
+# Get-GrepaiSpawnDecision for why that matters.
+function Test-GrepaiPidFileOwnedByProject {
+    param([string]$PidFile, [string]$ProjectRoot)
+    if ([string]::IsNullOrWhiteSpace($PidFile)) { return $false }
+    if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { return $false }
+    $name = [System.IO.Path]::GetFileName($PidFile)
+    if ($name -notmatch '^grepai-worktree-([^.]+)\.pid') { return $false }
+    $dir = [System.IO.Path]::GetDirectoryName($PidFile)
+    $sibling = Join-Path $dir ("grepai-worktree-" + $Matches[1] + ".log")
+    if (-not (Test-Path -LiteralPath $sibling)) { return $false }
+    $mine = ([System.IO.Path]::GetFullPath($ProjectRoot)).TrimEnd('\', '/').ToLowerInvariant()
+    try {
+        $txt = [string](Get-Content -LiteralPath $sibling -Raw -ErrorAction Stop)
+        return $txt.ToLowerInvariant().Contains($mine)
+    } catch { return $false }
+}
+
+# Every grepai PID file a fresh `grepai watch` in this workspace would consult,
+# classified. Kind is 'global' (machine-global grepai-watch.pid) or 'worktree'
+# (grepai-worktree-<id>.pid). LiveWatcher is the decision input; Stale is the
+# safe-to-delete gate; BelongsToUs is the adopt-vs-backoff input.
+function Get-GrepaiLockInventory {
+    param([string]$LogDir, [string]$ProjectRoot, [scriptblock]$ProcessProbe)
+    $out = @()
+    $dir = Get-GrepaiLogDir -LogDir $LogDir
+    if ([string]::IsNullOrWhiteSpace($dir)) { return $out }
+    if (-not (Test-Path -LiteralPath $dir)) { return $out }
+    $files = @()
+    foreach ($pat in @('grepai-watch.pid', 'grepai-worktree-*.pid')) {
+        $files += @(Get-ChildItem -Path $dir -Filter $pat -File -ErrorAction SilentlyContinue)
+    }
+    foreach ($f in $files) {
+        $ownerPid = Get-GrepaiPidFileValue -PidFile $f.FullName
+        $live = $false
+        if ($ownerPid -gt 0) {
+            $live = Test-GrepaiWatcherProcess -ProcessId $ownerPid -ProcessProbe $ProcessProbe
+        }
+        $kind = 'worktree'
+        if ($f.Name -eq 'grepai-watch.pid') { $kind = 'global' }
+        $out += [PSCustomObject]@{
+            Path        = $f.FullName
+            Name        = $f.Name
+            Kind        = $kind
+            OwnerPid    = $ownerPid
+            LiveWatcher = $live
+            Stale       = (Test-GrepaiPidFileStale -PidFile $f.FullName -ProcessProbe $ProcessProbe)
+            BelongsToUs = (Test-GrepaiPidFileOwnedByProject -PidFile $f.FullName -ProjectRoot $ProjectRoot)
+        }
+    }
+    return $out
+}
+
+# Delete only the grepai PID files that are provably stale, and return the paths
+# removed. Mirrors Clear-StaleLocks' trade - a leftover lock is recoverable, a
+# sibling repository's live watcher is not - but tightens the gate from
+# "unattributable" to "cannot name a live watcher", which is what catches the
+# recycled-PID lock grepai itself can never clear. *.lock files are never
+# touched.
+function Clear-StaleGrepaiSpawnLocks {
+    param([string]$LogDir, [scriptblock]$ProcessProbe)
+    $removed = @()
+    $dir = Get-GrepaiLogDir -LogDir $LogDir
+    if ([string]::IsNullOrWhiteSpace($dir)) { return $removed }
+    if (-not (Test-Path -LiteralPath $dir)) { return $removed }
+    $patterns = @('grepai-watch.pid', 'grepai-watch.pid.tmp', 'grepai-worktree-*.pid', 'grepai-worktree-*.pid.tmp')
+    foreach ($pat in $patterns) {
+        foreach ($f in @(Get-ChildItem -Path $dir -Filter $pat -File -ErrorAction SilentlyContinue)) {
+            if (-not (Test-GrepaiPidFileStale -PidFile $f.FullName -ProcessProbe $ProcessProbe)) { continue }
+            try {
+                Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop
+                $removed += $f.FullName
+            } catch { }
+        }
+    }
+    return $removed
+}
+
+# mcpw-ozm: how long to wait before re-testing a lock a LIVE process holds.
+# Retrying every few seconds cannot clear it - that is the 92-flap churn - so
+# the delay doubles per consecutive block up to MaxSeconds. Mirrors
+# Get-LitellmBackoffDelay so both supervisors back off the same way. The cap
+# keeps healing responsive: the moment the holder exits, the next tick spawns.
+function Get-GrepaiSpawnBackoffSeconds {
+    param([int]$ConsecutiveBlocked, [int]$BaseSeconds = 15, [int]$MaxSeconds = 600)
+    if ($BaseSeconds -lt 1) { $BaseSeconds = 15 }
+    if ($MaxSeconds -lt $BaseSeconds) { $MaxSeconds = $BaseSeconds }
+    if ($ConsecutiveBlocked -le 1) { return $BaseSeconds }
+    try {
+        $delay = [int]([math]::Pow(2, ($ConsecutiveBlocked - 1)) * $BaseSeconds)
+    } catch {
+        return $MaxSeconds
+    }
+    if ($delay -gt $MaxSeconds) { return $MaxSeconds }
+    if ($delay -lt $BaseSeconds) { return $BaseSeconds }
+    return $delay
+}
+
+# mcpw-ozm: what the spawn path should do RIGHT NOW, answered before it spawns.
+# Pure - it reads the lock dir and the process table, and writes nothing.
+#
+#   Action 'spawn'   no live watcher holds a lock this workspace would consult;
+#                    spawn as before.
+#   Action 'adopt'   a live watcher holds OUR worktree PID file (attributed by
+#                    its sibling log). Track its PID instead of spawning; the
+#                    launcher must NOT then kill it on teardown of another
+#                    workspace, so this is only ever returned for our own lock.
+#   Action 'backoff' a live watcher we cannot attribute holds a lock - in
+#                    practice the machine-global grepai-watch.pid written by a
+#                    DIFFERENT repository, which runWatch's backward-compat
+#                    fallback makes blocking. A respawn would be refused with
+#                    "watcher is already running", so wait DelaySeconds and
+#                    re-test. Adoption is deliberately NOT offered here:
+#                    adopting a foreign PID would make this supervisor track -
+#                    and later reap - someone else's watcher.
+function Get-GrepaiSpawnDecision {
+    param(
+        [string]$LogDir,
+        [string]$ProjectRoot,
+        [int]$ConsecutiveBlocked = 0,
+        [int]$BaseDelaySeconds = 15,
+        [int]$MaxDelaySeconds = 600,
+        [scriptblock]$ProcessProbe
+    )
+    $inventory = @(Get-GrepaiLockInventory -LogDir $LogDir -ProjectRoot $ProjectRoot -ProcessProbe $ProcessProbe)
+    $blockers = @($inventory | Where-Object { $_.LiveWatcher })
+    if ($blockers.Count -eq 0) {
+        return [PSCustomObject]@{
+            Action       = 'spawn'
+            DelaySeconds = 0
+            BlockerPid   = 0
+            BlockerPath  = ''
+            Blockers     = @()
+            Reason       = 'no live grepai watcher holds a lock this workspace would consult'
+        }
+    }
+    $ours = @($blockers | Where-Object { $_.BelongsToUs })
+    if ($ours.Count -gt 0) {
+        $b = $ours[0]
+        return [PSCustomObject]@{
+            Action       = 'adopt'
+            DelaySeconds = 0
+            BlockerPid   = [int]$b.OwnerPid
+            BlockerPath  = [string]$b.Path
+            Blockers     = $blockers
+            Reason       = "live grepai watcher PID $($b.OwnerPid) holds $($b.Name), which this project owns"
+        }
+    }
+    $b = $blockers[0]
+    $delay = Get-GrepaiSpawnBackoffSeconds -ConsecutiveBlocked $ConsecutiveBlocked -BaseSeconds $BaseDelaySeconds -MaxSeconds $MaxDelaySeconds
+    return [PSCustomObject]@{
+        Action       = 'backoff'
+        DelaySeconds = $delay
+        BlockerPid   = [int]$b.OwnerPid
+        BlockerPath  = [string]$b.Path
+        Blockers     = $blockers
+        Reason       = "live grepai watcher PID $($b.OwnerPid) holds $($b.Name) and cannot be attributed to this project - a respawn would be refused"
+    }
+}
+
 # VAD-hne6 (2026-09-06): size-cap rotation for append-style watcher/supervisor
 # logs. Appending forever let multi-day sessions grow multi-GB logs under
 # C:\Temp\vad-watchers and %LOCALAPPDATA%. When $Path exceeds $MaxMb it is

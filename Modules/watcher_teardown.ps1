@@ -2,6 +2,8 @@
 # Shared watcher teardown. Dot-sourced by:
 #   - ###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1
 #   - tests/launcher_watcher_teardown.tests.ps1
+#   - tests/launcher_memtrace_heal.tests.ps1 (defines the orphan sweep here)
+#   - tests/launcher_memtrace_orphan_sweep.tests.ps1 (mcpw-ajy regression)
 # SAFE TO DOT-SOURCE: no top-level side effects (no launches, no writes).
 #
 # The launcher persists tracked root PIDs to a state file so the
@@ -221,4 +223,240 @@ function Stop-AllWatchers {
             }
         }
     } catch {}
+}
+
+# ===========================================================================
+# mcpw-ajy (2026-09-20): orphaned memtrace host sweep
+# ===========================================================================
+# The mcpw-anw sweep (originally inline in the launcher) matched ONLY shell
+# hosts whose command line named the npm SHIM script (memtrace.ps1). Current
+# builds never invoke that shim - they launch an ABSOLUTE node.exe with
+# memtrace.js - so that leak shape is invisible to it: ~46
+# `node.exe ... memtrace.js start --headless --bless-workspace` orphans piled up
+# one per 5-minute tick from 2026-09-19 23:19 and had to be removed by hand.
+#
+# The match is extended to node.exe hosts naming memtrace.js. Two conditions
+# still gate every kill, and the second is a SAFETY requirement, not a nicety:
+# the shared union daemon (memcore-server.exe on :50051, data dir
+# C:\Users\yuni\.config\memtrace\.memdb) is a union store shared by 8
+# workspaces, and killing it takes memtrace down everywhere.
+#
+#   1. the host's PARENT IS GONE, with a PID-reuse guard (a "parent" whose
+#      creation time is LATER than the child's is a reused PID, not a parent);
+#   2. the host is NOT part of a LIVE daemon tree.
+#
+# Condition 2 is load-bearing, and it was measured rather than assumed. On
+# 2026-09-20 four `node.exe memtrace.js start --headless --workspace <manifest>`
+# processes had DEAD parents yet were live members of the union daemon family
+# (their parent PIDs 34376/37864/61784/66016 were all gone). A parent-gone-only
+# rule would have killed all four. A daemon-tree ANCHOR is therefore:
+#   * a daemon binary (memcore-server.exe / memcortex-daemon.exe / memtrace.exe),
+#     or
+#   * a node.exe naming memtrace.js AND carrying a real `--workspace` token -
+#     the canonical union form. The leaked legacy form is `--bless-workspace`,
+#     which does NOT contain the token `--workspace` (the two dashes are
+#     interrupted by 'bless'), so the two forms stay distinguishable.
+# A candidate is excluded when it IS an anchor, when its live parent IS an
+# anchor (a daemon ancestor is necessarily that live parent), or when ANY
+# descendant is an anchor: an orphaned node.exe that still owns a live daemon
+# subtree IS the live daemon, and killing it is the outage this guard exists to
+# prevent.
+#
+# All matching is done by Test-OrphanedMemtraceHostProcess, a pure function over
+# a process snapshot, so it is unit-testable without spawning anything. The
+# entry point additionally protects the :50051 owner (best-effort) so the
+# documented invariant is enforced even if a daemon binary is renamed.
+
+# Best-effort set of PIDs that must never be swept: every daemon binary plus the
+# process currently LISTENing on the union daemon port.
+function Get-MemtraceDaemonProtectedPids {
+    param(
+        [string[]]$DaemonNames = @('memcore-server.exe','memcortex-daemon.exe','memtrace.exe'),
+        [int[]]$Ports = @(50051)
+    )
+    $set = @{}
+    try {
+        foreach ($p in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)) {
+            if ($DaemonNames -contains [string]$p.Name) { $set[[int]$p.ProcessId] = $true }
+        }
+    } catch {}
+    foreach ($port in $Ports) {
+        try {
+            foreach ($c in @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)) {
+                if ($c.OwningProcess) { $set[[int]$c.OwningProcess] = $true }
+            }
+        } catch {}
+    }
+    return @($set.Keys)
+}
+
+# Is this one process a member (or the root) of the shared memtrace daemon tree?
+function Test-MemtraceDaemonAnchor {
+    param(
+        [string]$Name,
+        [string]$CommandLine,
+        [string[]]$DaemonNames = @('memcore-server.exe','memcortex-daemon.exe','memtrace.exe')
+    )
+    if ($Name -and ($DaemonNames -contains $Name)) { return $true }
+    if ($Name -eq 'node.exe' -and $CommandLine -and
+        ($CommandLine -match 'memtrace\.js') -and
+        ($CommandLine -match '(^|\s)--workspace(\s|=|-|$)')) { return $true }
+    return $false
+}
+
+# Pure matcher. Returns $true only for a host that is (1) of a host image,
+# (2) whose command line names a memtrace host script, (3) whose parent is GONE
+# (PID-reuse aware), and (4) that is not inside a LIVE daemon tree.
+function Test-OrphanedMemtraceHostProcess {
+    param(
+        [Parameter(Mandatory=$true)] $Candidate,
+        [object[]]$AllProcesses = @(),
+        [string[]]$HostNames = @('powershell.exe','pwsh.exe','node.exe'),
+        [string[]]$ShimPatterns = @('memtrace\.ps1','memtrace\.js'),
+        [string[]]$DaemonNames = @('memcore-server.exe','memcortex-daemon.exe','memtrace.exe'),
+        [int[]]$ProtectedPids = @(),
+        [int]$SelfPid = 0
+    )
+    if ($null -eq $Candidate) { return $false }
+
+    $name = [string]$Candidate.Name
+    if (-not ($HostNames -contains $name)) { return $false }
+
+    $cmd = ''
+    try { $cmd = [string]$Candidate.CommandLine } catch { $cmd = '' }
+    $token = $false
+    foreach ($pat in $ShimPatterns) {
+        if ($cmd -and ($cmd -match $pat)) { $token = $true; break }
+    }
+    if (-not $token) { return $false }
+
+    $id = [int]$Candidate.ProcessId
+    if ($SelfPid -gt 0 -and $id -eq $SelfPid) { return $false }
+    if ($ProtectedPids -contains $id) { return $false }
+
+    $byPid = @{}
+    foreach ($p in $AllProcesses) {
+        if ($null -eq $p) { continue }
+        $byPid[[int]$p.ProcessId] = $p
+    }
+
+    # (4a) the candidate itself must not be a daemon-tree member.
+    if (Test-MemtraceDaemonAnchor -Name $name -CommandLine $cmd -DaemonNames $DaemonNames) { return $false }
+
+    # (1) Orphanhood is decided by the IMMEDIATE parent, with a PID-reuse guard:
+    # a "parent" whose creation time is LATER than the child's is a reused PID,
+    # not a parent. A live real parent also proves the candidate is not in a
+    # daemon tree (a daemon ancestor would BE that live parent), so this single
+    # check carries both conditions on the way up. Anything we cannot prove dead
+    # fails SAFE - not an orphan, so not killed. In particular a chain that
+    # breaks HIGHER up is not orphanhood: every process tree ends somewhere
+    # (services.exe's parent is PID 0), and reading that as orphanhood is what
+    # made an earlier revision of this function match a live launcher child.
+    $ppid = [int]$Candidate.ParentProcessId
+    if ($ppid -le 0) { return $false }
+    if (-not $byPid.ContainsKey($ppid)) {
+        $orphan = $true
+    } else {
+        $par = $byPid[$ppid]
+        if ($ProtectedPids -contains [int]$par.ProcessId) { return $false }
+        $reused = $false
+        try {
+            $pc = $par.CreationDate
+            $cc = $Candidate.CreationDate
+            if ($pc -and $cc -and ([datetime]$pc -gt [datetime]$cc)) { $reused = $true }
+        } catch { $reused = $false }
+        if (-not $reused) { return $false }
+        $orphan = $true
+    }
+    if (-not $orphan) { return $false }
+
+    # (4c) no LIVE descendant may be a daemon-tree member. This is the case that
+    # protects an orphaned node.exe which is itself the daemon root.
+    $childMap = @{}
+    foreach ($p in $AllProcesses) {
+        if ($null -eq $p) { continue }
+        $pp = [int]$p.ParentProcessId
+        if (-not $childMap.ContainsKey($pp)) { $childMap[$pp] = New-Object System.Collections.ArrayList }
+        [void]$childMap[$pp].Add($p)
+    }
+    $seen = @{}
+    $q = New-Object System.Collections.Queue
+    $q.Enqueue($id)
+    while ($q.Count -gt 0) {
+        $curId = [int]$q.Dequeue()
+        if ($seen.ContainsKey($curId)) { continue }
+        $seen[$curId] = $true
+        if (-not $childMap.ContainsKey($curId)) { continue }
+        foreach ($ch in $childMap[$curId]) {
+            $chId = [int]$ch.ProcessId
+            if ($seen.ContainsKey($chId)) { continue }
+            if ($ProtectedPids -contains $chId) { return $false }
+            $chCmd = ''
+            try { $chCmd = [string]$ch.CommandLine } catch { $chCmd = '' }
+            if (Test-MemtraceDaemonAnchor -Name ([string]$ch.Name) -CommandLine $chCmd -DaemonNames $DaemonNames) { return $false }
+            $q.Enqueue($chId)
+        }
+    }
+    return $true
+}
+
+# Snapshot the process table (or use an injected one) and return the PIDs of
+# orphaned memtrace hosts. Same public name/signature as the sweep the launcher
+# used to define inline, so the launcher can drop its local copy unchanged.
+function Get-OrphanedMemtraceHostPids {
+    param(
+        [string[]]$ShimPatterns = @('memtrace\.ps1','memtrace\.js'),
+        [string[]]$HostNames = @('powershell.exe','pwsh.exe','node.exe'),
+        [string[]]$DaemonNames = @('memcore-server.exe','memcortex-daemon.exe','memtrace.exe'),
+        [int[]]$ProtectedPids = @(),
+        [object[]]$Processes = @(),
+        [int]$SelfPid = 0
+    )
+    $all = $Processes
+    if (-not $all -or $all.Count -eq 0) {
+        try { $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue) } catch { $all = @() }
+    }
+    if (-not $all -or $all.Count -eq 0) { return @() }
+    $self = $SelfPid
+    if ($self -le 0) { $self = [int]$PID }
+
+    $found = @()
+    foreach ($p in $all) {
+        if ($null -eq $p) { continue }
+        if (Test-OrphanedMemtraceHostProcess -Candidate $p -AllProcesses $all `
+                -HostNames $HostNames -ShimPatterns $ShimPatterns -DaemonNames $DaemonNames `
+                -ProtectedPids $ProtectedPids -SelfPid $self) {
+            $found += [int]$p.ProcessId
+        }
+    }
+    return @($found)
+}
+
+# Reap the orphans. Adds the :50051 owner (and every daemon binary) to the
+# protected set so the shared union daemon is never a victim.
+function Stop-OrphanedMemtraceHosts {
+    param(
+        [string[]]$ShimPatterns = @('memtrace\.ps1','memtrace\.js'),
+        [string[]]$HostNames = @('powershell.exe','pwsh.exe','node.exe'),
+        [string[]]$DaemonNames = @('memcore-server.exe','memcortex-daemon.exe','memtrace.exe'),
+        [int[]]$ProtectedPids = @(),
+        [int[]]$DaemonPorts = @(50051),
+        [switch]$NoPortGuard
+    )
+    $guard = @()
+    if ($ProtectedPids) { $guard += $ProtectedPids }
+    if (-not $NoPortGuard) {
+        $guard += @(Get-MemtraceDaemonProtectedPids -DaemonNames $DaemonNames -Ports $DaemonPorts)
+    }
+
+    $victims = @(Get-OrphanedMemtraceHostPids -ShimPatterns $ShimPatterns -HostNames $HostNames `
+        -DaemonNames $DaemonNames -ProtectedPids $guard)
+    $killed = 0
+    foreach ($victimPid in $victims) {
+        try { Stop-Process -Id $victimPid -Force -ErrorAction SilentlyContinue; $killed++ } catch {}
+    }
+    if ($killed -gt 0) {
+        Write-Host "mcpw-ajy: reaped $killed orphaned memtrace host(s) left by an earlier build (PIDs: $($victims -join ', '))."
+    }
+    return $killed
 }

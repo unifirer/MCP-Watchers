@@ -265,6 +265,9 @@ function Test-GrepaiInitialized {
     }
     if (-not $text) { Set-McpDetectReason $Reason 'grepai status produced no output'; return $false }
 
+    # DUPLICATED PARSE: the same "Files indexed" regex lives in
+    # Modules/watcher_mcp_bootstrap.ps1 (Initialize-GrepaiForRepo, the first-scan
+    # check). Fix both or the two will disagree about what "indexed" means.
     $m = [regex]::Match($text, 'Files indexed\s*:\s*(\d+)')
     if (-not $m.Success) {
         Set-McpDetectReason $Reason 'grepai status did not report "Files indexed"'; return $false

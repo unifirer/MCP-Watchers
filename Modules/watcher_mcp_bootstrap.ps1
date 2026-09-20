@@ -70,10 +70,12 @@
 #             foreground watch. Keeping that daemon alive across the
 #             supervisor's idle-TTL reap is bead mcpw-rkg.4 - deliberately NOT
 #             attempted here.
-#   gm        No `.graphenium/` config dir exists; `gm init [PATH]` defaults to
-#             ".", so the root is always passed explicitly. `gm init` writes the
-#             config only - the graph is `gm run`, which the launcher's own
-#             watcher owns.
+#   gm        No `.graphenium/` config dir exists. `gm init [PATH]` defaults to
+#             ".", so the root is always passed explicitly. `gm init` writes
+#             `.grapheniumignore` - a FILE, and the only artifact it produces -
+#             and does NOT create the `.graphenium/` dir, which gm only ever
+#             READS policy.json from. The graph is `gm run`, which the
+#             launcher's own watcher owns.
 #   graphify-rs  `graphify-rs.toml` is missing (bead mcpw-01g, OPTIONAL/P3).
 #             Without the config file there is nothing to bootstrap, so the step
 #             skips as optional rather than inventing a config. Rebuild argv
@@ -585,14 +587,19 @@ function Initialize-GrapheniumForRepo {
     .SYNOPSIS
         Ensure this repository has a graphenium workspace config.
     .DESCRIPTION
-        `gm init [PATH]` writes the `.graphenium/` config directory. The root is
-        always passed explicitly because the command defaults to "." and the
-        bootstrap must not depend on the caller's cwd.
+        `gm init [PATH]` exits 0 having written `.grapheniumignore` - a FILE, and
+        the only artifact it produces. Measured in a scratch repo, it does NOT
+        create the `.graphenium/` directory; gm only ever READS
+        `.graphenium/policy.json` from there. The root is always passed
+        explicitly because the command defaults to "." and the bootstrap must
+        not depend on the caller's cwd.
 
-        Detection wants BOTH `.graphenium/` and `graphenium-out/graph.json`;
-        `gm init` writes only the config, so this step's contract is "config
-        exists". The graph is `gm run`, which the launcher's own watcher owns -
-        running the full pipeline here would be an expensive duplicate.
+        Detection wants BOTH `.graphenium/` and `graphenium-out/graph.json`.
+        This step can only claim what `gm init` actually produced, so its
+        contract is "gm init ran", not "the workspace config exists" - the
+        `.graphenium/` dir is not something gm init creates. The graph is
+        `gm run`, which the launcher's own watcher owns - running the full
+        pipeline here would be an expensive duplicate.
     #>
     param(
         [string]$Path,
@@ -616,9 +623,9 @@ function Initialize-GrapheniumForRepo {
             -Arguments (Get-McpBootstrapArgv -Mcp 'graphenium' -Path $pre.Root) `
             -WorkingDirectory $pre.Root -TimeoutMs $TimeoutMs
     if ($r.Launched -and -not $r.TimedOut -and $r.ExitCode -eq 0) {
-        $null = Set-McpBootstrapStamp -Path $pre.Root -Mcp 'graphenium' -Detail 'gm init completed' -Tool $pre.Tool -StateDir $pre.StateDir
+        $null = Set-McpBootstrapStamp -Path $pre.Root -Mcp 'graphenium' -Detail 'gm init completed (wrote .grapheniumignore)' -Tool $pre.Tool -StateDir $pre.StateDir
         return New-McpBootstrapRow -Mcp 'graphenium' -Status 'done' `
-            -Reason 'gm init wrote the .graphenium/ workspace config (graph is gm run, owned by the launcher watcher)' `
+            -Reason 'gm init wrote .grapheniumignore - it does NOT create .graphenium/ (graph is gm run, owned by the launcher watcher)' `
             -Tool $pre.Tool -Stamp $pre.StateDir
     }
     return New-McpBootstrapRow -Mcp 'graphenium' -Status 'skipped' `
@@ -908,6 +915,9 @@ function Initialize-GrepaiForRepo {
         $indexed = 0
         $text = ''
         if ($r3.Launched) { $text = [string]$r3.Output + [string]$r3.Error }
+        # DUPLICATED PARSE: the same "Files indexed" regex lives in
+        # Modules/watcher_mcp_detect.ps1 (Test-GrepaiInitialized). Fix both or
+        # the two will disagree about what "indexed" means.
         $m = [regex]::Match($text, 'Files indexed\s*:\s*(\d+)')
         if ($m.Success) { $indexed = [int]$m.Groups[1].Value }
         if ($indexed -gt 0) {

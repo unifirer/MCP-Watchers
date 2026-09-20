@@ -29,8 +29,10 @@
 #                     to confirm. There is no 'failed' status on purpose - a
 #                     provision problem degrades to a logged skip and the other
 #                     five MCPs still get their chance.
-#           'planned' -ReportOnly ONLY: this step WOULD run. No tool ran and no
-#                      stamp was written, so the whole call is read-only.
+#           'planned' -ReportOnly ONLY: this step WOULD run. No provisioning
+#                      command ran and no stamp was written. (A detection probe
+#                      may still shell out to confirm an existing artifact - see
+#                      .PARAMETER ReportOnly for the measured cost.)
 #
 #   Initialize-<Mcp>ForRepo -Path <repoRoot> [-StateDir] [-ToolPath] [-Force]
 #                           [-TimeoutMs] [-FirstScanTimeoutMs]
@@ -1145,9 +1147,19 @@ function Invoke-McpProvisionForRepo {
     .PARAMETER ReportOnly
         Answer "what would provisioning do?" without doing it. Runs the six
         detection probes and returns one row per MCP: 'stamped' when the probe
-        already reports provisioned, 'skipped' when no runnable tool was found,
-        and 'planned' when a step would execute its command. No tool runs and no
-        stamp is written, so it is safe to point at a repository you do not own.
+        already reports provisioned, 'skipped' when no runnable tool was found
+        or an optional opt-in file is missing, and 'planned' when a step would
+        execute its command. No PROVISIONING command runs and no stamp is
+        written, so it is safe to point at a repository you do not own.
+
+        Honest cost, measured on this repo 2026-09-21: the call took 39.9s.
+        "No tool runs" would be a lie - a probe whose artifact already exists
+        shells out to CONFIRM it (grepai status, repowise doctor). Those are
+        read-only queries, not provisioning, and a probe whose artifact is
+        absent short-circuits without spawning anything; but they are not free,
+        and this is still ~15x cheaper than the memtrace index and grepai first
+        scan a real run would spend (mcpw-vrf).
+
         Note this reports ground truth from the probes, not the stamp shortcut:
         a step whose stamp says done but whose artifact is missing is reported
         'planned', which is exactly the Mode A case the stamp gate hides.

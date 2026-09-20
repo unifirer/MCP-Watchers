@@ -268,11 +268,23 @@ function Set-McpProvisionStamp {
         }
     } catch { return $false }
 
+    # mcpw-0zo.5: also record the repo HEAD, so a stamp can be traced back to a
+    # commit instead of only to a moment. Best-effort and deliberately cheap:
+    # git is asked ONLY when the path really is a git repo, so synthetic and
+    # scratch directories pay nothing and never depend on git being installed.
+    $head = ''
+    if ($Path -and (Test-Path -LiteralPath (Join-Path $Path '.git'))) {
+        try {
+            $h = & git -C $Path rev-parse HEAD 2>$null
+            if ($h) { $head = ([string]$h).Trim() }
+        } catch { }
+    }
     $state = Read-McpProvisionState -StateDir $dir
     $state[$Mcp] = [pscustomobject]@{
         At     = (Get-Date).ToString('o')
         Tool   = [string]$Tool
         Detail = [string]$Detail
+        Head   = $head
     }
     $json = $null
     try { $json = $state | ConvertTo-Json -Depth 6 } catch { return $false }
@@ -591,10 +603,48 @@ function Start-McpProvisionStep {
 
     if (-not $Force) {
         if (Test-McpProvisionStamp -Path $root -Mcp $Mcp -StateDir $dir) {
-            $out.Skip = New-McpProvisionRow -Mcp $Mcp -Status 'stamped' `
-                -Reason 'already provisioned (stamp present; use -Force to re-run)' `
-                -Tool '' -Stamp $dir
-            return $out
+            # mcpw-0zo.5: a stamp no longer AUTHORIZES a skip by itself.
+            #
+            # mcpw-0zo.1 made the stamp honest to EARN (nothing stamps without
+            # the post-command probe agreeing), but a stamp that was honest once
+            # can still go STALE: delete the artifact, or check out a branch
+            # without it, and this step used to report "already provisioned"
+            # forever, until -Force or a hand-pruned stamp. So the SAME probe
+            # the initializer would run is asked here first, and the stamp holds
+            # only while the probe agrees.
+            #
+            # The probe stays the single source of truth: this function knows no
+            # artifact paths, so there is no second copy of them to drift out of
+            # sync with the detection module.
+            #
+            # Two failure directions, deliberately different:
+            #   probe ran and said "initialized"  -> hold the stamp (the normal
+            #                                        idempotent path);
+            #   probe ran and said "not initialized" -> the stamp IS stale: warn
+            #                                        and fall through so the
+            #                                        initializer really runs;
+            #   probe could not answer (Answered=$false) -> that is silence, not
+            #                                        evidence, so the stamp still
+            #                                        holds. Otherwise a grepai
+            #                                        that is briefly down would
+            #                                        trigger a full re-index on
+            #                                        every single launch.
+            if ($root -and (Test-Path -LiteralPath $root -PathType Container)) {
+                $v = Get-McpProvisionAlreadyReason -Mcp $Mcp -Root $root
+                if ($v.Ok) {
+                    $out.Skip = New-McpProvisionRow -Mcp $Mcp -Status 'stamped' `
+                        -Reason "already provisioned (stamp present and the probe agrees: $($v.Reason); use -Force to re-run)" `
+                        -Tool '' -Stamp $dir
+                    return $out
+                }
+                if (-not $v.Answered) {
+                    $out.Skip = New-McpProvisionRow -Mcp $Mcp -Status 'stamped' `
+                        -Reason "already provisioned (stamp present; the probe could not answer: $($v.Reason); use -Force to re-run)" `
+                        -Tool '' -Stamp $dir
+                    return $out
+                }
+                Write-Warning "MCP provision: the '$Mcp' stamp is stale - $($v.Reason). Re-running the initializer."
+            }
         }
     }
     if (-not $root) {
@@ -621,8 +671,20 @@ function Start-McpProvisionStep {
 
 function Get-McpProvisionAlreadyReason {
     # Run the detection module's probe for one MCP. Returns a hashtable
-    # @{ Ok = [bool]; Reason = <text> }. Never throws: a probe that cannot
-    # answer counts as "not initialized", which is the safe direction.
+    # @{ Ok = [bool]; Answered = [bool]; Reason = <text> }. Never throws: a
+    # probe that cannot answer counts as "not initialized", which is the safe
+    # direction.
+    #
+    # `Answered` (mcpw-0zo.5) separates the two ways Ok can be $false:
+    #   Answered=$true  -> the probe ran and returned a real verdict, and the
+    #                      verdict is "not initialized";
+    #   Answered=$false -> the probe could not run at all (no such probe, the
+    #                      function is not loaded, or it threw). That is
+    #                      SILENCE, not evidence.
+    # Callers that invalidate a stamp must honour the difference: only a real
+    # verdict proves the artifact is gone. Treating silence as "gone" would
+    # re-run an expensive initializer on every launch merely because its tool
+    # was momentarily unavailable.
     param([string]$Mcp, [string]$Root, [string]$ProbeOutput)
     $probe = @{
         'memtrace'    = 'Test-MemtraceInitialized'
@@ -633,9 +695,9 @@ function Get-McpProvisionAlreadyReason {
         'graft'       = 'Test-GraftInitialized'
     }
     $fn = $probe[$Mcp]
-    if (-not $fn) { return @{ Ok = $false; Reason = "no probe for $Mcp" } }
+    if (-not $fn) { return @{ Ok = $false; Answered = $false; Reason = "no probe for $Mcp" } }
     if (-not (Get-Command $fn -ErrorAction SilentlyContinue)) {
-        return @{ Ok = $false; Reason = "detection probe $fn not available" }
+        return @{ Ok = $false; Answered = $false; Reason = "detection probe $fn not available" }
     }
     $reason = ''
     $ok = $false
@@ -643,9 +705,9 @@ function Get-McpProvisionAlreadyReason {
         if ($ProbeOutput) { $ok = [bool](& $fn -Path $Root -Reason ([ref]$reason) -ProbeOutput $ProbeOutput) }
         else              { $ok = [bool](& $fn -Path $Root -Reason ([ref]$reason)) }
     } catch {
-        return @{ Ok = $false; Reason = "detection probe threw: $($_.Exception.Message)" }
+        return @{ Ok = $false; Answered = $false; Reason = "detection probe threw: $($_.Exception.Message)" }
     }
-    return @{ Ok = $ok; Reason = $reason }
+    return @{ Ok = $ok; Answered = $true; Reason = $reason }
 }
 
 function Get-McpProvisionPostCommandGate {

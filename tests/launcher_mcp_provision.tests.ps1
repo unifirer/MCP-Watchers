@@ -368,7 +368,13 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
             $stampedKeys = @($stampDoc.PSObject.Properties | ForEach-Object { $_.Name })
             ($stampedKeys | Sort-Object) -join ',' | Should -Be 'graft,graphenium,graphify-rs,grepai,memtrace,repowise'
             Test-Path -LiteralPath $log -PathType Leaf | Should -BeTrue
-            $callsAfterFirst = @(Get-Content -LiteralPath $log).Count
+            # mcpw-0zo.5: two probes do not read a file, they ASK the tool -
+            # grepai runs `status --no-ui` and repowise runs `doctor`. Validating
+            # a stamp therefore invokes those fakes too, and every fake logs its
+            # argv. A probe asking a question is not a build re-running, so the
+            # idempotence count excludes those two verbs.
+            $callsAfterFirst = @(Get-Content -LiteralPath $log |
+                Where-Object { $_ -notmatch 'status --no-ui' -and $_ -notmatch '\bdoctor\b' }).Count
             ($callsAfterFirst -ge 6) | Should -BeTrue -Because 'every step should have invoked its tool at least once'
 
             # ---- run 2: stamp short-circuits everything -----------------------
@@ -381,8 +387,12 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
             foreach ($row in @($second.Results)) {
                 $row.Reason | Should -Match 'stamp'
             }
-            # THE assertion: not one tool was spawned again.
-            (@(Get-Content -LiteralPath $log).Count -eq $callsAfterFirst) | Should -BeTrue -Because 'the second run must spawn nothing'
+            # THE assertion: not one initializer ran again. Probe questions are
+            # excluded exactly as above - grepai `status --no-ui` and repowise
+            # `doctor` are the stamp being VERIFIED, not a step being re-run.
+            $callsAfterSecond = @(Get-Content -LiteralPath $log |
+                Where-Object { $_ -notmatch 'status --no-ui' -and $_ -notmatch '\bdoctor\b' }).Count
+            ($callsAfterSecond -eq $callsAfterFirst) | Should -BeTrue -Because 'the second run must spawn nothing'
 
             # ---- -Force ignores the stamp -------------------------------------
             # The artifacts have to go first. -Force bypasses the STAMP, not the
@@ -908,6 +918,54 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
             (Test-McpProvisionStamp -Path $repo -Mcp 'memtrace') | Should -BeFalse
         } finally {
             $env:Path = $savedPath
+            Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'mcpw-0zo.5: a stamp holds only while the probe agrees, and silence is not a verdict' {
+        $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+        . (Join-Path $repoRoot 'Modules\watcher_mcp_detect.ps1')
+        . (Join-Path $repoRoot 'Modules\watcher_mcp_provision.ps1')
+
+        $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ('mcpw-0zo5-' + [guid]::NewGuid().ToString('N'))
+        $repo = Join-Path $sandbox 'repo'
+        $null = New-Item -ItemType Directory -Path $repo -Force
+        try {
+            # graft's probe keys on graft/.graph/wiring.json AND graft/INDEX.md,
+            # both plain files, so this case needs no fake tool at all.
+            $null = New-Item -ItemType Directory -Path (Join-Path $repo 'graft\.graph') -Force
+            [System.IO.File]::WriteAllText((Join-Path $repo 'graft\.graph\wiring.json'), '{}')
+            [System.IO.File]::WriteAllText((Join-Path $repo 'graft\INDEX.md'), '# graph')
+            (Set-McpProvisionStamp -Path $repo -Mcp 'graft' -Detail 'unit' -Tool 'C:\fake\graft.cmd') | Should -BeTrue
+
+            # (1) stamp present AND artifact present -> still short-circuits. This
+            #     is the idempotence contract, and it must survive the fix.
+            $ok = Start-McpProvisionStep -Mcp 'graft' -ToolName 'graft' -Path $repo
+            $ok.Skip.Status | Should -Be 'stamped'
+            $ok.Skip.Reason | Should -Match 'probe agrees'
+
+            # (2) -Force still bypasses the stamp even while the probe agrees.
+            $forced = Start-McpProvisionStep -Mcp 'graft' -ToolName 'graft' -Path $repo -Force
+            $forced.Skip | Should -BeNullOrEmpty
+
+            # (3) THE REGRESSION THIS BEAD FIXES: delete the artifact and the
+            #     stamp must STOP authorizing the skip. Before mcpw-0zo.5 this
+            #     returned 'stamped' forever - delete the graph, or check out a
+            #     branch without it, and the step never ran again.
+            Remove-Item -LiteralPath (Join-Path $repo 'graft\.graph\wiring.json') -Force
+            $stale = Start-McpProvisionStep -Mcp 'graft' -ToolName 'graft' -Path $repo
+            $stale.Skip.Status | Should -Not -Be 'stamped' -Because 'a stamp whose artifact is gone must not short-circuit'
+            $stale.Skip.Reason | Should -Not -Match 'already provisioned'
+
+            # (4) FAIL-OPEN: an MCP whose probe cannot answer has not proved the
+            #     artifact is gone, so the stamp still holds. Without this a tool
+            #     that is briefly unavailable would force a full re-index on
+            #     every single launch - silence is not evidence.
+            $null = Set-McpProvisionStamp -Path $repo -Mcp 'nosuchmcp' -Detail 'unit' -Tool 'C:\fake\x.cmd'
+            $silent = Start-McpProvisionStep -Mcp 'nosuchmcp' -ToolName 'nosuchmcp' -Path $repo
+            $silent.Skip.Status | Should -Be 'stamped'
+            $silent.Skip.Reason | Should -Match 'could not answer'
+        } finally {
             Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
         }
     }

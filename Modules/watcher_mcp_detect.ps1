@@ -329,20 +329,23 @@ function Test-GrapheniumInitialized {
     .DESCRIPTION
         Signals, in order:
           1. the gm CLI is on PATH;
-          2. <Path>/.graphenium/ exists - the dir gm READS policy.json from;
+          2. <Path>/.grapheniumignore exists - the FILE `gm init` writes;
           3. <Path>/graphenium-out/graph.json exists.
 
-        BOTH artifacts are required. Measured 2026-09-20 in this repo: the graph
-        was present (graphenium-out/graph.json, 241 nodes, from an earlier
-        `gm run`) while .graphenium/ did NOT exist. That state is NOT
-        initialized - the MCP server is not wired to the workspace. The
-        directory is therefore the discriminating signal, and it is checked
-        first so the reason names it.
+        BOTH artifacts are required. Measured 2026-09-20 (gm 0.19.3) in a
+        scratch repo: `gm init [PATH]` exits 0 and writes `.grapheniumignore` -
+        a FILE, and the only artifact it produces. It does NOT create the
+        `.graphenium/` directory, and no gm subcommand does; strings in the
+        binary show the only `.graphenium/` references are READS of
+        `.graphenium/policy.json`. Re-running `gm init` reports "already
+        initialized (.grapheniumignore exists)", which is the tool's own
+        statement that this file IS the workspace marker.
 
-        Do NOT read signal 2 as "gm init ran". Measured in a scratch repo:
-        `gm init [PATH]` exits 0 and writes `.grapheniumignore` - a FILE, and
-        the only artifact it produces. It does NOT create the `.graphenium/`
-        directory; gm only ever READS `.graphenium/policy.json` out of it.
+        Signal 2 therefore keys on `.grapheniumignore`, matching the artifact
+        the provisioner's `gm init` actually produces. A probe that demanded
+        `.graphenium/` could never return true and the bootstrap would never
+        converge. The graph remains a separate requirement: it is `gm run`,
+        which the launcher's own watcher owns.
     #>
     param(
         [string] $Path,
@@ -356,15 +359,15 @@ function Test-GrapheniumInitialized {
     $bad = Test-McpDetectRootUsable -Root $root
     if ($bad) { Set-McpDetectReason $Reason $bad; return $false }
 
-    if (-not (Test-Path -LiteralPath (Join-Path $root '.graphenium') -PathType Container)) {
-        Set-McpDetectReason $Reason 'workspace config missing: .graphenium/ (gm reads policy.json here; gm init does not create it)'
+    if (-not (Test-Path -LiteralPath (Join-Path $root '.grapheniumignore') -PathType Leaf)) {
+        Set-McpDetectReason $Reason 'workspace config missing: .grapheniumignore (gm init writes this file; no gm subcommand creates .graphenium/)'
         return $false
     }
     $rel = 'graphenium-out/graph.json'
     if (-not (Test-Path -LiteralPath (Join-Path $root $rel) -PathType Leaf)) {
         Set-McpDetectReason $Reason "graph missing: $rel"; return $false
     }
-    Set-McpDetectReason $Reason '.graphenium/ workspace config present and graphenium-out/graph.json present'
+    Set-McpDetectReason $Reason '.grapheniumignore workspace config present and graphenium-out/graph.json present'
     return $true
 }
 

@@ -254,7 +254,7 @@ Describe 'watcher_mcp_detect: one initialization probe per MCP' {
             $ok = [bool](Test-GrapheniumInitialized -Path $sandbox -Reason ([ref]$reason))
             $ok | Should -BeFalse
             if (Resolve-McpDetectTool -Name 'gm') {
-                $reason | Should -Match 'graphenium/'
+                $reason | Should -Match 'grapheniumignore'
             } else {
                 $reason | Should -Match '^binary not found:'
             }

@@ -457,8 +457,19 @@ def test_grepai_supervisor_arms_the_idle_ttl():
 
 def test_grepai_supervisor_reaps_on_idle_and_never_relaunches():
     region = _scriptblock_regions(_read(LAUNCHER))["$supervisorScript = {"]
-    assert re.search(r"if \(\$idleMin -ge \$idleTtlMin\)", region), (
-        "the reap must be gated on the measured idle age reaching the TTL."
+    # mcpw-rkg.4 split the single idle gate in two: the first grepai scan has to
+    # survive the TTL, so the reap only fires once that scan is finished. Both
+    # halves are locked - the deferral so it cannot be dropped again, and the
+    # compound gate so the reap still keys off the measured idle age.
+    assert re.search(r"if \(\$firstScanRunning -and \$idleMin -ge \$idleTtlMin\)", region), (
+        "the idle reap must be deferred while the FIRST scan is still running "
+        "(mcpw-rkg.4)."
+    )
+    assert re.search(
+        r"if \(\(-not \$firstScanRunning\) -and \$idleMin -ge \$idleTtlMin\)", region
+    ), (
+        "the reap must be gated on the measured idle age reaching the TTL, "
+        "once the first scan is done."
     )
     assert "Invoke-CimMethod" in region and "Terminate" in region, (
         "the idle reap must terminate the watch daemon (CimInstance has no "

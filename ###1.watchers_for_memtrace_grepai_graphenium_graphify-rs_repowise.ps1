@@ -1954,27 +1954,349 @@ $repowiseLog = Join-Path $logsDir "repowise.log"
 $repowiseExe = Join-Path $env:APPDATA "uv\tools\repowise\Scripts\repowise.exe"
 if (-not (Test-Path -LiteralPath $repowiseExe)) { $repowiseExe = "" }
 
-# mcpw-qzm preflight: repowise 0.49.0 declares sqlalchemy/alembic/uvicorn/litellm as
-# CORE deps, but its uv-tool venv has silently lost them before (2026-09-19). When that
-# happens `repowise --version` still prints 0.49.0 -- it never imports those modules --
-# so the install looks healthy while EVERY real subcommand dies at import with
-# "ModuleNotFoundError: No module named 'sqlalchemy'". The watcher then crashed in under
-# a second and the repowise pane closed ~30s later (see mcpw-c1t). Probe the venv cheaply
-# (a directory stat; a real `repowise status` import probe costs ~13s) and name the fix
-# loudly, so this failure is never silent again.
-if ($repowiseExe) {
-    $repowiseSite = Join-Path $env:APPDATA "uv\tools\repowise\Lib\site-packages"
-    $repowiseMissing = @()
-    foreach ($repowiseDep in @("sqlalchemy", "alembic", "uvicorn", "litellm")) {
-        if (-not (Test-Path -LiteralPath (Join-Path $repowiseSite $repowiseDep))) { $repowiseMissing += $repowiseDep }
+# >>>>> mcpw-a0g repowise dependency guard (test-extracted region) >>>>>
+# repowise 0.49.0 declares sqlalchemy/alembic/uvicorn/litellm as CORE deps, but its
+# uv-tool venv has silently lost them before (2026-09-19). When that happens
+# `repowise --version` still prints 0.49.0 -- it never imports those modules -- so the
+# install looks healthy while EVERY real subcommand dies at import, and the watcher
+# crashed in under a second (repowise pane closed ~30s later; see mcpw-c1t).
+#
+# mcpw-qzm added a guard, but it was a `Test-Path` sentinel over the four DIRECT deps
+# only. mcpw-a0g measured why that is not enough:
+#   * `Test-Path site-packages/sqlalchemy` is TRUE for a half-uninstalled sqlalchemy.
+#     A package directory whose `__init__.py` has been removed still IMPORTS: Python
+#     resolves it as a namespace package, so `import sqlalchemy` succeeds and returns
+#     an empty module. The failure only surfaces deeper, as
+#     "ImportError: cannot import name 'ColumnElement' from 'sqlalchemy' (unknown
+#     location)" out of `repowise/core/workspace/registry.py:19` -- i.e. `watch`,
+#     `update` and `reindex` are all dead while the sentinel is silent.
+#   * The four-name list missed the TRANSITIVE deps (greenlet via
+#     `sqlalchemy[asyncio]`, aiosqlite) that the same import chain needs.
+#
+# The guard therefore VERIFIES BY IMPORTING in the tool's own interpreter, and covers
+# the transitive closure:
+#   1. real imports of the modules the watcher's import graph needs (cheap set; ~3s);
+#   2. the full declared requirement closure of the installed repowise dist, checked
+#      for presence and for a locatable top-level module (find_spec, no execution).
+# `litellm` is deliberately NOT imported by default: measured at ~12s on this box
+# against ~3s for the rest, and its presence/locatability is still covered by (2).
+# Set MCPW_REPOWISE_DEEP_PROBE=1 to add it to the import set.
+#
+# Auto-repair is OFF by default. Repair mutates a tool install OUTSIDE this repo
+# (network fetch + rewrite of a venv other tooling shares) and it CANNOT succeed
+# while a `repowise watch` is live: the running interpreter holds sqlalchemy's
+# cyextension .pyd, so uv fails with "Access is denied (os error 5)" -- after having
+# already uninstalled part of the package, which makes the venv WORSE than it was
+# (measured 2026-09-20: that is exactly how sqlalchemy's dist-info was lost). So the
+# default is a loud warning naming the exact repair command; opt in with
+# MCPW_REPOWISE_AUTOREPAIR=1 (the watcher must be stopped first).
+$script:McpwVenvDepProbeSource = @'
+import sys, importlib, importlib.util, importlib.metadata as md
+
+try:
+    from packaging.requirements import Requirement
+except Exception:
+    Requirement = None
+
+def _parse(spec):
+    """(name, specifier) for a non-extra, marker-true requirement, else (None, '')."""
+    if Requirement is not None:
+        try:
+            req = Requirement(spec)
+            if req.marker is not None and not req.marker.evaluate():
+                return None, ''
+            return req.name, str(req.specifier)
+        except Exception:
+            return None, ''
+    name = spec
+    for sep in ('[', '<', '>', '=', '!', '~', ';', '(', ' '):
+        i = name.find(sep)
+        if i >= 0:
+            name = name[:i]
+    return (name.strip() or None), ''
+
+def closure(root):
+    """Walk root's declared requirements transitively. Returns the installed
+    (name, dist) pairs, the names that are declared but NOT installed, and a
+    name -> specifier map so a repair command can be rebuilt from metadata."""
+    seen, installed, uninstalled, specs = set(), [], [], {}
+    def walk(reqs):
+        for spec in reqs:
+            name, specifier = _parse(spec)
+            if not name:
+                continue
+            key = name.lower()
+            if key not in specs:
+                specs[key] = specifier
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                d = md.distribution(name)
+            except md.PackageNotFoundError:
+                uninstalled.append((name, specifier))
+                continue
+            installed.append((name, d))
+            try:
+                walk(d.requires or [])
+            except Exception:
+                pass
+    walk([root])
+    return installed, uninstalled, specs
+
+def _findable(name):
+    try:
+        return importlib.util.find_spec(name) is not None
+    except Exception:
+        return False
+
+mods = [m for m in sys.argv[1:] if m]
+failed = []
+for m in mods:
+    try:
+        importlib.import_module(m)
+    except BaseException as e:
+        failed.append((m, '%s: %s' % (type(e).__name__, e)))
+
+installed, uninstalled, specs = closure('repowise')
+
+# A dep can be installed and still be unusable if its declared top-level module is
+# gone. top_level.txt names them; find_spec locates them without executing.
+unlocatable = []
+for name, d in installed:
+    tops = []
+    try:
+        txt = d.read_text('top_level.txt')
+        if txt:
+            tops = [t.strip() for t in txt.splitlines() if t.strip()]
+    except Exception:
+        pass
+    if tops and not any(_findable(t) for t in tops):
+        unlocatable.append(name)
+
+repair = {}
+for name, specifier in uninstalled:
+    repair[name.lower()] = name + specifier
+for module, _ in failed:
+    dist = module.split('.')[0]
+    if dist.lower() in repair:
+        continue
+    try:
+        repair[dist.lower()] = '%s==%s' % (dist, md.distribution(dist).version)
+    except Exception:
+        repair[dist.lower()] = dist
+
+for module, err in failed:
+    print('IMPORTFAIL\t%s\t%s' % (module, err))
+for name, _ in uninstalled:
+    print('UNINSTALLED\t' + name)
+for name in unlocatable:
+    print('NOTFOUND\t' + name)
+for key in sorted(repair):
+    print('REPAIR\t' + repair[key])
+print('CLOSURE\t%d\t%d' % (len(installed), len(uninstalled)))
+print('VERDICT\t' + ('OK' if not (failed or uninstalled or unlocatable) else 'BROKEN'))
+'@
+
+function Invoke-ToolVenvDependencyProbe {
+    # Verify a tool venv by ACTUALLY IMPORTING in the tool's own interpreter, plus a
+    # transitive-closure presence check. Returns a report object; never throws and
+    # never mutates anything.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$PythonExe,
+        [string[]]$ImportModule = @('sqlalchemy', 'sqlalchemy.ext.asyncio', 'alembic', 'uvicorn', 'greenlet', 'aiosqlite'),
+        [string]$Distribution = 'repowise',
+        [int]$TimeoutSeconds = 180
+    )
+
+    $report = [pscustomobject]@{
+        PythonExe                = $PythonExe
+        Distribution             = $Distribution
+        Probed                   = $false
+        Ok                       = $false
+        FailedModules            = @()
+        MissingDistributions     = @()
+        UnlocatableDistributions = @()
+        ClosureInstalled         = 0
+        ClosureMissing           = 0
+        Detail                   = @()
+        Error                    = ''
     }
-    if ($repowiseMissing.Count -gt 0) {
-        Write-Warning ("repowise install is BROKEN: missing core dependency module(s) [$($repowiseMissing -join ', ')] in $repowiseSite. " +
-            "Every repowise subcommand dies at import and the repowise watcher/pane will close. Fix: uv pip install " +
-            "--python `"$env:APPDATA\uv\tools\repowise\Scripts\python.exe`" `"sqlalchemy[asyncio]<3,>=2.0`" " +
-            "`"alembic<2,>=1.13`" `"uvicorn[standard]<1,>=0.32`" `"litellm<2,>=1.84.0`"")
+
+    if (-not $PythonExe -or -not (Test-Path -LiteralPath $PythonExe)) {
+        $report.Error = "interpreter not found: $PythonExe"
+        return $report
+    }
+
+    $probeFile = Join-Path ([System.IO.Path]::GetTempPath()) 'mcpw-tool-venv-dep-probe.py'
+    try {
+        $utf8 = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($probeFile, $script:McpwVenvDepProbeSource, $utf8)
+    } catch {
+        $report.Error = "could not write probe script: $($_.Exception.Message)"
+        return $report
+    }
+
+    $stdoutFile = [System.IO.Path]::GetTempFileName()
+    $stderrFile = [System.IO.Path]::GetTempFileName()
+    try {
+        $probeArgs = @('"' + $probeFile + '"', '"' + $Distribution + '"')
+        foreach ($m in $ImportModule) { $probeArgs += '"' + $m + '"' }
+        $proc = Start-Process -FilePath $PythonExe -ArgumentList $probeArgs -NoNewWindow -PassThru `
+            -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile
+        if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
+            try { $proc.Kill() } catch { }
+            $report.Error = "probe timed out after ${TimeoutSeconds}s"
+            return $report
+        }
+        $out = @(Get-Content -LiteralPath $stdoutFile -ErrorAction SilentlyContinue) +
+               @(Get-Content -LiteralPath $stderrFile -ErrorAction SilentlyContinue)
+    } catch {
+        $report.Error = "probe failed to run: $($_.Exception.Message)"
+        return $report
+    } finally {
+        Remove-Item -LiteralPath $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
+    }
+
+    $report.Probed = $true
+    foreach ($line in @($out)) {
+        $parts = ([string]$line) -split "`t"
+        switch ($parts[0]) {
+            'IMPORTFAIL' {
+                $report.FailedModules += $parts[1]
+                $report.Detail += "import failed: $($parts[1]) [$($parts[2])]"
+            }
+            'UNINSTALLED' {
+                $report.MissingDistributions += $parts[1]
+                $report.Detail += "declared but not installed: $($parts[1])"
+            }
+            'NOTFOUND' {
+                $report.UnlocatableDistributions += $parts[1]
+                $report.Detail += "installed but its top-level module is not locatable: $($parts[1])"
+            }
+            'CLOSURE' {
+                $report.ClosureInstalled = [int]$parts[1]
+                $report.ClosureMissing = [int]$parts[2]
+            }
+        }
+    }
+
+    $report.Ok = ($report.Probed -and
+        -not $report.Error -and
+        $report.FailedModules.Count -eq 0 -and
+        $report.MissingDistributions.Count -eq 0 -and
+        $report.UnlocatableDistributions.Count -eq 0)
+    return $report
+}
+
+function Get-ToolVenvDependencyRepairCommand {
+    # The documented repair for a drifted uv-tool venv. It uses
+    # --reinstall-package (NOT a bare --reinstall): a bare --reinstall re-resolves
+    # the whole transitive closure of the named packages and was measured to
+    # upgrade websockets 16.1.1 -> 17.1 as a side effect. Scoped to the five
+    # declared deps it touches exactly those five and nothing else.
+    param([Parameter(Mandatory = $true)][string]$PythonExe)
+
+    $specs = @(
+        'sqlalchemy[asyncio]<3,>=2.0'
+        'alembic<2,>=1.13'
+        'uvicorn[standard]<1,>=0.32'
+        'litellm<2,>=1.84.0'
+        'aiosqlite<1,>=0.20'
+    )
+    $pinned = @()
+    foreach ($s in $specs) {
+        $name = ($s -split '[\[<>=!~; ]')[0]
+        $pinned += '--reinstall-package ' + $name
+    }
+    $quoted = @()
+    foreach ($s in $specs) { $quoted += '"' + $s + '"' }
+    return 'uv pip install --python "' + $PythonExe + '" ' + ($pinned -join ' ') + ' ' + ($quoted -join ' ')
+}
+
+function Get-ToolVenvDependencyWarning {
+    # Human-readable, loud, and names the exact repair command. Split out from the
+    # probe so the "detected AND reported" contract is testable on its own.
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [string]$RepairCommand = ''
+    )
+
+    $what = @()
+    if ($Report.MissingDistributions.Count -gt 0) { $what += "not installed: $($Report.MissingDistributions -join ', ')" }
+    if ($Report.FailedModules.Count -gt 0) { $what += "import fails: $($Report.FailedModules -join ', ')" }
+    if ($Report.UnlocatableDistributions.Count -gt 0) { $what += "module missing: $($Report.UnlocatableDistributions -join ', ')" }
+    if ($what.Count -eq 0) { $what += 'unknown dependency fault' }
+
+    $msg = "repowise install is BROKEN ($($what -join '; ')). " +
+        "Every repowise subcommand dies at import even though ``repowise --version`` still prints a version, " +
+        "so the repowise watcher/pane will close. Verified by importing in $($Report.PythonExe) " +
+        "(declared closure: $($Report.ClosureInstalled) installed, $($Report.ClosureMissing) missing)."
+    if ($RepairCommand) {
+        $msg += " Fix: $RepairCommand  -- run it with the repowise watcher STOPPED; a live ``repowise watch`` " +
+            "holds sqlalchemy's .pyd and makes the reinstall fail with 'Access is denied' after partially " +
+            "uninstalling the package."
+    }
+    return $msg
+}
+
+function Repair-ToolVenvDependencies {
+    # Opt-in only (MCPW_REPOWISE_AUTOREPAIR=1). Mutates a tool install outside this
+    # repo, so it is never automatic.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$PythonExe,
+        [Parameter(Mandatory = $true)][string]$Command
+    )
+
+    if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+        Write-Warning "repowise auto-repair skipped: 'uv' is not on PATH."
+        return $false
+    }
+    Write-Host "repowise auto-repair: $Command"
+    try {
+        # Run the exact documented string, so what executes is what the warning named.
+        $out = Invoke-Expression $Command 2>&1
+        $code = $LASTEXITCODE
+    } catch {
+        Write-Warning "repowise auto-repair failed to run: $($_.Exception.Message)"
+        return $false
+    }
+    foreach ($l in @($out)) { Write-Host "  $l" }
+    if ($code -ne 0) {
+        Write-Warning "repowise auto-repair exited $code - the venv may now be PARTIALLY uninstalled. " +
+            "Stop the repowise watcher and re-run the command above."
+        return $false
+    }
+    return $true
+}
+
+if ($repowiseExe) {
+    $repowisePython = Join-Path $env:APPDATA "uv\tools\repowise\Scripts\python.exe"
+    $repowiseImportModules = @('sqlalchemy', 'sqlalchemy.ext.asyncio', 'alembic', 'uvicorn', 'greenlet', 'aiosqlite')
+    if ($env:MCPW_REPOWISE_DEEP_PROBE -match '^(?i)(1|true|yes|on)$') { $repowiseImportModules += 'litellm' }
+
+    $repowiseDep = Invoke-ToolVenvDependencyProbe -PythonExe $repowisePython -Distribution 'repowise' -ImportModule $repowiseImportModules
+    if ($repowiseDep.Error) {
+        Write-Warning "repowise dependency preflight could not run: $($repowiseDep.Error)"
+    } elseif ($repowiseDep.Ok) {
+        Write-Host "repowise dependency preflight OK ($($repowiseDep.ClosureInstalled) declared deps installed; imports verified)."
+    } else {
+        $repowiseRepair = Get-ToolVenvDependencyRepairCommand -PythonExe $repowisePython
+        Write-Warning (Get-ToolVenvDependencyWarning -Report $repowiseDep -RepairCommand $repowiseRepair)
+        if ($env:MCPW_REPOWISE_AUTOREPAIR -match '^(?i)(1|true|yes|on)$') {
+            if (Repair-ToolVenvDependencies -PythonExe $repowisePython -Command $repowiseRepair) {
+                $recheck = Invoke-ToolVenvDependencyProbe -PythonExe $repowisePython -Distribution 'repowise' -ImportModule $repowiseImportModules
+                if ($recheck.Ok) { Write-Host "repowise auto-repair succeeded; dependency closure and imports verified." }
+                else { Write-Warning "repowise auto-repair ran but the dependency probe STILL fails - see the warning above." }
+            }
+        } else {
+            Write-Host "repowise auto-repair is OFF (set MCPW_REPOWISE_AUTOREPAIR=1 to enable it)."
+        }
     }
 }
+# <<<<< mcpw-a0g repowise dependency guard (end) <<<<<
 
 # --- Graphenium live rebuild (inline, file-change driven `gm run`) ----------
 # The gm <-> Ollama bridge and the one-time `gm run` semantic build used to live
@@ -4528,6 +4850,22 @@ $backendSupervisorScript = {
             if ($p) { Write-BackendSupLog "relaunched graphiti-embed backend (PID $($p.Id)) on :8003" }
         } catch { Write-BackendSupLog "graphiti-embed relaunch failed: $($_.Exception.Message)" }
     }
+    function Start-LeanCtxBackend {
+        $exe = $null
+        foreach ($cand in @('lean-ctx', 'lean-ctx.exe', 'lean-ctx.cmd', 'lean-ctx.bat')) {
+            $c = Get-Command $cand -ErrorAction SilentlyContinue
+            if ($c) { $exe = $c.Source; break }
+        }
+        if (-not $exe) { Write-BackendSupLog "lean-ctx not found on PATH - skipping relaunch"; return }
+        $logDir = Join-Path $env:LOCALAPPDATA "lean-ctx"
+        $log = Join-Path $logDir "proxy-4444.log"
+        try { New-Item -ItemType Directory -Path $logDir -Force | Out-Null } catch {}
+        try {
+            $p = Start-Process -FilePath $exe -ArgumentList "proxy", "start", "--port=4444" `
+                -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError "$log.err" -PassThru
+            if ($p) { Write-BackendSupLog "relaunched lean-ctx proxy (PID $($p.Id)) on :4444" }
+        } catch { Write-BackendSupLog "lean-ctx relaunch failed: $($_.Exception.Message)" }
+    }
     Write-BackendSupLog "$BackendName supervisor started (port $Port, Option A: exits with launcher, backend persists)"
     Start-Sleep -Seconds 30
     $fails = 0
@@ -4580,6 +4918,7 @@ $backendSupervisorScript = {
                     elseif ($BackendName -eq 'mail') { Start-MailBackend }
                     elseif ($BackendName -eq 'claude-mcp') { Start-ClaudeBackend }
                     elseif ($BackendName -eq 'graphiti-embed') { Start-GraphitiEmbedBackend }
+                    elseif ($BackendName -eq 'lean-ctx') { Start-LeanCtxBackend }
                     Start-Sleep 2
                 }
             }
@@ -4625,6 +4964,7 @@ $supCerememoryLog = Join-Path $env:LOCALAPPDATA 'cerememory\supervisor.log'
 $supMailLog = Join-Path $env:LOCALAPPDATA 'mcp-agent-mail\supervisor.log'
 $supClaudeLog = Join-Path $env:LOCALAPPDATA 'claude-mcp-server\supervisor.log'
 $supGraphitiEmbedLog = Join-Path $env:LOCALAPPDATA 'graphiti-embed\supervisor.log'
+$supLeanCtxLog = Join-Path $env:LOCALAPPDATA 'lean-ctx\supervisor.log'
 function Start-BackendSupervisor {
     param($Name, $Port, $Health, $Log)
     if (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue) {
@@ -4639,6 +4979,7 @@ $script:cerememorySupJob = Start-BackendSupervisor -Name 'cerememory' -Port 8420
 $script:mailSupJob = Start-BackendSupervisor -Name 'mail' -Port 8765 -Health '' -Log $supMailLog
 $script:claudeSupJob = Start-BackendSupervisor -Name 'claude-mcp' -Port 8080 -Health '' -Log $supClaudeLog
 $script:graphitiEmbedSupJob = Start-BackendSupervisor -Name 'graphiti-embed' -Port 8003 -Health 'http://127.0.0.1:8003/health' -Log $supGraphitiEmbedLog
+$script:leanCtxSupJob = Start-BackendSupervisor -Name 'lean-ctx' -Port 4444 -Health '' -Log $supLeanCtxLog
 
 # (graphify-rs ignore-aware wrapper is launched detached + logged above, replacing graphify-rs watch)
 

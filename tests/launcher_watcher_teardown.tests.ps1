@@ -96,9 +96,12 @@ Describe 'graphify_ignore_gate excludes test artifacts' {
 
     # mcpw-msy: the graphify-rs pane died ~1 min after the grid was built and the
     # launcher never respawned it. dev_tools\graphify-watch-wrapper.ps1 line 28
-    # dot-sources Modules\graphify_ignore_gate.ps1, which was never ported to
-    # this repo (it exists in VAD; the two wrappers are byte-identical). The
-    # dot-source failed, then the first batched flush called
+    # dot-sources Modules\graphify_ignore_gate.ps1. At the time of the bug that
+    # module was missing from this repo - the extraction had not carried it over
+    # - and d7389ad (2026-09-18) restored it, so it IS here now. Do not read this
+    # comment as saying otherwise; the two tests below are what keep it from
+    # going missing again.
+    # The dot-source failed, then the first batched flush called
     # Test-PathsIgnoredByGraphify, got CommandNotFoundException, and the wrapper
     # exited - so the tailer saw its PID gone and closed the pane. These two
     # tests pin both halves: the file the wrapper depends on, and the batch form

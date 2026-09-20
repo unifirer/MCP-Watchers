@@ -76,6 +76,44 @@ Describe 'watcher_patterns shared sweep list' {
         Test-WatcherSweepMatch -CommandLine $backend -Pattern 'codegraph watch' | Should Be $false
     }
 
+    It 'contains a dedicated entry for the heimdall reconciler sweep' {
+        . $patternsModule
+        # mcpw-qxj.4: the reconciler runs as node.exe <...>\bin\heimdall.js
+        # daemon. The verb is part of the token on purpose - Toolport's heimdall
+        # MCP server is the SAME heimdall.js, ending in `mcp`.
+        $hd = @($script:WatcherSweepPatterns | Where-Object {
+            $_.Name -eq 'node.exe' -and $_.Pattern -eq 'heimdall.js daemon' })
+        $hd.Count | Should Be 1
+        # ...and the bare file name must NOT be a node.exe sweep entry.
+        $broad = @($script:WatcherSweepPatterns | Where-Object {
+            $_.Name -eq 'node.exe' -and $_.Pattern -eq 'heimdall.js' })
+        $broad.Count | Should Be 0
+    }
+
+    It 'sweeps the heimdall reconciler but never the heimdall MCP backend' {
+        . $patternsModule
+        $daemon = 'C:\nvm4w\nodejs\node.exe J:\Programs\npm-global\node_modules\@arihantdeva\heimdall\bin\heimdall.js daemon'
+        Test-WatcherSweepMatch -CommandLine $daemon -Pattern 'heimdall.js daemon' | Should Be $true
+        $mcp = 'C:\nvm4w\nodejs\node.exe J:\Programs\npm-global\node_modules\@arihantdeva\heimdall\bin\heimdall.js mcp'
+        Test-WatcherSweepMatch -CommandLine $mcp -Pattern 'heimdall.js daemon' | Should Be $false
+    }
+
+    It 'names neither program called graft, so neither can be swept (mcpw-qxj.6)' {
+        . $patternsModule
+        # mcpw-qxj.6: two UNRELATED programs on this box are called "graft".
+        # (a) GRAFT IS HEIMDALL'S BACKEND - /c/Users/yuni/.heimdall/config.json
+        #     reads "backend": "graft"; graftd.exe is only its daemon binary.
+        # (b) The graft/ directory and the graft MCP in this repo are the npm
+        #     graft CLI v0.18.0, a per-repo context graph (build/ask/mcp).
+        # Graft is a PREREQUISITE started once and the graft MCP is Toolport's,
+        # so neither may appear in a sweep pattern. Asserting on the pattern
+        # set (not on sample command lines) is what makes that durable: a match
+        # -all entry with an empty pattern matches every command line, so
+        # sweeping "does this line match?" would pass by accident.
+        $named = @($script:WatcherSweepPatterns | Where-Object { $_.Pattern -match 'graft' })
+        $named.Count | Should Be 0
+    }
+
     It 'contains a dedicated entry for the grepai supervisor sweep' {
         . $patternsModule
         $sup = @($script:WatcherSweepPatterns | Where-Object {

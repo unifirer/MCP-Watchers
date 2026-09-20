@@ -3690,9 +3690,14 @@ if (-not $cgLaunch) {
 # `heimdall daemon` is the SINGLE WRITER to the KB and holds an O_EXCL lock for
 # its lifetime, so this launcher is its ONE starter: do not also run it
 # manually, and never let the sweep adopt a foreign reconciler.
-# PREREQUISITE (mcpw-qxj.3): graftd must already be listening. On Windows it
-# needs --foreground -- its default daemonize mode loads the model and then
-# exits silently with no socket.
+# PREREQUISITE (mcpw-qxj.3): GRAFT must already be listening. Graft is
+# heimdall's backend (~/.heimdall/config.json reads "backend": "graft"); the
+# binary is just its daemon, graftd.exe. On Windows that daemon needs
+# --foreground -- its default daemonize mode loads the model and then exits
+# silently with no socket.
+# DISAMBIGUATION (mcpw-qxj.6): this Graft is NOT the graft/ directory or the
+# `graft` MCP in this repo. Those are the npm graft CLI (v0.18.0, per-repo
+# context graph: build/ask/mcp). Same word, unrelated tool.
 $heimdallLog = Join-Path $logsDir 'heimdall.log'
 $script:heimdallProc = $null
 $heimdallJs = $null

@@ -76,10 +76,19 @@
 #             and does NOT create the `.graphenium/` dir, which gm only ever
 #             READS policy.json from. The graph is `gm run`, which the
 #             launcher's own watcher owns.
-#   graphify-rs  `graphify-rs.toml` is missing (bead mcpw-01g, OPTIONAL/P3).
-#             Without the config file there is nothing to bootstrap, so the step
-#             skips as optional rather than inventing a config. Rebuild argv
-#             comes from Get-GraphifyRebuildArgs (--update --no-llm).
+#   graphify-rs  `graphify-rs.toml` now EXISTS (bead mcpw-01g, OPTIONAL/P3).
+#             `graphify-rs init` (0.8.1) is non-interactive and key-free - the
+#             template it writes has every [llm] line commented out - so the
+#             config was created rather than skipped. One key is PINNED in it:
+#             `output = "graphify-out"`. Measured 2026-09-21 in scratch repos:
+#             graphify-rs 0.8.1's built-in default is NOT repo-local, a bare
+#             build writes to the machine-global store
+#             C:\Users\<user>\.graphify-rs\<repo>-<hash>\, so without the pin
+#             `graphify-out/graph.json` never appears and detection cannot
+#             converge. `no_llm = true` is pinned too (AGENTS.md 3.3.3). The
+#             step still skips as optional when the config is absent, which is
+#             the foreign-repo case. Rebuild argv comes from
+#             Get-GraphifyRebuildArgs (--update --no-llm).
 #   repowise  `.repowise/` store exists (47 pages) but the Claude Code MCP entry
 #             is NOT registered, and that registration is what detection keys
 #             on. The uv-tool venv was repaired today (mcpw-a0g), so the REAL
@@ -696,11 +705,17 @@ function Initialize-GraphifyRsForRepo {
     .SYNOPSIS
         Build the graphify-rs graph, when this repository is configured for it.
     .DESCRIPTION
-        OPTIONAL (bead mcpw-01g, P3). `graphify-rs.toml` is missing in this repo
-        and has never existed; without it there is nothing to build against, and
-        inventing a config would be worse than skipping. So the step skips as
-        optional when the config file is absent, and is marked Optional=$true in
-        the summary so the launcher does not warn about it.
+        OPTIONAL (bead mcpw-01g, P3). The config gate is the whole reason this
+        step is optional: `graphify-rs.toml` is the repo's opt-in, so a
+        repository that has none is skipped as optional rather than having a
+        config invented for it. This repo now HAS one (committed with mcpw-01g),
+        so the step runs here; a foreign repo without one still skips.
+
+        When the config IS absent the reason is a single clear line naming the
+        file, and the summary row carries Optional=$true so the launcher does
+        not warn. A genuinely absent BINARY is reported first and honestly as
+        "binary not found: graphify-rs" (Start-McpBootstrapStep resolves the
+        tool before the config gate).
 
         Rebuild argv comes from the launcher's own Get-GraphifyRebuildArgs, which
         unconditionally carries --no-llm.

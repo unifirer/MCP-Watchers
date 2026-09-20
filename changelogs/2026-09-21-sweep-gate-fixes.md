@@ -115,3 +115,33 @@ mid-run on `New-WatcherPaneScript -Label "empty"`. Another session landed
 suite was running, which replaced the reserved-empty cell with heimdall and
 updated the same assertion. By the time I looked, the test passed. No change
 was needed from me.
+
+### Sandbox artifacts — two more "failures" that are not repo defects
+
+Later full runs (bash and `run_pytest.ps1`, same result) reported two further
+failures. Both are the environment, not the repo — recorded as `mcpw-gz4`:
+
+1. **pytest temp cleanup kills the session.** pytest garbage-collects old
+   numbered temp dirs; the sandbox's safe-delete shim intercepts that with
+   `[safe-delete][SAFE_DELETE_FAIL_CLOSED] … trash-failed` and raises
+   `SystemExit(1)`. The session dies *after* the short test summary but
+   *before* the `N passed` line, so the count is lost.
+
+2. **The shim blocks `filelock`'s `Path.unlink()`.** The launcher shell-suite
+   test in `test_launcher.py` dies with
+   `[safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED] {"count":595,"threshold":50,"scope":"turn"}`.
+   That counter is **turn-scoped**, so once a turn has deleted enough files,
+   every unlink trips it — nothing to do with the launcher.
+
+3. **`--basetemp` inside the repo breaks `test_claim_paths.py`.** With
+   `--basetemp=J:\audio\MCP-Watchers\temp\…`, the tmp dir sits in the git
+   worktree, so `claim_paths` finds a repo and exits 0 where
+   `test_no_store_and_no_repo_is_a_usage_error` expects 2. Verified: the same
+   file is **15 of 15 passing** with the default temp location. That one was my
+   own harness choice, not a defect.
+
+Net: **175 tests are collected**; the two genuine failures above are fixed and
+verified individually; a clean end-to-end count for the whole suite is not
+obtainable inside this sandbox. Run it from a normal shell with
+`tests\run_pytest.ps1` (as `tests\pytest.ini` instructs) and leave `--basetemp`
+at its default or point it outside the repo.

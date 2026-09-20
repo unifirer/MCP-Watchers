@@ -13,7 +13,6 @@ Tiers (in order, printed at startup):
      inclusionai/ling-3.0-flash-sante:free
   3. openrouter nex-agi/nex-n2.5-pro:free
   4. openrouter dots-studio/dots-3-note-preview:free
-  5. surplusintelligence deepseek-v4.1-flash
 
 Each candidate is forwarded to LiteLLM as `model=<name>`. On 429/5xx the
 proxy retries the candidate with backoff; on exhaustion it moves to the next
@@ -293,12 +292,17 @@ TIERS = [
         {"model": "inclusionai/ling-3.0-flash-fin:free", "label": "nous_ling_fin"},
         {"model": "inclusionai/ling-3.0-flash-sante:free", "label": "nous_ling_sante"},
     ],
-    # Tiers 4-6: registered fallbacks (vad-hes 2026-09-13: replaced the
+    # Tiers 3-4: registered fallbacks (vad-hes 2026-09-13: replaced the
     # unregistered opencode zen models with live-config model_names so every
     # tier is actually routable).
     [{"model": "nex-agi/nex-n2.5-pro:free", "label": "nex_n25_pro"}],
     [{"model": "dots-studio/dots-3-note-preview:free", "label": "dots_3_note"}],
-    [{"model": "deepseek-v4.1-flash", "label": "surplus_ds41"}],]
+    # mcpw-01k 2026-09-20: a 5th tier (`deepseek-v4.1-flash`) was removed. It
+    # sent an alias litellm never registered (the 7 config entries carrying
+    # that model are registered as model_name: inferx-pool), so the last-resort
+    # tier could never route and only ever burned the latency budget. Removed
+    # rather than aliased to inferx-pool.
+]
 
 ALL_CANDIDATES: list[dict] = [cand for tier in TIERS for cand in tier]
 

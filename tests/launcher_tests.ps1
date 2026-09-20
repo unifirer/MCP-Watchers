@@ -231,9 +231,24 @@ function Get-GrepaiOllamaTarget { return '127.0.0.1:11434' }
 function Test-GrepaiIndexHealth { return $true }
 function Repair-CorruptGobIndex { param([string]$ProjectRoot) return $false }
 
+# mcpw-8ue (2026-09-21): T6/T7 terminate EVERY grepai.exe machine-wide and delete the
+# machine-global %LOCALAPPDATA%\grepai\logs\grepai-worktree-* lock files. Run while the
+# user's real ###1 launcher session is up, that kills another repository's live watcher
+# (the mcpw-eud blast radius) and the suite then dies at Remove-Item
+# ("missing path operand"), so T7..T25 never run at all. Same live-session guard T8/T20
+# already use - only computed earlier, because T6/T7 come before T8.
+$launcherSessionActive = $false
+try {
+    $launcherSessionActive = @(Get-CimInstance Win32_Process -Filter "Name='pwsh.exe' OR Name='powershell.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -and $_.CommandLine -match [regex]::Escape('###1') -and $_.CommandLine -match '\.ps1' -and $_.ProcessId -ne $PID }).Count -gt 0
+} catch { $launcherSessionActive = $false }
+
 Write-Host "=== T6: grepai gate does NOT throw on a LIVE watcher ==="
 $grepaiRunning = @(Get-Process -Name grepai -ErrorAction SilentlyContinue).Count -gt 0
-if (-not $grepaiRunning) {
+if ($launcherSessionActive) {
+    Write-Host '  [SKIP] T6 skipped: a real ###1 launcher session is running - T6 kills every grepai.exe machine-wide (mcpw-8ue)'
+    $script:PASS++
+} elseif (-not $grepaiRunning) {
     Write-Host "  [SKIP] T6 grepai not running (user disabled grepai this session)"
 } else {
 $logsDir = Join-Path $env:LOCALAPPDATA 'grepai\logs'
@@ -262,7 +277,10 @@ try {
 
 Write-Host "=== T7: grepai gate RECOVERS from a stale worktree lock ==="
 $grepaiRunning7 = @(Get-Process -Name grepai -ErrorAction SilentlyContinue).Count -gt 0
-if (-not $grepaiRunning7) {
+if ($launcherSessionActive) {
+    Write-Host '  [SKIP] T7 skipped: a real ###1 launcher session is running - T7 deletes the machine-global grepai lock files (mcpw-8ue)'
+    $script:PASS++
+} elseif (-not $grepaiRunning7) {
     Write-Host "  [SKIP] T7 grepai not running (user disabled grepai this session)"
 } else {
 $logsDir = Join-Path $env:LOCALAPPDATA 'grepai\logs'

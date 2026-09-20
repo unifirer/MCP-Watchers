@@ -625,9 +625,9 @@ public class Win32Placement {
                 elseif ($_ -match 'tail_graphify-rs\.ps1') { 'graphify-rs' }
                 elseif ($_ -match 'tail_repowise\.ps1') { 'repowise' }
                 elseif ($_ -match 'tail_codegraph\.ps1') { 'codegraph' }
-                elseif ($_ -match 'tail_empty\.ps1') { 'empty' }
+                elseif ($_ -match 'tail_heimdall\.ps1') { 'heimdall' }
             } | Where-Object { $_ } | Sort-Object -Unique)
-        $liveLabels = @($liveAllLabels | Where-Object { $_ -notin @('codegraph', 'empty') })
+        $liveLabels = @($liveAllLabels | Where-Object { $_ -notin @('codegraph', 'heimdall') })
         if ($liveLabels.Count -eq $expectedTailerCount) { break }
         if ('grepai' -notin $liveLabels) { Ensure-WatcherRunning 'grepai' 'grepai' @() $null }
         Start-Sleep -Seconds 2
@@ -640,8 +640,9 @@ public class Win32Placement {
     # by the CASCADIA HWND set-difference in T8b below.
     # The launcher's pane block writes exactly SIX tailer scripts (one per pane)
     # via New-WatcherPaneScript with labels grepai / graphenium / graphify-rs /
-    # repowise / codegraph / empty (mcpw-0sp: the grid is 3x2 = 5 watchers + 1
-    # reserved empty cell). Those six distinct files are the deterministic artifact
+    # repowise / codegraph / heimdall (mcpw-0sp: the grid is 3x2 = 6 watchers;
+    # mcpw-qxj.8 gave the formerly reserved cell to heimdall). Those six
+    # distinct files are the deterministic artifact
     # the launcher guarantees. ALSO assert the pane tailers are actually RUNNING
     # as live powershell.exe processes -- this is the genuine runtime signal that
     # the grid truly spawned. The previous test counted only the files, which
@@ -650,16 +651,17 @@ public class Win32Placement {
     # exposes no pane geometry to the CLI or to UI Automation (only 2 Pane
     # controls: tab strip + content). Equal-size geometry is guarded structurally
     # by T15 + tests/launcher_equal_quarters.tests.ps1.
-    $expectedTailers = @('tail_grepai.ps1', 'tail_graphenium.ps1', 'tail_graphify-rs.ps1', 'tail_repowise.ps1', 'tail_codegraph.ps1', 'tail_empty.ps1')
+    $expectedTailers = @('tail_grepai.ps1', 'tail_graphenium.ps1', 'tail_graphify-rs.ps1', 'tail_repowise.ps1', 'tail_codegraph.ps1', 'tail_heimdall.ps1')
     $foundTailers = @(Get-ChildItem -LiteralPath $panesDir -Filter 'tail_*.ps1' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
     $missing = @($expectedTailers | Where-Object { $_ -notin $foundTailers })
     Assert ($missing.Count -eq 0) 'T8 all six pane tailer scripts written' ("missing=" + ($missing -join ','))
     Assert ($foundTailers.Count -eq 6) 'T8 exactly six panes (3x2)' ("count=" + $foundTailers.Count)
-    # mcpw-0sp: the two non-watcher cells must be live too -- the reserved empty
-    # pane in particular is what keeps the grid a rectangle instead of letting
-    # five panes re-flow. They are checked separately from the watcher panes
-    # below because they have no watcher process to guard them.
-    Assert (('codegraph' -in $liveAllLabels) -and ('empty' -in $liveAllLabels)) 'T8 codegraph + empty panes live' ("live=" + ($liveAllLabels -join ','))
+    # mcpw-0sp: the two non-watcher cells must be live too -- a closed pane is
+    # what lets the remaining five re-flow out of the rectangle. They are checked
+    # separately from the watcher panes below because they have no watcher
+    # process to guard them. (The cell used to be "empty"; mcpw-qxj.8 gave it to
+    # heimdall, whose reconciler is also optional like codegraph.)
+    Assert (('codegraph' -in $liveAllLabels) -and ('heimdall' -in $liveAllLabels)) 'T8 codegraph + heimdall panes live' ("live=" + ($liveAllLabels -join ','))
 
     # --- T8 runtime signal: all the watchers are actually running ---
     # The user-facing contract of T8 is "the launcher brings up a 3x2 watcher
@@ -1127,7 +1129,7 @@ Assert ($t16fnLine -notmatch '\$safeLabel') 'T16 no dead $safeLabel reference' (
 # Execute the REAL filename expression against the four actual labels.
 $t16dir = Join-Path $env:TEMP ('t16_' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $t16dir -Force | Out-Null
-$t16labels = @('grepai', 'graphenium', 'graphify-rs', 'repowise', 'codegraph', 'empty')
+$t16labels = @('grepai', 'graphenium', 'graphify-rs', 'repowise', 'codegraph', 'heimdall')
 $t16paths = @()
 foreach ($l in $t16labels) {
     $p = Join-Path $t16dir ("tail_$l.ps1")

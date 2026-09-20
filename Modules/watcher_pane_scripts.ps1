@@ -864,6 +864,12 @@ while ($true) {
     # means "hold the slot", not "the watcher died". The empty cell has nothing
     # to watch at all. Both stay open for the whole session.
     elseif ('__LABEL__' -eq 'codegraph') { $alive = $true }
+    # mcpw-qxj.8: heimdall takes over the reserved 6th cell. It is a grid CELL,
+    # so it must never self-close -- WT closing it re-flows the other five into
+    # a ragged layout. The reconciler is OPTIONAL (it needs graftd up and holds
+    # an O_EXCL lock, so it may legitimately never start), exactly like
+    # codegraph: an absent process means "hold the slot", not "the watcher died".
+    elseif ('__LABEL__' -eq 'heimdall') { $alive = $true }
     elseif ('__LABEL__' -eq 'empty') { $alive = $true }
     else { $alive = $false }   # tracked pane with no watcher PID and no probe: close immediately
     # graphenium heal grace (beads VAD-be9): right after Invoke-GrapheniumAutoFix

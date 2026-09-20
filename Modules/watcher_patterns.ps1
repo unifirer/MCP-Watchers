@@ -33,6 +33,12 @@ $script:WatcherSweepPatterns = @(
     # backend command line carries the same cli.js but ends `cli.js" mcp --multi-repo`,
     # so it cannot match this entry.
     @{ Name = 'node.exe';        Pattern = 'codegraph\dist\cli.js watch' },
+    # mcpw-qxj.4: heimdall's reconciler runs as node.exe <...>/bin/heimdall.js
+    # daemon. The token MUST include the verb: Toolport's heimdall MCP server is
+    # the SAME heimdall.js ending in `mcp`, and sweeping it would kill the live
+    # MCP backend for every session on this box. 'heimdall.js daemon' matches
+    # only the reconciler.
+    @{ Name = 'node.exe';        Pattern = 'heimdall.js daemon' },
     @{ Name = 'python.exe';      Pattern = 'mcp_agent_mail'; Persistent = $true }, # vad-10m.3: mail singleton (:8765), token-scoped
     @{ Name = 'python.exe';      Pattern = 'embed_server'; Persistent = $true }, # graphiti embed proxy (:8003), token-scoped
     @{ Name = 'pwsh.exe';        Pattern = 'vad-grepai-sup' },

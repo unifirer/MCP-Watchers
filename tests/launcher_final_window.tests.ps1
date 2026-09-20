@@ -42,17 +42,18 @@ Describe 'final split window (repowise BR) shows correct info, not grepai' {
         $code | Should Match 'New-WatcherPaneScript -Label "repowise".*-LogPath \$repowiseLog'
         $code | Should Match 'New-WatcherPaneScript -Label "graphenium".*-LogPath \$gmLog'
         $code | Should Match 'New-WatcherPaneScript -Label "graphify-rs".*-LogPath \$graphifyLog'
-        # mcpw-0sp: codegraph owns the 5th cell, the 6th is the reserved one.
+        # mcpw-0sp: codegraph owns the 5th cell. mcpw-qxj.8: heimdall owns the
+        # 6th, which used to be the reserved-empty placeholder.
         $code | Should Match 'New-WatcherPaneScript -Label "codegraph".*-LogPath \$codegraphLog'
-        $code | Should Match 'New-WatcherPaneScript -Label "empty".*-LogPath \$emptyPaneLog'
+        $code | Should Match 'New-WatcherPaneScript -Label "heimdall".*-LogPath \$heimdallLog'
     }
 
-    It 'final Build-GridStep is the reserved empty cell (BR); grepai is still first, 8 steps total' {
+    It 'final Build-GridStep is the heimdall cell (BR); grepai is still first, 8 steps total' {
         $code = Get-LauncherCode | Out-String
         $titleSteps = [regex]::Matches($code, "Build-GridStep @\('-w',.*?'--title', '(.*?)'")
         $titleSteps.Count | Should Be 6
         $last = $titleSteps[$titleSteps.Count - 1]
-        $last.Groups[1].Value | Should Be 'empty'
+        $last.Groups[1].Value | Should Be 'heimdall'
         $first = $titleSteps[0]
         $first.Groups[1].Value | Should Be 'grepai'
         # mcpw-0sp: 3x2 = new-tab + 5 splits (1 x -H, 4 x -V) + 2 focus moves.

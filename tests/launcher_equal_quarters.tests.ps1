@@ -84,12 +84,12 @@ Describe '###1 3x2 pane grid enforces EQUAL cells' {
         $code | Should -Match 'Start-Sleep -Milliseconds'
     }
 
-    It 'targets exactly 6 panes (5 watchers + 1 reserved empty cell) each with a --title' {
+    It 'targets exactly 6 panes (6 watchers; heimdall owns the 6th) each with a --title' {
         $code = Get-LauncherCode | Out-String
-        $titles = [regex]::Matches($code, "'--title', '(grepai|graphenium|graphify-rs|repowise|codegraph|empty)'")
+        $titles = [regex]::Matches($code, "'--title', '(grepai|graphenium|graphify-rs|repowise|codegraph|heimdall)'")
         $titles.Count | Should -Be 6
         # Every one of the six cells is titled exactly once.
-        foreach ($lbl in @('grepai', 'graphenium', 'graphify-rs', 'repowise', 'codegraph', 'empty')) {
+        foreach ($lbl in @('grepai', 'graphenium', 'graphify-rs', 'repowise', 'codegraph', 'heimdall')) {
             [regex]::Matches($code, "'--title', '$lbl'").Count | Should -Be 1
         }
     }

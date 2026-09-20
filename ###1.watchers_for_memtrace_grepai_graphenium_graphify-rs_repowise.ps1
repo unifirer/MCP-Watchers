@@ -3685,6 +3685,35 @@ if (-not $cgLaunch) {
 } else {
     Write-Host "codegraph watch skipped (see warning above). Queries still work from the last build."
 }
+# -- heimdall: knowledge-base reconciler (headless process, OWN pane in the 3x2 grid) --
+# mcpw-qxj.4: heimdall is the 6th managed watcher and takes over the reserved cell.
+# `heimdall daemon` is the SINGLE WRITER to the KB and holds an O_EXCL lock for
+# its lifetime, so this launcher is its ONE starter: do not also run it
+# manually, and never let the sweep adopt a foreign reconciler.
+# PREREQUISITE (mcpw-qxj.3): graftd must already be listening. On Windows it
+# needs --foreground -- its default daemonize mode loads the model and then
+# exits silently with no socket.
+$heimdallLog = Join-Path $logsDir 'heimdall.log'
+$script:heimdallProc = $null
+$heimdallJs = $null
+$hdCmd = Get-Command 'heimdall' -ErrorAction SilentlyContinue
+if ($hdCmd -and $hdCmd.Source) {
+    # npm's Windows shim is a shell script, not an .exe. Walk up from the global
+    # bin dir to the global root so we can launch the entry JS under node.exe
+    # directly -- that gives an attributable, sweepable process and keeps the
+    # command line carrying 'heimdall.js daemon' (see watcher_patterns.ps1).
+    $hdRoot = Split-Path (Split-Path $hdCmd.Source -Parent) -Parent
+    $hdCand = Join-Path $hdRoot 'node_modules\@arihantdeva\heimdall\bin\heimdall.js'
+    if (Test-Path -LiteralPath $hdCand) { $heimdallJs = $hdCand }
+}
+if (-not $heimdallJs) {
+    Write-Host "heimdall not resolvable (no 'heimdall' on PATH or bin/heimdall.js missing). KB reconciliation skipped; the pane cell is held."
+} else {
+    try {
+        $script:heimdallProc = Start-WatcherDetached 'node' 'heimdall' @($heimdallJs, 'daemon') $heimdallLog -WorkingDirectory $watchersWorkspaceRoot -SkipStaleKill
+    } catch { Write-Warning ("heimdall daemon did not start: " + $_.Exception.Message) }
+    if (-not $script:heimdallProc) { Write-Warning "heimdall daemon did not start. KB reconciliation is off; the pane cell is held." }
+}
 # -- repowise embeddings: `repowise watch` is index-only (no vectors) --
 # Chain a low-frequency `repowise reindex --embedder ollama` loop so the
 # LanceDB vector store stays fresh with zero manual runs. Ollama is local
@@ -3763,7 +3792,8 @@ if ($repowiseExe -and (Test-Path -LiteralPath $repowiseExe)) {
 # instance on the same store.
 # (mcpw-0sp: this comment used to read "No 5th pane - the 2x2 grid is left
 # intact". memtrace is still pane-less; the grid is now 3x2 with codegraph and
-# one reserved empty cell. Launcher-owned startup logs stay under
+# heimdall (mcpw-qxj.8 took over the cell that used to be reserved-empty).
+# Launcher-owned startup logs stay under
 # <repo>\.memdb\ - see the retained-nested-store note below.)
 # The index logic was ported here from the now-deleted
 # Modules/### start memtrace.ps1 so the launcher owns the index directly
@@ -5209,8 +5239,8 @@ $tailGraphenium  = New-WatcherPaneScript -Label "graphenium"  -LogPath $gmLog   
 $tailGraphifyRs  = New-WatcherPaneScript -Label "graphify-rs" -LogPath $graphifyLog        -ErrPath "$graphifyLog.err" -RepoRoot $watchersWorkspaceRoot -HeartbeatPath (Join-Path $hbDir "graphify-rs.hb") -WatchPid $graphifyWatchPid
 $tailRepowise    = New-WatcherPaneScript -Label "repowise"    -LogPath $repowiseLog        -ErrPath "$repowiseLog.err" -RepoRoot $watchersWorkspaceRoot -HeartbeatPath (Join-Path $hbDir "repowise.hb")   -WatchPid $repowiseWatchPid
 # mcpw-0sp: codegraph gets its own pane (it is a managed watcher since
-# 2026-09-19 - see the launch site above), and a sixth RESERVED cell keeps the
-# grid a true 3x2 rectangle.
+# 2026-09-19 - see the launch site above), and heimdall fills the sixth cell
+# (mcpw-qxj.8), which keeps the grid a true 3x2 rectangle.
 # WatchPid is the launched `codegraph watch` PID when it started, and '' when it
 # did not (not installed / no `watch` verb / Test-CodegraphReady skipped it).
 # The template treats an empty PID on this label as "hold the slot", so the pane
@@ -5222,9 +5252,15 @@ $tailCodegraph   = New-WatcherPaneScript -Label "codegraph"   -LogPath $codegrap
 # It tails a one-line placeholder log, so the cell opens showing why it is
 # blank. The path still contains 'panes\tail_', so the pre-grid reset and the
 # Stop-AllWatchers sweep adopt it like every other pane.
-$emptyPaneLog    = Join-Path $logsDir 'empty-pane.log'
-try { Set-Content -LiteralPath $emptyPaneLog -Value '(reserved cell - no watcher assigned; the 3x2 grid keeps this slot free)' -Encoding UTF8 -ErrorAction Stop } catch {}
-$tailEmpty       = New-WatcherPaneScript -Label "empty"       -LogPath $emptyPaneLog       -ErrPath ""                  -RepoRoot $watchersWorkspaceRoot -HeartbeatPath (Join-Path $hbDir "empty.hb")
+# mcpw-qxj.8: the 6th cell used to be a reserved "empty" placeholder running a
+# BLOCKING tailer over a one-line log, because a pane whose command exits is
+# closed by Windows Terminal (closeOnExit) and the other five panes re-flow.
+# heimdall now owns that cell, and its tailer is blocking too, so the slot is
+# still held -- and it is held even when the reconciler never started, because
+# the pane template treats heimdall like codegraph: hold the slot, never
+# self-close (Modules/watcher_pane_scripts.ps1).
+$heimdallWatchPid = if ($script:heimdallProc) { $script:heimdallProc.Id } else { '' }
+$tailHeimdall   = New-WatcherPaneScript -Label "heimdall"   -LogPath $heimdallLog       -ErrPath ""                  -RepoRoot $watchersWorkspaceRoot -HeartbeatPath (Join-Path $hbDir "heimdall.hb")  -WatchPid $heimdallWatchPid
 # Collect the heartbeat paths so the controller loop can watch any of them.
 $script:hbPaths = @(
     (Join-Path $hbDir "grepai.hb"),
@@ -5232,23 +5268,23 @@ $script:hbPaths = @(
     (Join-Path $hbDir "graphify-rs.hb"),
     (Join-Path $hbDir "repowise.hb"),
     (Join-Path $hbDir "codegraph.hb"),
-    (Join-Path $hbDir "empty.hb")
+    (Join-Path $hbDir "heimdall.hb")
 )
 
 Write-Host ""
 Write-Host "All watchers running. Opening a Windows Terminal window with 6 panes (3x2):"
 Write-Host "  Row 1: grepai | graphenium | graphify-rs"
-Write-Host "  Row 2: repowise | codegraph | (empty - reserved)"
+Write-Host "  Row 2: repowise | codegraph | heimdall"
 Write-Host "  grepai      : tracked background, stop: 'grepai watch --stop'"
 Write-Host "  graphenium  : detached, kill gm.exe"
 Write-Host "  graphify-rs : detached, kill graphify-rs.exe"
 Write-Host "  repowise    : detached, kill repowise.exe"
 Write-Host "  codegraph   : detached, kill the node.exe running 'codegraph watch'"
-Write-Host "  empty       : reserved cell, no watcher"
+Write-Host "  heimdall    : detached reconciler, kill the node.exe running 'heimdall.js daemon'"
 Write-Host "Press Ctrl+C here to stop everything."
 
 # GOAL: one Windows Terminal window with 6 independent live-tailing panes in a
-# 3x2 grid (3 columns x 2 rows) - five watchers plus one reserved empty cell.
+# 3x2 grid (3 columns x 2 rows) - six watchers; heimdall owns the 6th cell.
 # The exact cell each watcher lands in is incidental, not a requirement; what
 # matters is that all 6 tailers end up as separate panes in ONE window rather
 # than six separate windows or a broken, ragged layout.
@@ -5286,9 +5322,9 @@ Write-Host "Press Ctrl+C here to stop everything."
 #   split-pane -V -s 0.5 graphify-rs    -> row 1 = thirds;             focus = graphify-rs
 #   move-focus down                     -> row 2 (full-width repowise)
 #   split-pane -V -s 0.6667 codegraph   -> row 2 = 1/3 | 2/3;          focus = codegraph
-#   split-pane -V -s 0.5 empty          -> row 2 = thirds
+#   split-pane -V -s 0.5 heimdall       -> row 2 = thirds
 # Cell map: row 1 = grepai | graphenium | graphify-rs
-#           row 2 = repowise | codegraph | empty
+#           row 2 = repowise | codegraph | heimdall
 # WHY 0.6667 AND NOT 0.5: equal thirds are not dyadic - no sequence of even
 # splits produces them. Per the wt-panes-tabs skill, "-s <ratio>" is the size
 # of the NEW pane as a fraction of the pane being split (Microsoft's doc: "the
@@ -5385,7 +5421,7 @@ if (Get-Command "wt" -ErrorAction SilentlyContinue) {
             $classCond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'CASCADIA_HOSTING_WINDOW_CLASS')
             $wins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $classCond)
             $termCond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'TermControl')
-            $want = @('grepai', 'graphenium', 'graphify-rs', 'repowise', 'codegraph', 'empty')
+            $want = @('grepai', 'graphenium', 'graphify-rs', 'repowise', 'codegraph', 'heimdall')
             $win = $null; $panes = $null
             foreach ($w in $wins) {
                 $tp = $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, $termCond)
@@ -5575,8 +5611,8 @@ if (Get-Command "wt" -ErrorAction SilentlyContinue) {
         Build-GridStep @('-w', $wtWindowName, 'move-focus', 'down') 4
         # row 2 col 2: same 1/3 + 2/3 shape as row 1.
         Build-GridStep @('-w', $wtWindowName, 'split-pane', '-V', '-s', '0.6667', '-d', $watchersWorkspaceRoot, '--title', 'codegraph', 'powershell', '-NoProfile', '-File', $tailCodegraph) 5
-        # row 2 col 3: the reserved cell. Row 2 is now repowise | codegraph | empty.
-        Build-GridStep @('-w', $wtWindowName, 'split-pane', '-V', '-s', '0.5', '-d', $watchersWorkspaceRoot, '--title', 'empty', 'powershell', '-NoProfile', '-File', $tailEmpty) 6
+        # row 2 col 3: heimdall. Row 2 is now repowise | codegraph | heimdall.
+        Build-GridStep @('-w', $wtWindowName, 'split-pane', '-V', '-s', '0.5', '-d', $watchersWorkspaceRoot, '--title', 'heimdall', 'powershell', '-NoProfile', '-File', $tailHeimdall) 6
         $wtOk = $true
         # Self-hide the controller console. The 3x2 Windows Terminal window
         # (vadwatchers) is already open and is where the user reads the watcher
@@ -5628,6 +5664,7 @@ if (-not $wtOk) {
         @{ Label = "graphify-rs"; Path = $graphifyLog },
         @{ Label = "repowise";    Path = $repowiseLog },
         @{ Label = "codegraph";   Path = $codegraphLog },
+        @{ Label = "heimdall";    Path = $heimdallLog },
         @{ Label = "graphenium";  Path = "$gmLog.err" },
         @{ Label = "graphify-rs"; Path = "$graphifyLog.err" },
         @{ Label = "repowise";    Path = "$repowiseLog.err" }

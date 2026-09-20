@@ -4,7 +4,7 @@ Date: 2026-09-20
 Branch: `mcpw-sweep-20260920-1305`
 File changed: `###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1`
 Status: edits left DIRTY (not committed, not staged) - another process owns the index.
-Epic: mcpw-rkg. Parent: mcpw-rkg.3 (the bootstrap wiring, same file).
+Epic: mcpw-rkg. Parent: mcpw-rkg.3 (the provision wiring, same file).
 
 ## The mechanism, measured (not re-derived from the bead)
 
@@ -42,7 +42,7 @@ mcpw-rkg.3; see that report).
 
 **Rejected: "run the initial scan outside the supervisor's reap window
 entirely."** This is the option mcpw-rkg.3 was supposed to deliver - the
-bootstrap runs `grepai watch` in the foreground BEFORE the watcher spawns - but
+provision runs `grepai watch` in the foreground BEFORE the watcher spawns - but
 it cannot be relied on here: `grepai watch` never exits on its own, so that step
 always times out, and its completion predicate (`Files indexed > 0`) is the
 broken counter above, so it returns `skipped` and never stamps. Worse, taking the
@@ -161,11 +161,11 @@ that case makes the marker's meaning strictly more accurate.
 | Suite | Result |
 | --- | --- |
 | `tests/mcpw_rkg4_grepai_first_scan.tests.ps1` (new, 9 `It`) | **9 of 9 passed** |
-| `tests/mcpw_rkg3_launcher_bootstrap.tests.ps1` (new, 8 `It`) | **8 of 8 passed** |
+| `tests/mcpw_rkg3_launcher_provision.tests.ps1` (new, 8 `It`) | **8 of 8 passed** |
 | `tests/launcher_pane_heal_idle.tests.ps1` (the mcpw-6re suite) | **6 of 6 passed** |
 | `tests/launcher_watcher_panes.tests.ps1` | **7 of 7 passed** |
 | `tests/launcher_watcher_teardown.tests.ps1` | **14 of 14 passed** |
-| `tests/launcher_mcp_bootstrap.tests.ps1` | **13 of 13 passed** |
+| `tests/launcher_mcp_provision.tests.ps1` | **13 of 13 passed** |
 
 The new suite covers: hold on a foreign-PID `.ready`, release on our own PID
 (both the measured two-line shape and a space-separated variant), digit-boundary
@@ -184,6 +184,6 @@ mirroring `tests/mcpw-ozm.tests.ps1`.
 - new: `reports/2026-09-20-mcpw-rkg4-grepai-first-scan.md`
 
 No `Modules/` file was edited. The module-side change this bead would benefit from
-(correct the `Files indexed` completion predicate so the bootstrap stops paying
+(correct the `Files indexed` completion predicate so the provision stops paying
 15 minutes per launch) is written as an exact diff in
-`reports/2026-09-20-mcpw-rkg3-launcher-bootstrap.md` for the module owner.
+`reports/2026-09-20-mcpw-rkg3-launcher-provision.md` for the module owner.

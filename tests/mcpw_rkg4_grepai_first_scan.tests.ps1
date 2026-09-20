@@ -40,7 +40,7 @@
 # %LOCALAPPDATA%\grepai\logs. This mirrors tests/mcpw-ozm.tests.ps1.
 #
 # TWO PESTER-6 CONSTRAINTS THIS FILE IS SHAPED AROUND (same as
-# tests/launcher_mcp_bootstrap.tests.ps1):
+# tests/launcher_mcp_provision.tests.ps1):
 #
 #   1. NOTHING DEFINED AT FILE SCOPE IS VISIBLE INSIDE AN It BLOCK - not a
 #      variable, not a function, not a dot-sourced .ps1. Only $PSScriptRoot and

@@ -5,7 +5,7 @@
 # last_index_time while it runs its initial scan, so the reaper judges it
 # against a clock it has not had a chance to advance. It gets killed about a
 # minute after start, the pane heals, the scan restarts, and the clock never
-# advances — a bootstrap deadlock that survives a perfectly healthy backend.
+# advances — a provision deadlock that survives a perfectly healthy backend.
 #
 # These tests pin the behaviour without needing a real outage or a running
 # grepai: they call the real helpers from Modules\watcher_job_helpers.ps1

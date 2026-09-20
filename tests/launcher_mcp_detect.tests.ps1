@@ -197,7 +197,7 @@ Describe 'watcher_mcp_detect: one initialization probe per MCP' {
             # CONTRACT CHANGE (bead mcpw-4ci). The old contract keyed on
             # "Files indexed" > 0, which grepai NEVER computes on a qdrant
             # backend (upstream hardcodes TotalFiles: 0) - so the probe was
-            # unsatisfiable and the bootstrap first scan re-ran every launch.
+            # unsatisfiable and the provision first scan re-ran every launch.
             # The measured shape here is a correct config, a fresh clock, 0
             # files, and 892 chunks: that index HAS content and IS initialized.
             [System.IO.File]::WriteAllText((Join-Path $sandbox '.grepai\config.yaml'),

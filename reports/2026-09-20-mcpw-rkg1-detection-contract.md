@@ -1,6 +1,6 @@
 # mcpw-rkg.1 — per-MCP "is it initialized?" detection contract
 
-- **Bead:** mcpw-rkg.1 (P1), parent epic **mcpw-rkg** ("Launcher must bootstrap
+- **Bead:** mcpw-rkg.1 (P1), parent epic **mcpw-rkg** ("Launcher must provision
   all six MCPs in ANY repo it is launched from")
 - **Date:** 2026-09-20
 - **Branch:** `mcpw-sweep-20260920-1305`
@@ -19,7 +19,7 @@ Test-<Mcp>Initialized -Path <repoRoot> [-Reason ([ref]$s)] [-ProbeOutput <text>]
 
 | Aspect | Decision |
 |---|---|
-| **Return** | `[bool]`. `$true` = initialized, the caller may skip the build. `$false` = not initialized *or* cannot tell, so bootstrap runs. |
+| **Return** | `[bool]`. `$true` = initialized, the caller may skip the build. `$false` = not initialized *or* cannot tell, so provision runs. |
 | **Reason** | `-Reason` out variable. `$r = ''; Test-X -Path $p -Reason ([ref]$r)`. One line, written for the launcher log. |
 | **Signature uniformity** | All six probes take the same three parameters in the same order, return the same type, and expose the reason the same way. |
 | **Aggregate** | `Get-McpInitializationReport -Path <root>` returns one object per MCP with `.Mcp`, `.Ok`, `.Reason` in a fixed order. This is the shape mcpw-rkg.2 should consume. |
@@ -221,7 +221,7 @@ for the next agent writing a suite in this repo:
   mcpw-gsj / the mcpw-rkg.3 wave).
 - Consume `Get-McpInitializationReport -Path $watchersWorkspaceRoot` and, for each
   `Ok = $false`, warn and skip — a foreign repo legitimately lacks some tools.
-- Reuse `-ProbeOutput` when a capture is already in hand (the bootstrap will run
+- Reuse `-ProbeOutput` when a capture is already in hand (the provision will run
   `grepai status` anyway), so no tool is spawned twice.
 - Nothing here detects whether an MCP **server process** is bound to the right
   repo. That is a separate, real problem (mcpw-rkg.7): a pane can look healthy

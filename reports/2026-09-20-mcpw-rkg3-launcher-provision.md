@@ -1,4 +1,4 @@
-# mcpw-rkg.3 - wire the bootstrap module into the ###1 launcher
+# mcpw-rkg.3 - wire the provision module into the ###1 launcher
 
 Date: 2026-09-20
 Branch: `mcpw-sweep-20260920-1305`
@@ -17,8 +17,8 @@ file's established guarded-load pattern so a MISSING module degrades instead of
 aborting the launch:
 
 ```powershell
-$watcherMcpBootstrapModule = Join-Path $scriptDir 'Modules\watcher_mcp_bootstrap.ps1'
-if (Test-Path -LiteralPath $watcherMcpBootstrapModule) { . $watcherMcpBootstrapModule }
+$watcherMcpProvisionModule = Join-Path $scriptDir 'Modules\watcher_mcp_provision.ps1'
+if (Test-Path -LiteralPath $watcherMcpProvisionModule) { . $watcherMcpProvisionModule }
 ```
 
 The module is self-contained: it dot-sources `watcher_mcp_detect.ps1` itself
@@ -32,22 +32,22 @@ by reading the file: the only earlier `Start-Process` is the `ollama serve`
 prerequisite, which is not a watcher.
 
 ```powershell
-if (Get-Command Invoke-McpBootstrapForRepo -ErrorAction SilentlyContinue) {
-    Write-Host "[bootstrap] initializing the six watched MCPs for $watchersWorkspaceRoot before any watcher spawns (this can take minutes on a fresh index)..."
+if (Get-Command Invoke-McpProvisionForRepo -ErrorAction SilentlyContinue) {
+    Write-Host "[provision] initializing the six watched MCPs for $watchersWorkspaceRoot before any watcher spawns (this can take minutes on a fresh index)..."
     try {
-        $mcpBoot = Invoke-McpBootstrapForRepo -Path $watchersWorkspaceRoot
+        $mcpBoot = Invoke-McpProvisionForRepo -Path $watchersWorkspaceRoot
         $mcpRows = @($mcpBoot.Results)
         $mcpTally = ($mcpRows | ForEach-Object { "$($_.Mcp)=$($_.Status)" }) -join ' '
-        Write-Host ("[bootstrap] done {0}, stamped {1}, skipped {2} of {3}: {4}" -f `
+        Write-Host ("[provision] done {0}, stamped {1}, skipped {2} of {3}: {4}" -f `
             $mcpBoot.Done, $mcpBoot.Stamped, $mcpBoot.Skipped, $mcpBoot.Total, $mcpTally)
         foreach ($mcpRow in @($mcpRows | Where-Object { $_.Status -eq 'skipped' })) {
-            Write-Host ("[bootstrap] {0} skipped: {1}" -f $mcpRow.Mcp, $mcpRow.Reason)
+            Write-Host ("[provision] {0} skipped: {1}" -f $mcpRow.Mcp, $mcpRow.Reason)
         }
     } catch {
-        Write-Warning "MCP bootstrap failed: $($_.Exception.Message). Continuing - each watcher below degrades on its own."
+        Write-Warning "MCP provision failed: $($_.Exception.Message). Continuing - each watcher below degrades on its own."
     }
 } else {
-    Write-Host "[bootstrap] Modules\watcher_mcp_bootstrap.ps1 not loaded - skipping MCP init (watchers start uninitialized)."
+    Write-Host "[provision] Modules\watcher_mcp_provision.ps1 not loaded - skipping MCP init (watchers start uninitialized)."
 }
 ```
 
@@ -64,11 +64,11 @@ Hard requirements, each with a test:
 
 | Suite | Result |
 | --- | --- |
-| `tests/mcpw_rkg3_launcher_bootstrap.tests.ps1` (new, 8 `It`) | **8 of 8 passed** |
+| `tests/mcpw_rkg3_launcher_provision.tests.ps1` (new, 8 `It`) | **8 of 8 passed** |
 | `tests/mcpw_rkg4_grepai_first_scan.tests.ps1` (new, 9 `It`) | **9 of 9 passed** |
 | `tests/launcher_watcher_panes.tests.ps1` | **7 of 7 passed** |
 | `tests/launcher_watcher_teardown.tests.ps1` | **14 of 14 passed** |
-| `tests/launcher_mcp_bootstrap.tests.ps1` | **13 of 13 passed** |
+| `tests/launcher_mcp_provision.tests.ps1` | **13 of 13 passed** |
 | `tests/launcher_pane_heal_idle.tests.ps1` (the mcpw-6re suite) | **6 of 6 passed** |
 
 Run with `python dev_tools/run_pester_suite.py <file>`; Pester 6.1.0 for the new
@@ -77,9 +77,9 @@ suites, 3.4.0 / file-picked for the legacy ones. No `[-]` lines in any run.
 ## RISK to hand to the module owner (I must not edit `Modules/`)
 
 **Measured, and it is a real startup regression: the grepai step of
-`Invoke-McpBootstrapForRepo` blocks the launcher for the full
+`Invoke-McpProvisionForRepo` blocks the launcher for the full
 `-FirstScanTimeoutMs` (default 900000 ms = 15 minutes) on EVERY launch, and
-`.mcpw-bootstrap/state.json` does not exist yet in this repo, so the first
+`.mcpw-provision/state.json` does not exist yet in this repo, so the first
 launch after this bead lands WILL pay it.**
 
 Why:
@@ -94,7 +94,7 @@ Why:
    chunks created (took 4m34.08s)`.** The counter is not populated by this
    grepai build, so the predicate can never be satisfied here.
 3. So the step returns `skipped`, and **the `skipped` path returns before
-   `Set-McpBootstrapStamp`** - no stamp. `Start-McpBootstrapStep` short-circuits
+   `Set-McpProvisionStamp`** - no stamp. `Start-McpProvisionStep` short-circuits
    on the stamp at the top, so with no stamp every launch re-runs the whole
    15-minute scan attempt.
 
@@ -127,8 +127,8 @@ block on the first launch of a fresh repo - is the module's intended "Phase
 'index' - minutes" and is acceptable; bead mcpw-rkg.4 now guarantees that the
 scan the WATCHER runs afterwards cannot be killed by the idle TTL.
 
-A second, smaller interaction worth noting: the bootstrap's foreground
-`grepai watch` is killed at the timeout by `Invoke-McpBootstrapCommand`, and
+A second, smaller interaction worth noting: the provision's foreground
+`grepai watch` is killed at the timeout by `Invoke-McpProvisionCommand`, and
 grepai's single-instance lock is machine-global. If a stale `.pid`/`.pid.lock`
 survives that kill, the launcher's own watcher spawn (mcpw-ozm's lock gate) could
 refuse it. The supervisor's `Clear-StaleLocks` recovers, but the module owner
@@ -136,7 +136,7 @@ should consider clearing the lock after a timed-out scan step.
 
 ## Ordering note
 
-The bootstrap call sits BEFORE the `ollamaGateJob` join (line ~1509). The Ollama
+The provision call sits BEFORE the `ollamaGateJob` join (line ~1509). The Ollama
 probe/spawn itself runs synchronously earlier, so the embedder has at least been
 started, but readiness is not yet confirmed at that point. If the grepai scan
 step ever reports an unreachable embedder, that is the reason; it degrades to a
@@ -145,5 +145,5 @@ step ever reports an unreachable embedder, that is the reason; it degrades to a
 ## Files
 
 - modified: `###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1` (lines 81-89, 1319-1356)
-- new: `tests/mcpw_rkg3_launcher_bootstrap.tests.ps1`
-- new: `reports/2026-09-20-mcpw-rkg3-launcher-bootstrap.md`
+- new: `tests/mcpw_rkg3_launcher_provision.tests.ps1`
+- new: `reports/2026-09-20-mcpw-rkg3-launcher-provision.md`

@@ -1,7 +1,7 @@
-# Bootstrap module — `Modules/watcher_mcp_bootstrap.ps1`
+# Provision module — `Modules/watcher_mcp_provision.ps1`
 
 - **Bead:** mcpw-rkg.2 (P1)
-- **Epic:** mcpw-rkg — "Launcher must bootstrap all six MCPs in ANY repo it is launched from."
+- **Epic:** mcpw-rkg — "Launcher must provision all six MCPs in ANY repo it is launched from."
 - **Prerequisite consumed:** `Modules/watcher_mcp_detect.ps1` (mcpw-rkg.1) — read, not rewritten.
 - **Date:** 2026-09-20
 - **Wave:** `mcpw-sweep-20260920-1305`
@@ -10,26 +10,26 @@
 
 ## 1. What was built
 
-`Modules/watcher_mcp_bootstrap.ps1` is the WRITE side of the pair whose READ side
+`Modules/watcher_mcp_provision.ps1` is the WRITE side of the pair whose READ side
 is the detection module: detection answers *"is this repo already initialized?"*,
-bootstrap answers *"then make it so, or say why it cannot be."*
+provision answers *"then make it so, or say why it cannot be."*
 
 ### Surface
 
 | Function | Purpose |
 | --- | --- |
-| `Invoke-McpBootstrapForRepo -Path <root> [-StateDir] [-ToolPaths] [-Only] [-Force] [-TimeoutMs] [-FirstScanTimeoutMs]` | Runs the six steps in plan order; returns the summary object the launcher logs. Never throws. |
+| `Invoke-McpProvisionForRepo -Path <root> [-StateDir] [-ToolPaths] [-Only] [-Force] [-TimeoutMs] [-FirstScanTimeoutMs]` | Runs the six steps in plan order; returns the summary object the launcher logs. Never throws. |
 | `Initialize-MemtraceForRepo -Path <root> [...]` | `memtrace index <root> --allow-non-git` |
 | `Initialize-GrepaiForRepo -Path <root> [...]` | config-if-absent, then the bounded first scan |
 | `Initialize-GrapheniumForRepo -Path <root> [...]` | `gm init <root>` |
 | `Initialize-GraphifyRsForRepo -Path <root> [...]` | `graphify-rs build --path . --update --no-llm` (OPTIONAL) |
 | `Initialize-RepowiseForRepo -Path <root> [...]` | `repowise agents add <root> --target claude-code --scope project --yes` |
 | `Initialize-GraftForRepo -Path <root> [...]` | `graft build <root>` ($0 tier, never `--deep`) |
-| `Get-McpBootstrapPlan` | the six steps in execution order, with `Phase` and `Optional` |
-| `Get-McpBootstrapArgv -Mcp -Path [-Step]` | the one place every command line lives (so flags are assertable) |
-| `Test-McpBootstrapStamp` / `Set-McpBootstrapStamp` | the idempotence stamp |
-| `Get-McpBootstrapStateDir` | stamp location resolution |
-| `Invoke-McpBootstrapCommand` | the bounded, stdin-closed, shim-aware process runner |
+| `Get-McpProvisionPlan` | the six steps in execution order, with `Phase` and `Optional` |
+| `Get-McpProvisionArgv -Mcp -Path [-Step]` | the one place every command line lives (so flags are assertable) |
+| `Test-McpProvisionStamp` / `Set-McpProvisionStamp` | the idempotence stamp |
+| `Get-McpProvisionStateDir` | stamp location resolution |
+| `Invoke-McpProvisionCommand` | the bounded, stdin-closed, shim-aware process runner |
 
 Each `Initialize-<Mcp>ForRepo` is callable alone with just `-Path`; the tests use
 that. Every one returns a single row and never throws.
@@ -59,7 +59,7 @@ that. Every one returns a single row and never throws.
 | 5 | memtrace | index | no |
 | 6 | grepai | index | no |
 
-`Get-McpBootstrapPlan` is the single source of this order; the aggregate iterates
+`Get-McpProvisionPlan` is the single source of this order; the aggregate iterates
 it, and a test asserts the phase rank is non-decreasing (no expensive index step
 can run before a cheap config step).
 
@@ -67,7 +67,7 @@ can run before a cheap config step).
 
 ## 2. Idempotence — how it is stamped
 
-**Stamp file:** `<repo>/.mcpw-bootstrap/state.json` (one key per MCP).
+**Stamp file:** `<repo>/.MCPWDIRKEEP/state.json` (one key per MCP).
 
 ```json
 {
@@ -76,7 +76,7 @@ can run before a cheap config step).
 ```
 
 Resolution order for the state dir: explicit `-StateDir` → `MCPW_BOOTSTRAP_STATE_DIR`
-→ `<repo>/.mcpw-bootstrap`. Rooting it at `-Path` means the stamp travels with
+→ `<repo>/.MCPWDIRKEEP`. Rooting it at `-Path` means the stamp travels with
 the repository it describes and two repos on one machine can never share one
 (a test asserts that repo B is untouched by repo A's stamp).
 
@@ -104,7 +104,7 @@ was spawned again. `-Force` is then asserted to grow the log.
    universal guarantee: a tool that decides to prompt reads EOF and exits instead
    of hanging a launcher that has no window to type into. A test proves it with a
    `.cmd` that does `set /p` — it must return, not hit the timeout.
-2. **The documented suppress flag per tool**, in `Get-McpBootstrapArgv`:
+2. **The documented suppress flag per tool**, in `Get-McpProvisionArgv`:
    `grepai init --yes`, `grepai watch --no-ui`, `grepai status --no-ui`,
    `repowise agents add --yes`, `graphify-rs build --no-llm`.
 3. **`CreateNoWindow` + a hard timeout + kill on timeout.** A test runs a 60-second
@@ -129,7 +129,7 @@ A test also asserts the module's *code* (comments stripped) contains none of
 | detection probe unavailable/threw | treated as not-initialized (safe direction) |
 
 The aggregate wraps every step in `try/catch` and substitutes a row if an
-initializer returns nothing, so `Invoke-McpBootstrapForRepo` cannot abort the
+initializer returns nothing, so `Invoke-McpProvisionForRepo` cannot abort the
 launcher. A test runs four hostile inputs (empty repo, missing path, a *file* as
 `-Path`, a *directory* as a tool path) and asserts six rows come back each time.
 A second test makes `graft` exit 7 and asserts `graft = skipped` while the other
@@ -179,9 +179,9 @@ No LLM model configuration was touched anywhere.
 ## 6. Test results
 
 ```
-suite   : tests/launcher_mcp_bootstrap.tests.ps1
+suite   : tests/launcher_mcp_provision.tests.ps1
 pester  : 6.1.0  [wrapped (auto-detected)]
-[+] tests/launcher_mcp_bootstrap.tests.ps1 10.51s (13 tests)
+[+] tests/launcher_mcp_provision.tests.ps1 10.51s (13 tests)
 Tests Passed: 13, Failed: 0, Skipped: 0, Inconclusive: 0, NotRun: 0
 VERDICT : passed=13 failed=0
 ```
@@ -192,7 +192,7 @@ Verified by counting `[-]` lines rather than trusting the exit code:
 Run with:
 
 ```
-python dev_tools/run_pester_suite.py tests/launcher_mcp_bootstrap.tests.ps1
+python dev_tools/run_pester_suite.py tests/launcher_mcp_provision.tests.ps1
 ```
 
 Coverage: module surface; plan order + non-decreasing phase cost; the exact
@@ -215,7 +215,7 @@ against this repo or any other.
    `System.ArgumentException: Argument types do not match`. `$rows.ToArray()`
    returns the identical array without the bug. Commented in the module so nobody
    re-introduces it.
-2. **The repowise pin makes bootstrap non-hermetic on a box that has repowise.**
+2. **The repowise pin makes provision non-hermetic on a box that has repowise.**
    Emptying `PATH` does *not* hide it — that is the point of the pin — so a test
    that wants "no tools at all" must override the pin too. This is correct
    production behaviour, but it is worth knowing before writing a clean-room test.
@@ -225,14 +225,14 @@ against this repo or any other.
 ## 7. Left for other beads (not done here)
 
 - **mcpw-rkg.3** (launcher wiring) owns calling
-  `Invoke-McpBootstrapForRepo -Path $watchersWorkspaceRoot` before any watcher
+  `Invoke-McpProvisionForRepo -Path $watchersWorkspaceRoot` before any watcher
   spawns, and logging the summary. This module is not wired into the launcher yet.
 - **mcpw-rkg.4** owns grepai daemon survivability across the supervisor's idle-TTL
   reap. This module deliberately does not keep a process alive after its step
   returns.
-- **Housekeeping:** `<repo>/.mcpw-bootstrap/` is not in `.gitignore`. Adding it is
+- **Housekeeping:** `<repo>/.MCPWDIRKEEP/` is not in `.gitignore`. Adding it is
   a one-line follow-up for whoever owns that file — `.gitignore` was outside this
-  bead's claim. The directory is written at most once per repo (bootstrap runs
+  bead's claim. The directory is written at most once per repo (provision runs
   before any watcher spawns, and every later run is stamp-short-circuited), so the
   watcher-churn risk is nil.
 
@@ -241,9 +241,9 @@ against this repo or any other.
 ## 8. Changed paths
 
 ```
-Modules/watcher_mcp_bootstrap.ps1                    (new)
-tests/launcher_mcp_bootstrap.tests.ps1               (new)
-reports/2026-09-20-mcpw-rkg2-bootstrap-module.md     (new, this file)
+Modules/watcher_mcp_provision.ps1                    (new)
+tests/launcher_mcp_provision.tests.ps1               (new)
+reports/2026-09-20-mcpw-rkg2-provision-module.md     (new, this file)
 ```
 
 Nothing else was modified. `###1.watchers_...ps1`, the other `Modules/*.ps1`,

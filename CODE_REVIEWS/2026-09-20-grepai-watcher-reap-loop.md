@@ -22,7 +22,7 @@ qdrant is **not** the problem. The store grepai uses has been up and
 version-compatible since 23:19 NZT last night, and grepai has been writing to
 it the whole time I was calling it dead.
 
-The actual mechanism is a **bootstrap deadlock**:
+The actual mechanism is a **provision deadlock**:
 
 ```
 fresh `grepai watch` starts
@@ -277,7 +277,7 @@ Chain (each blocks the next). Corrected 06:12 — `mcpw-0k7` is the one to fix:
 mcpw-25p  P0  Docker stack restart knocked qdrant offline ~21:09-23:19 NZT
    │           (TRIGGER only — cause of the gap still unknown; store has been up since)
    └─ blocks ─ mcpw-d5l  P0  initial scan never completes: idle TTL reaps the
-        │                    watcher before it finishes (bootstrap deadlock)
+        │                    watcher before it finishes (provision deadlock)
         └─ blocks ─ mcpw-0wm  P0  last_index_time frozen at 527 min
              └─ blocks ─ mcpw-0k7  P0  idle TTL reaps a HEALTHY watcher ~1 min after start
                   │                    ← ROOT CAUSE, fix this first

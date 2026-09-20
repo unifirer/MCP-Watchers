@@ -871,11 +871,27 @@ function Initialize-GrepaiForRepo {
           2. FIRST SCAN (expensive): grepai has no `index` verb - the scan
              belongs to `grepai watch`. It runs in FOREGROUND (bounded by
              -FirstScanTimeoutMs): if it exits on its own the scan is done;
-             otherwise it is stopped at the timeout and `grepai status --no-ui`
-             is asked once whether Files indexed is now > 0.
+             otherwise it is stopped at the timeout and the DETECTION PROBE
+             (Test-GrepaiInitialized, via Get-McpBootstrapAlreadyReason) is asked
+             once whether the index now has content.
 
-        A correct config with Files indexed: 0 is NOT initialized (measured), so
-        the status file count - not the config, not the liveness clock - decides.
+        The probe decides on the CHUNK count, not "Files indexed" - grepai never
+        computes a file count (measured 2026-09-21: "Files indexed: 0" beside
+        "Total chunks: 1399"), so keying on files left this step permanently
+        'skipped' and re-ran the 15-minute scan on EVERY launch (beads mcpw-4ci /
+        mcpw-vrf). Because the probe is now satisfiable, a repo with a populated
+        index stamps here and no watch is launched at all.
+
+        -FirstScanTimeoutMs default is 300000 ms (5 min), down from 900000 (15
+        min). `grepai watch` scans and then STAYS UP, so a foreground call always
+        burns its whole timeout; 15 min of launcher silence is not worth it. The
+        tradeoff: a first scan that genuinely needs longer than 5 min is stopped
+        early and this step returns 'skipped' with no stamp - but the scan is
+        incremental, the launcher's own detached watcher continues it, and bead
+        mcpw-rkg.4 holds the supervisor's idle reap while it runs. The next launch
+        then sees chunks > 0 and stamps. Deferring the scan entirely to that
+        rkg.4 hold is a possible follow-up, deliberately NOT done here to avoid
+        duplicating mcpw-rkg.4 / mcpw-kwa.
 
         Keeping the daemon alive across the supervisor's idle-TTL reap is bead
         mcpw-rkg.4. This step deliberately does not try: it only makes sure the
@@ -887,7 +903,7 @@ function Initialize-GrepaiForRepo {
         [string]$ToolPath,
         [switch]$Force,
         [int]$ConfigTimeoutMs = 120000,
-        [int]$FirstScanTimeoutMs = 900000
+        [int]$FirstScanTimeoutMs = 300000
     )
     $pre = Start-McpBootstrapStep -Mcp 'grepai' -ToolName 'grepai' -Path $Path `
                -StateDir $StateDir -ToolPath $ToolPath -Force:$Force
@@ -921,26 +937,35 @@ function Initialize-GrepaiForRepo {
             -Arguments (Get-McpBootstrapArgv -Mcp 'grepai' -Step 'scan') `
             -WorkingDirectory $pre.Root -TimeoutMs $FirstScanTimeoutMs
     if ($r2.Launched -and -not $r2.TimedOut -and $r2.ExitCode -eq 0) {
-        $scanNote = 'grepai watch finished the initial scan'
+        # Exit 0 is NOT proof of an index either (bead mcpw-0zo.1): a watch that
+        # comes back immediately having indexed nothing must not be stamped. The
+        # same probe the pre-command gate uses decides, and it spawns its own
+        # `grepai status --no-ui`.
+        $g = Get-McpBootstrapPostCommandGate -Mcp 'grepai' -Root $pre.Root -Label 'grepai watch'
+        if (-not $g.Ok) {
+            return New-McpBootstrapRow -Mcp 'grepai' -Status 'skipped' `
+                -Reason "$configNote; $($g.Reason)" -Tool $pre.Tool -Stamp $pre.StateDir
+        }
+        $scanNote = "first scan complete ($($g.Reason))"
     } else {
-        # The watch was stopped at the timeout (or died). Ask the index itself.
+        # The watch was stopped at the timeout (or died). Ask the SAME probe the
+        # detection layer uses - the tool this step resolved, but the shared
+        # parse. Calling the probe instead of re-matching "Files indexed" here is
+        # what stops the two layers drifting about what "indexed" means
+        # (bead mcpw-4ci): the file counter is never computed by grepai, so the
+        # probe now decides on the chunk count.
         $r3 = Invoke-McpBootstrapCommand -FilePath $pre.Tool `
                 -Arguments (Get-McpBootstrapArgv -Mcp 'grepai' -Step 'status') `
                 -WorkingDirectory $pre.Root -TimeoutMs 30000
-        $indexed = 0
         $text = ''
         if ($r3.Launched) { $text = [string]$r3.Output + [string]$r3.Error }
-        # DUPLICATED PARSE: the same "Files indexed" regex lives in
-        # Modules/watcher_mcp_detect.ps1 (Test-GrepaiInitialized). Fix both or
-        # the two will disagree about what "indexed" means.
-        $m = [regex]::Match($text, 'Files indexed\s*:\s*(\d+)')
-        if ($m.Success) { $indexed = [int]$m.Groups[1].Value }
-        if ($indexed -gt 0) {
-            $scanNote = "first scan complete (Files indexed: $indexed)"
+        $d2 = Get-McpBootstrapAlreadyReason -Mcp 'grepai' -Root $pre.Root -ProbeOutput $text
+        if ($d2.Ok) {
+            $scanNote = "first scan complete ($($d2.Reason))"
         } else {
             $why = Get-McpBootstrapFailureReason -Result $r2 -TimeoutMs $FirstScanTimeoutMs -Label 'grepai watch'
             return New-McpBootstrapRow -Mcp 'grepai' -Status 'skipped' `
-                -Reason "$configNote; $why; Files indexed: $indexed" `
+                -Reason "$configNote; $why; $($d2.Reason)" `
                 -Tool $pre.Tool -Stamp $pre.StateDir
         }
     }
@@ -982,7 +1007,7 @@ function Invoke-McpBootstrapForRepo {
         [string[]]  $Only,
         [switch]    $Force,
         [int]       $TimeoutMs = 1800000,
-        [int]       $FirstScanTimeoutMs = 900000
+        [int]       $FirstScanTimeoutMs = 300000
     )
     $root    = Get-McpBootstrapRoot -Path $Path
     $dir     = Get-McpBootstrapStateDir -Path $root -StateDir $StateDir

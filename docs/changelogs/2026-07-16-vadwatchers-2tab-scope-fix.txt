@@ -1,0 +1,56 @@
+2026-07-16 — intermittent "2 tabs instead of 1" regression fix (wt pre-grid wait scoping)
+
+FILE: ###1. watchers for memtrace grepai graphenium graphify-rs repowise.ps1
+TEST: tests/launcher_equal_quarters.tests.ps1 (new 6th It block)
+
+Symptom
+--------
+The launcher occasionally opened TWO tabs in the Windows Terminal vadwatchers
+window instead of ONE. The 2x2 grid itself was correct (named-window routing,
+separate invocations, -s 0.5 splits) — so the extra tab was NOT a layout bug.
+It was intermittent: it only happened "sometimes".
+
+Root cause
+----------
+The pre-grid reset (added in the 2026-07-12 fix) waited for the stale
+vadwatchers window to disappear by polling the GLOBAL Windows Terminal window
+count: it enumerated every top-level CASCADIA_HOSTING_WINDOW_CLASS HWND and
+exited the wait as soon as that global count dropped below what it had been
+before issuing close-window.
+
+  $wtBefore = [WtHostWin]::Get()               # GLOBAL count, includes OTHER WT windows
+  close-window -w vadwatchers
+  while ([WtHostWin]::Get() -ge $wtBefore) { sleep }   # wrong scope
+
+When the USER HAD ANOTHER WT WINDOW OPEN, $wtBefore included that unrelated
+window. close-window -w vadwatchers deletes ONLY the vadwatchers window, so the
+global count fell past the threshold IMMEDIATELY — the wait loop exited BEFORE
+the async close-window had actually finished tearing down vadwatchers. The
+subsequent new-tab -w vadwatchers then found the stale window still alive and
+opened a SECOND tab in it. This is exactly why the bug was intermittent (only
+with another WT window open) and why the static layout test could not catch it:
+the test only asserted the reset EXISTED between the name assignment and
+new-tab, not that the wait was correctly SCOPED.
+
+Fix
+---
+Replace the global-count wait with a wait scoped to the NAMED window alone:
+probe `wt -w vadwatchers get-property windowId` and treat a non-zero exit as
+"the named window is gone". This is independent of any other WT windows the
+user has open, so it can never give a false "ready" signal. The 1.5s cap is
+kept so a slow WT still proceeds rather than hanging. The now-unused
+WtHostWin Add-Type (global enum) was removed.
+
+Test hardening
+--------------
+Added a 6th It block to launcher_equal_quarters.tests.ps1 asserting:
+  - a scoped probe `wt -ArgumentList "-w", $wtWindowName, "get-property"` exists
+  - the old global-count wait (`WtHostWin::Get() -ge $wtBefore`) is GONE
+  - the WtHostWin class is no longer defined
+This locks the scoping so the intermittent 2-tab regression cannot silently
+return, and directly guards the exact pattern that caused it.
+
+Verification
+------------
+- Launcher parses clean (PSParser: 4963 tokens, 0 errors).
+- launcher_equal_quarters: 7/7 PASS (new 6th block included).

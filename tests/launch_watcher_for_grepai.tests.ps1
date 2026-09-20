@@ -33,12 +33,14 @@ $ErrorActionPreference = 'Stop'
 $launcherPath = Join-Path $PSScriptRoot '..\###2.launch_watcher_for_grepai.ps1'
 $launcherPath = [System.IO.Path]::GetFullPath($launcherPath)
 if (-not (Test-Path $launcherPath)) {
-    # This checkout does not ship ###2.launch_watcher_for_grepai.ps1: it is a
-    # stripped extraction of VAD, and the file is absent from git history
-    # entirely. A missing target says nothing about the launcher, so report and
-    # exit 0 instead of throwing - tests/test_launch_watcher_for_grepai_ps1.py
-    # already SKIPs on exactly this condition for the pytest run, and this file
-    # has to behave the same way when a sweep runs it directly.
+    # Tier B landed here on 2026-09-20: ###2.launch_watcher_for_grepai.ps1 and
+    # its .bat wrapper were ported from VAD, so this checkout DOES ship the
+    # launcher and this guard no longer fires here (the suite reports 19 passed,
+    # 0 failed). It is kept because a checkout that does not ship the script
+    # must still SKIP: a missing target says nothing about the launcher, and
+    # tests/test_launch_watcher_for_grepai_ps1.py SKIPs on exactly this
+    # condition for the pytest run, so this file has to behave the same way
+    # when a sweep runs it directly.
     Write-Host "SKIP: launcher under test is not shipped by this checkout: $launcherPath"
     exit 0
 }

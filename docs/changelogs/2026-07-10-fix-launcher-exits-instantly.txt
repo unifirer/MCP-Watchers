@@ -1,0 +1,71 @@
+================================================================================
+FIX: launcher exited immediately instead of waiting for grepai to run
+================================================================================
+Date/Time : 2026-07-10 (Fri) local
+File      : ###launch watcher for grepai.ps1
+Author    : Hermes agent (user-corrected)
+
+--------------------------------------------------------------------------------
+SYMPTOM
+--------------------------------------------------------------------------------
+After a prior session "fixed" an immediate crash, the launcher would exit 0
+instantly in every path - including when grepai WAS installed. The watcher
+effectively never stayed up from the user's perspective (and a chat-only
+"skip grepai this session" toggle had been wrongly baked into the script,
+disabling the watcher entirely). The intended behaviour is:
+  - launch `grepai watch --background`
+  - WAIT until grepai confirms "Status: running"
+  - only THEN exit, leaving grepai's own process running for real-time indexing.
+
+--------------------------------------------------------------------------------
+ROOT CAUSE
+--------------------------------------------------------------------------------
+1. A `$SkipGrepaiThisSession = $true` flag had been added to the script to honor
+   a chat-scoped request ("skip grepai commands this session"). That request
+   applied to the AGENT, not to the watcher script - baking it in disabled the
+   watcher's whole purpose.
+2. Even with the skip removed, the launch block called grepai and then did
+   `exit 0` unconditionally without confirming grepai was actually running. The
+   launcher never waited for the watcher to come up.
+
+--------------------------------------------------------------------------------
+FIX
+--------------------------------------------------------------------------------
+- Removed the `$SkipGrepaiThisSession` toggle; the script always attempts to
+  launch the watcher (consistent with the June 27 / July 9 design intent).
+- Replaced the launch+instant-exit block with:
+    * Start-Process grepai watch --background -WindowStyle Hidden
+    * A polling loop (up to 30s) that calls `grepai watch --status` and also
+      falls back to a CIM process check for "*watch*".
+    * Exit 0 only after "Status: running" is confirmed; grepai's process keeps
+      running in the background.
+- Hard-failure paths (grepai missing, launch threw, never reported running)
+  now hold the console with "Press Enter to exit" and exit 1, so the window
+  does not silently vanish (matches launch-script error rules).
+
+--------------------------------------------------------------------------------
+VERIFICATION (empirical)
+--------------------------------------------------------------------------------
+- Syntax: PowerShell AST ParseFile -> SYNTAX OK.
+- Missing-binary path (PATH stripped): now writes error + "Press Enter to exit"
+  and exits 1 (previously exited 0 silently).
+- Already-running path (grepai up): clean exit 0.
+- Fresh-launch path: after `grepai watch --stop`, ran the launcher -> it printed
+  "Starting grepai watch (background)..." then "grepai watch is running
+  (confirmed after 1 s). Launcher exiting; grepai continues in the background."
+  exit 0; `grepai watch --status` then confirmed a NEW PID still "Status: running"
+  (launcher exited, watcher persisted).
+- Confirmed grepai's real flags: `grepai watch --background` and
+  `grepai watch --status` (returns "Status: running", PID, Log file). The
+  status-string match in the wait loop is exact.
+
+--------------------------------------------------------------------------------
+NOTES
+--------------------------------------------------------------------------------
+- The script does NOT call any .bat file. There is no
+  ###launch watcher for grepai.bat in the repo (only Setup_Dependencies.bat
+  exists). The June 27 change log references such a .bat wrapper for double-click
+  launch under -ExecutionPolicy Bypass; it is currently missing. Double-clicking
+  the .ps1 directly hits Windows' Restricted policy and the window flashes/closes
+  (looks like a crash). Recreate the .bat wrapper if double-click launch is
+  needed - see user follow-up.

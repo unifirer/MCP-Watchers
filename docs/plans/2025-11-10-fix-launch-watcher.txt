@@ -1,0 +1,24 @@
+PLAN: Fix launch watcher for grepai.ps1 crash
+
+Overview:
+The PowerShell script `@@launch watcher for grepai.ps1` crashes immediately upon launch because `grepai watch` fails to start when the dependency `ollama` is not running. It spawns a separate window which exits immediately, giving the user no feedback on why it failed.
+
+Goals:
+1. Check if `grepai` is installed on PATH.
+2. Check if the required `ollama` dependency is running via a lightweight HTTP request to http://localhost:11434/.
+3. If `ollama` is not running, attempt to automatically start it in the background if `ollama` is installed on PATH.
+4. Check if `grepai watch` is already running to avoid launching duplicate instances.
+5. If not running, start it using `grepai watch --background`.
+6. Handle any launch failure gracefully by displaying a clear error message and requiring "Press Enter to exit" as specified in CLAUDE.md.
+7. If successful, exit normally without prompting the user.
+
+Steps:
+1. Write the plan in plans/fix-launch-watcher.txt.
+2. Create a bead to track this bug fix.
+3. Claim the bead and update status.
+4. Read and edit `@@launch watcher for grepai.ps1` with the robust implementation.
+5. Verify the script behavior under various scenarios:
+   - When Ollama is stopped (verify auto-start works).
+   - When grepai watch starts successfully.
+   - When grepai watch is already running.
+6. Record bug fix in changelogs/ and close the bead.

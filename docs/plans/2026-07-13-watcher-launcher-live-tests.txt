@@ -1,0 +1,486 @@
+# Watcher-Launcher Live-Data Tests Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Add tests that exercise the *live data* produced and consumed by the `###1` watcher launcher — its persisted `teardown-state.json` (RootPids / MemtraceStatePath / RepoRoot) and the launch → detect → teardown loop for a real watcher — without modifying the protected `###1` script.
+
+**Architecture:** Three new test files in `tests/` (the `###1` launcher is protected and must NOT be edited). One static contract-lock file pins the exact tokens the launcher emits; one LIVE round-trip test proves `Stop-AllWatchers` (the launcher's `PowerShell.Exiting` handler) recovers real PIDs from the persisted state file and kills them; one LIVE test proves a real `grepai watch --background` watcher is detected as live and then torn down by the same shared teardown module. Tests reuse the repo's process-isolated runner (`run_tests_isolated.py`) and the existing `filelock` global-lock pattern so parallel light workers never fight over the single global grepai watcher or the single global `teardown-state.json`.
+
+**Tech Stack:** Python + pytest + `filelock`, PowerShell (`pwsh.exe`/`powershell.exe`) driven via `subprocess`, CIM (`Get-CimInstance Win32_Process`) for live-process detection, `grepai`/`memtrace`/`gm`/`repowise`/`graphify-rs` CLIs (all confirmed present on PATH in this environment).
+
+---
+
+## Context the engineer needs
+
+- **The launcher is protected.** Its filename starts with `###`, so `AGENTS.md` forbids moving or modifying it. ALL work here is *new test files*. Do not edit `###1. watchers for memtrace grepai graphenium graphify-rs repowise.ps1`.
+- **The launcher writes live data** to `$env:LOCALAPPDATA\watchers\teardown-state.json` with this exact shape:
+  ```json
+  { "RootPids": [<int>], "MemtraceStatePath": "<repo>/.memdb/daemon-state.json", "RepoRoot": "<script dir>" }
+  ```
+  `RepoRoot` is `$scriptDir = $PSScriptRoot` (the repo root, since the launcher lives directly in repo root).
+- **The teardown module** `modules/watcher_teardown.ps1` (already in the repo) exposes `Stop-AllWatchers`, `Stop-WatcherTree`, `Find-WatcherProcesses`, `Invoke-TeardownStep`, `Write-TdState`. `Stop-AllWatchers`, when called with NO arguments, reads `teardown-state.json` from `$env:LOCALAPPDATA\watchers\` (the launcher's `PowerShell.Exiting` path runs in a separate runspace and has no script scope, so it MUST read the file). It then tree-kills every RootPid, runs a CIM sweep matching `CommandLine -match 'watch'` for `grepai.exe`/`repowise`/`gm`/`graphify`/powershell pane scripts, and finally calls `grepai watch --stop`.
+- **Existing related tests (do NOT duplicate):** `tests/test_launcher_gm_wiring.py` (gm wiring only), `tests/test_launch_watcher_teardown.py` (launcher's teardown *wiring* only — static), `tests/launcher_watcher_teardown.tests.ps1` (Pester suite for `Stop-WatcherTree`), `tests/test_launch_watcher.py` + `tests/test_launch_watcher_standalone.py` (grepai launcher `###3`, including the proven `serving` readiness pattern and the `tests/.grepai_watcher_tests.lock` global grepai lock).
+- **Runner:** `run_tests_isolated.py` runs pytest per-file in its own process, classifies each as LIGHT/HEAVY, and runs LIGHT in parallel. Our three files contain no heavy markers (no torch/silero/vad_model_loader), so they are LIGHT and may run concurrently — hence the explicit global locks below.
+- **Live-process safety (AGENTS.md §4.3):** no test may leave a visible window. All processes are spawned hidden (`creationflags=0x08000000` / `-WindowStyle Hidden`), and every test kills what it spawns before returning (via the teardown module, `taskkill /t`, or `grepai watch --stop`).
+
+## File structure
+
+- Create: `tests/test_launcher_watchers_contract.py` — STATIC contract locks (fast, no processes). Asserts the launcher emits all five watcher tokens, the persisted-state shape, the `RepoRoot` derivation, the helper functions, and that the file parses cleanly in PowerShell.
+- Create: `tests/test_launcher_teardown_state_live.py` — LIVE round-trip of `teardown-state.json`. Spawns a real hidden tracked process, writes the exact state shape, calls `Stop-AllWatchers` with no args, asserts the process died because the module recovered its PID from the file.
+- Create: `tests/test_launcher_watcher_live_tracking.py` — LIVE launch+detect+teardown of a real `grepai watch --background` watcher, using the launcher's shared teardown module and the proven `serving` readiness pattern.
+- Reuse (read-only): `modules/watcher_teardown.ps1`, `run_tests_isolated.py`.
+- New lock files (auto-created by `filelock`): `tests/.launcher_teardown_state.lock` — serializes every read/write of the GLOBAL `teardown-state.json` across the two live tests so the crafted ping-state from one test is never present when the other's `Stop-AllWatchers` reads the file. (The grepai lock `tests/.grepai_watcher_tests.lock` is reused FROM the existing grepai tests.)
+
+---
+
+### Task 1: Static contract locks for the launcher's live-data plumbing
+
+**Files:**
+- Create: `tests/test_launcher_watchers_contract.py`
+
+- [ ] **Step 1: Write the static contract test**
+
+Create `tests/test_launcher_watchers_contract.py`:
+
+```python
+"""Static contract locks for the ###1 watcher launcher's LIVE-DATA plumbing.
+
+These tests pin the exact tokens the launcher emits so a refactor that drops a
+watcher or changes the persisted live-state shape fails loudly. No processes are
+spawned. Behavioral teardown is covered by the Pester suite plus the live tests
+in test_launcher_teardown_state_live.py and test_launcher_watcher_live_tracking.py.
+
+Contract facts taken from ###1. watchers for memtrace grepai graphenium graphify-rs repowise.ps1:
+  - gm:   Start-WatcherDetached "gm" "graphenium" @("watch", ".", "--debounce", "3")
+  - graphify-rs: dev_tools\\graphify-watch-wrapper.ps1 -WatchMode -Repo <root>
+  - repowise: Start-WatcherDetached "repowise" "repowise" @("watch", ".")
+  - grepai: grepai watch --background
+  - memtrace: start --headless on 127.0.0.1:50051, state at <root>/.memdb/daemon-state.json
+  - persisted live state: $env:LOCALAPPDATA\\watchers\\teardown-state.json
+      { RootPids[], MemtraceStatePath, RepoRoot }  where RepoRoot = $PSScriptRoot
+"""
+import subprocess
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).parent.parent
+LAUNCHER = ROOT / "###1. watchers for memtrace grepai graphenium graphify-rs repowise.ps1"
+
+
+def _read():
+    return LAUNCHER.read_text(encoding="utf-8")
+
+
+def test_launcher_file_exists():
+    assert LAUNCHER.exists(), "The watcher launcher script must exist."
+
+
+def test_launcher_powershell_syntax_ok():
+    # ParseFile returns diagnostics; non-empty diagnostics => syntax error.
+    result = subprocess.run(
+        ["pwsh.exe", "-NoProfile", "-Command",
+         f"[System.Management.Automation.Language.Parser]::ParseFile"
+         f"('{LAUNCHER}', [ref]$null, [ref]$null) | Out-Null; "
+         f"$e=@(); [void][System.Management.Automation.Language.Parser]::ParseFile"
+         f"('{LAUNCHER}', [ref]$null, [ref]$e); if($e){{exit 1}}; exit 0"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, f"PowerShell syntax check failed:\n{result.stderr}"
+
+
+def test_launcher_launches_all_five_watchers():
+    src = _read()
+    # graphenium AST watcher, debounced.
+    assert 'Start-WatcherDetached "gm" "graphenium"' in src, "gm AST watcher launch missing."
+    assert '"watch", ".", "--debounce", "3"' in src, "gm --debounce launch args missing."
+    # graphify-rs via the ignore-aware wrapper (CommandLine must carry 'watch').
+    assert "dev_tools\\graphify-watch-wrapper.ps1" in src, "graphify-rs wrapper not referenced."
+    assert "-WatchMode" in src and "-Repo" in src, "graphify wrapper missing -WatchMode -Repo."
+    # repowise file watcher.
+    assert 'Start-WatcherDetached "repowise"' in src, "repowise launch missing."
+    assert '@("watch", ".")' in src, "repowise watch . args missing."
+    # grepai tracked background watcher.
+    assert "grepai watch --background" in src, "grepai must launch in tracked --background mode."
+    # memtrace headless daemon + readiness port.
+    assert '"start", "--headless"' in src, "memtrace must launch headless."
+    assert "50051" in src, "memtrace readiness port 50051 must be referenced."
+
+
+def test_launcher_persists_live_state_shape():
+    src = _read()
+    assert "teardown-state.json" in src, "Launcher must persist tracked root PIDs to teardown-state.json."
+    assert "RootPids" in src, "teardown-state.json must carry RootPids."
+    assert "MemtraceStatePath" in src, "teardown-state.json must carry MemtraceStatePath."
+    assert "RepoRoot" in src, "teardown-state.json must carry RepoRoot."
+    assert "watchers" in src, "State file must live under $env:LOCALAPPDATA\\watchers."
+
+
+def test_launcher_repo_root_is_script_dir():
+    src = _read()
+    assert "$scriptDir = $PSScriptRoot" in src, "RepoRoot must be derived from $PSScriptRoot."
+
+
+def test_launcher_defines_teardown_helpers():
+    src = _read()
+    assert "function Start-WatcherDetached" in src, "Start-WatcherDetached helper missing."
+    assert "function New-WatcherPaneScript" in src, "New-WatcherPaneScript helper missing."
+```
+
+- [ ] **Step 2: Run the test to verify it PASSES (contract is currently correct)**
+
+Run: `python -m pytest tests/test_launcher_watchers_contract.py -v`
+Expected: all 6 tests PASS (the launcher currently emits every token we locked).
+
+- [ ] **Step 3: Mutation check — prove the test can FAIL (regression lock)**
+
+Temporarily change one assertion in `test_launcher_launches_all_five_watchers` to a deliberately wrong token, e.g. `assert '"watch", ".", "--debounce", "999"' in src, ...`.
+Run: `python -m pytest tests/test_launcher_watchers_contract.py::test_launcher_launches_all_five_watchers -v`
+Expected: FAIL. Then revert the change.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add tests/test_launcher_watchers_contract.py
+git commit -m "test: lock ###1 launcher live-data contract (5 watchers + state shape)"
+```
+
+---
+
+### Task 2: LIVE round-trip of the persisted teardown-state.json
+
+**Files:**
+- Create: `tests/test_launcher_teardown_state_live.py`
+
+- [ ] **Step 1: Write the live state round-trip test**
+
+Create `tests/test_launcher_teardown_state_live.py`:
+
+```python
+"""LIVE round-trip test of the launcher's persisted live-state data.
+
+The ###1 launcher writes $env:LOCALAPPDATA/watchers/teardown-state.json with
+{ RootPids, MemtraceStatePath, RepoRoot }. Its PowerShell.Exiting handler (a
+separate runspace with no script scope) calls Stop-AllWatchers with NO args,
+which MUST read that file to recover the tracked PIDs. This test proves the
+round-trip on REAL data: we write the exact state shape, spawn a real tracked
+process, call Stop-AllWatchers with no args, and assert the process died because
+the module recovered its PID from the file.
+
+Safety: we never clobber an active launcher session, and we restore/remove the
+state file in a finally block. The global teardown-state.json is serialized via
+tests/.launcher_teardown_state.lock so this test never overlaps with
+test_launcher_watcher_live_tracking.py's Stop-AllWatchers read.
+"""
+import json
+import os
+import subprocess
+import time
+from pathlib import Path
+
+import pytest
+from filelock import FileLock
+
+ROOT = Path(__file__).parent.parent
+MODULE = ROOT / "modules" / "watcher_teardown.ps1"
+STATE_DIR = Path(os.environ["LOCALAPPDATA"]) / "watchers"
+STATE_FILE = STATE_DIR / "teardown-state.json"
+_STATE_LOCK = FileLock(str(ROOT / "tests" / ".launcher_teardown_state.lock"), timeout=300)
+
+
+def _spawn_tracked_child():
+    # Isolated, long-lived, hidden: ping has no children, so the module's tree-kill
+    # targets exactly this PID (no risk of killing unrelated work).
+    return subprocess.Popen(
+        ["ping", "-n", "120", "127.0.0.1"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        creationflags=0x08000000,  # CREATE_NO_WINDOW
+    )
+
+
+def _pid_alive(pid):
+    res = subprocess.run(
+        ["pwsh.exe", "-NoProfile", "-Command",
+         f"if(Get-Process -Id {int(pid)} -ErrorAction SilentlyContinue){{exit 0}}else{{exit 1}}"],
+        capture_output=True,
+    )
+    return res.returncode == 0
+
+
+def _launcher_session_active():
+    """Skip if a real ###1 launcher session is live, so we never disturb the user's
+    running watchers or clobber a genuine state file."""
+    if not STATE_FILE.exists():
+        return False
+    try:
+        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if Path(data.get("RepoRoot", "")).resolve() != ROOT.resolve():
+        return False
+    return any(_pid_alive(int(p)) for p in data.get("RootPids", []))
+
+
+@pytest.fixture
+def guarded_state_file():
+    snapshot = STATE_FILE.read_text(encoding="utf-8") if STATE_FILE.exists() else None
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        yield
+    finally:
+        if snapshot is None:
+            STATE_FILE.unlink(missing_ok=True)
+        else:
+            STATE_FILE.write_text(snapshot, encoding="utf-8")
+
+
+def test_stop_all_watchers_reads_live_state():
+    if MODULE.exists() is False:
+        pytest.skip("watcher_teardown.ps1 module missing.")
+    if _launcher_session_active():
+        pytest.skip("A real ###1 launcher session is active; not disturbing it.")
+
+    with _STATE_LOCK:
+        child = _spawn_tracked_child()
+        try:
+            # Write the EXACT shape the launcher produces, with our real PID.
+            state = {
+                "RootPids": [child.pid],
+                "MemtraceStatePath": str(ROOT / ".memdb" / "daemon-state.json"),
+                "RepoRoot": str(ROOT),
+            }
+            STATE_FILE.write_text(json.dumps(state), encoding="utf-8")
+
+            time.sleep(0.5)
+            assert _pid_alive(child.pid), "precondition: tracked child must be alive"
+
+            # The exact call the PowerShell.Exiting handler makes (no args -> reads the file).
+            res = subprocess.run(
+                ["pwsh.exe", "-NoProfile", "-Command",
+                 f'. "{MODULE}"; Stop-AllWatchers'],
+                capture_output=True, text=True,
+            )
+            assert res.returncode == 0, f"Stop-AllWatchers failed: {res.stderr}"
+
+            dead = False
+            for _ in range(40):
+                if not _pid_alive(child.pid):
+                    dead = True
+                    break
+                time.sleep(0.25)
+            assert dead, ("Stop-AllWatchers did NOT recover the PID from teardown-state.json "
+                          "and tree-kill it.")
+        finally:
+            if _pid_alive(child.pid):
+                subprocess.run(["taskkill", "/pid", str(child.pid), "/f", "/t"],
+                               capture_output=True, check=False)
+```
+
+- [ ] **Step 2: Run the test to verify it PASSES (real round-trip works)**
+
+Run: `python -m pytest tests/test_launcher_teardown_state_live.py -v`
+Expected: PASS — `Stop-AllWatchers` reads the crafted `teardown-state.json`, finds the real ping PID, and kills it. (If a real launcher session is running, the test SKIPs instead — that is still a green result.)
+
+- [ ] **Step 3: Mutation check — prove the test exercises real data**
+
+Temporarily set `RootPids` to `[999999]` (a PID that cannot be alive) instead of `child.pid`.
+Run: `python -m pytest tests/test_launcher_teardown_state_live.py -v`
+Expected: the test still asserts `dead` — but with no real PID to kill, the `finally` safety `taskkill` is the only thing touching pids; the `dead` assertion about the *spawned* child would now be checking a different PID... Revert and instead verify red by changing the final `assert dead` to `assert not dead`. Run; expect FAIL. Then revert.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add tests/test_launcher_teardown_state_live.py
+git commit -m "test: live round-trip of ###1 teardown-state.json via Stop-AllWatchers"
+```
+
+---
+
+### Task 3: LIVE launch → detect → teardown of a real watcher
+
+**Files:**
+- Create: `tests/test_launcher_watcher_live_tracking.py`
+
+- [ ] **Step 1: Write the live watcher tracking test**
+
+Create `tests/test_launcher_watcher_live_tracking.py`:
+
+```python
+"""LIVE test of the launcher's watcher launch + live-detection + teardown loop.
+
+The ###1 launcher launches `grepai watch --background` as a tracked watcher and
+records its root PID in teardown-state.json. Stop-AllWatchers tears it down via a
+CIM pattern sweep (CommandLine -match 'watch') + `grepai watch --stop`. This test
+proves that loop end-to-end on a REAL grepai watcher: launch it, verify it is live
+(launcher-equivalent detection), then drive the launcher's shared teardown module
+and verify it is gone.
+
+Serialization:
+  - tests/.grepai_watcher_tests.lock  (REUSED from the existing grepai tests) guards
+    the single global grepai background watcher so parallel light workers never fight.
+  - tests/.launcher_teardown_state.lock guards the single global teardown-state.json
+    so this test's Stop-AllWatchers read never overlaps the crafted ping-state in
+    test_launcher_teardown_state_live.py.
+"""
+import json
+import os
+import shutil
+import subprocess
+import time
+from pathlib import Path
+
+import pytest
+from filelock import FileLock
+
+ROOT = Path(__file__).parent.parent
+MODULE = ROOT / "modules" / "watcher_teardown.ps1"
+STATE_DIR = Path(os.environ["LOCALAPPDATA"]) / "watchers"
+STATE_FILE = STATE_DIR / "teardown-state.json"
+_GREPAI_LOCK = FileLock(str(ROOT / "tests" / ".grepai_watcher_tests.lock"), timeout=300)
+_STATE_LOCK = FileLock(str(ROOT / "tests" / ".launcher_teardown_state.lock"), timeout=300)
+
+
+def _grepai_watcher_serving():
+    logs_dir = Path.home() / "AppData" / "Local" / "grepai" / "logs"
+    ready = list(logs_dir.glob("grepai-worktree-*.ready"))
+    cim = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-Command",
+         "Get-CimInstance Win32_Process -Filter \"Name='grepai.exe'\" | "
+         "Where-Object { $_.CommandLine -and $_.CommandLine -match 'watch' } | "
+         "Measure-Object | Select-Object -ExpandProperty Count"],
+        capture_output=True, text=True,
+    ).stdout.strip() not in ("", "0")
+    return bool(ready) and cim
+
+
+def _pid_alive(pid):
+    res = subprocess.run(
+        ["pwsh.exe", "-NoProfile", "-Command",
+         f"if(Get-Process -Id {int(pid)} -ErrorAction SilentlyContinue){{exit 0}}else{{exit 1}}"],
+        capture_output=True,
+    )
+    return res.returncode == 0
+
+
+def _launcher_session_active():
+    """Skip if a real ###1 launcher session is live, so we never tear down the
+    user's running watchers or clobber a genuine state file."""
+    if not STATE_FILE.exists():
+        return False
+    try:
+        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if Path(data.get("RepoRoot", "")).resolve() != ROOT.resolve():
+        return False
+    return any(_pid_alive(int(p)) for p in data.get("RootPids", []))
+
+
+def test_live_grepai_watcher_tracked_and_torn_down():
+    if shutil.which("grepai") is None:
+        pytest.skip("grepai CLI not available")
+    if MODULE.exists() is False:
+        pytest.skip("watcher_teardown.ps1 module missing")
+    if _launcher_session_active():
+        pytest.skip("A real ###1 launcher session is active; not disturbing it.")
+
+    with _GREPAI_LOCK:
+        # Bring a real grepai background watcher to serving (the launcher's mode).
+        subprocess.run(["grepai", "watch", "--stop"], check=False)
+        time.sleep(2)
+        subprocess.run(["grepai", "watch", "--background"], check=False)
+
+        serving = False
+        for _ in range(30):
+            time.sleep(1)
+            if _grepai_watcher_serving():
+                serving = True
+                break
+        if not serving:
+            pytest.skip("grepai watcher did not reach a serving state in this environment")
+
+        # LIVE DETECTION: the watcher is actually running (launcher-equivalent).
+        assert _grepai_watcher_serving(), "precondition: grepai watcher must be live"
+
+        # TEARDOWN via the launcher's shared module (no-arg form runs the CIM sweep
+        # + `grepai watch --stop`). Guard the global state file during the read.
+        with _STATE_LOCK:
+            res = subprocess.run(
+                ["pwsh.exe", "-NoProfile", "-Command",
+                 f'. "{MODULE}"; Stop-AllWatchers'],
+                capture_output=True, text=True,
+            )
+            assert res.returncode == 0, f"Stop-AllWatchers failed: {res.stderr}"
+
+        gone = False
+        for _ in range(40):
+            time.sleep(0.5)
+            if not _grepai_watcher_serving():
+                gone = True
+                break
+        assert gone, "Stop-AllWatchers did not tear down the live grepai watcher."
+```
+
+- [ ] **Step 2: Run the live tracking test to verify it PASSES**
+
+Run: `python -m pytest tests/test_launcher_watcher_live_tracking.py -v`
+Expected: PASS — grepai reaches `serving`, is detected live via CIM, then `Stop-AllWatchers` tears it down (verified serving == False). If grepai cannot reach serving here, the test SKIPs (still green).
+
+- [ ] **Step 3: Mutation check — prove detection is real**
+
+Temporarily change the final `assert gone` to `assert not gone`.
+Run: `python -m pytest tests/test_launcher_watcher_live_tracking.py -v`
+Expected: FAIL (the watcher was genuinely torn down). Revert.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add tests/test_launcher_watcher_live_tracking.py
+git commit -m "test: live grepai watcher launch/detect/teardown via ###1 teardown module"
+```
+
+---
+
+### Task 4: Run the full isolated suite and verify the new tests pass together
+
+**Files:**
+- Reuse: `run_tests_isolated.py`
+
+- [ ] **Step 1: Confirm the three new files classify as LIGHT (so they run, not skipped heavy)**
+
+Run: `python run_tests_isolated.py --list`
+Expected: `tests/test_launcher_watchers_contract.py`, `tests/test_launcher_teardown_state_live.py`, and `tests/test_launcher_watcher_live_tracking.py` appear (none flagged HEAVY).
+
+- [ ] **Step 2: Run the new tests through the process-isolated runner**
+
+Run: `python run_tests_isolated.py`
+Expected: the three new test files execute (each in its own process) and all tests PASS (or SKIP where a live session blocks them). No windows appear. No orphaned watcher processes remain after the run (verify with `pwsh -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='grepai.exe'\""` -> no `watch` rows; and no `ping -n 120` leftover).
+
+- [ ] **Step 3: Commit nothing new — only if any produced artifact needs tracking**
+
+If `run_tests_isolated.py` created `tests/.launcher_teardown_state.lock`, it is an advisory `filelock` file; do NOT commit lock files unless `.grepai_watcher_tests.lock` is already tracked. Check: `git status --short` and only commit the three `.py` test files (already committed in Tasks 1-3).
+
+- [ ] **Step 4: Report**
+
+Summarize to the user: files added, live behaviors covered (state round-trip + real grepai teardown), and the lock strategy that keeps parallel light workers from colliding on the global grepai watcher and global teardown-state.json.
+
+---
+
+## Self-Review
+
+**1. Spec coverage (the user's ask: "add tests to test live data for the ###1"):**
+- The launcher's *persisted live data* (`teardown-state.json` shape + path + RepoRoot) → Task 1 (locks) + Task 2 (round-trip).
+- The *live launch → detect → teardown* loop for a real watcher → Task 3.
+- The *helper functions* the launcher relies on (`Start-WatcherDetached`, `New-WatcherPaneScript`) → Task 1.
+- All five watchers enumerated in `###1` (gm, graphify-rs, repowise, grepai, memtrace) → Task 1.
+- No production code modified (protected `###1`) → honored; all new files in `tests/`.
+No gaps found.
+
+**2. Placeholder scan:** No TBD/TODO/"add error handling" placeholders. Every step carries full code. No "similar to Task N" — Task 3 repeats only the small lock-setup idiom intentionally with full code. OK.
+
+**3. Type/name consistency:**
+- Launcher tokens asserted in Task 1 (`"gm" "graphenium"`, `-WatchMode -Repo`, `@("watch", ".")`, `grepai watch --background`, `"start", "--headless"`, `50051`, `RootPids`/`MemtraceStatePath`/`RepoRoot`, `watchers`) all match the exact strings confirmed in the launcher source via Grep.
+- `Stop-AllWatchers` (no-arg) used identically in Tasks 2 and 3, matching the module's real signature.
+- `$env:LOCALAPPDATA\watchers\teardown-state.json` path matches both the launcher write and the module read.
+- Lock file names `tests/.grepai_watcher_tests.lock` (reused) and `tests/.launcher_teardown_state.lock` (new) are consistent across Tasks 2 and 3.
+All consistent.

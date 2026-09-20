@@ -1,0 +1,108 @@
+PLAN: Split the launcher tailer into a 4-quarter (2x2) watcher view
+=====================================================================
+
+DATE: 2026-07-10
+TARGET FILE: J:\audio\VAD\###1. updater grepai graphenium graphify-rs repowise.ps1
+STATUS: IMPLEMENTED + VERIFIED (pane generation + WT grid spawn). Full-launcher
+        run blocked only by headless grepai launch (environmental, not a code defect).
+
+----------------------------------------------------------------------
+1. GOAL
+----------------------------------------------------------------------
+Replace the single "combined, persistent watcher view" (one PS console tailing all
+four watchers in a labelled poll loop) with a Windows Terminal 2x2 pane grid:
+
+    +-------------------+-------------------+
+    |  grepai (TL)      |  graphenium (TR)  |
+    +-------------------+-------------------+
+    |  graphify-rs (BL) |  repowise (BR)    |
+    +-------------------+-------------------+
+
+Each pane = one watcher's own live log + stderr sidecar. The launcher's own window
+becomes a controller that stays alive and tears everything down on Ctrl+C.
+
+----------------------------------------------------------------------
+2. WHY
+----------------------------------------------------------------------
+A single PS console owns one linear scroll buffer and cannot be partitioned into
+four independent scroll regions. User asked for "4 quarters, one watch per quarter."
+Windows Terminal panes are the low-effort, matching solution (no WinForms/HOST UI).
+
+----------------------------------------------------------------------
+3. APPROACH (as implemented)
+----------------------------------------------------------------------
+- New function New-WatcherPaneScript(Label, LogPath, ErrPath):
+    * Writes temp\panes\tail_<safeLabel>.ps1
+    * Template uses __LABEL__/__LOG__/__ERR__ token .Replace() (NOT -f, because the
+      script body contains literal { } braces that -f misparses).
+    * Each pane runs a foreground polling loop (Get-Content every 500ms, prints only
+      newly-appended lines tagged [label] / [label ERR]). Polling is required:
+      Get-Content -Wait blocks, and a background job's Write-Host does not surface to
+      the pane's own console.
+
+- Build the 2x2 grid with SEPARATE wt invocations (verified: a single ';'-chained
+  arg is NOT parsed correctly by wt on this machine):
+    wt -w _new  new-tab      --title "grepai"      powershell -NoProfile -File "<tail_grepai>"
+    wt          split-pane -V --title "graphenium" powershell ... "<tail_graphenium>"
+    wt          split-pane -H --title "graphify-rs" powershell ... "<tail_graphifyrs>"
+    wt          focus-pane -t 1 ; wt split-pane -H --title "repowise" powershell ... "<tail_repowise>"
+
+- First call uses -w _new so we spawn a DEDICATED new WT window and never hijack an
+  existing interactive WT window.
+
+- Fallback: if Get-Command "wt" is missing, revert to the original combined, labelled
+  tail in the launcher's own window.
+
+- grepai ErrPath is "" (its stderr is merged into its single log, so tailing the err
+  sidecar would double-print). graphenium/graphify-rs/repowise get their .err sidecars.
+
+- trap (Ctrl+C) extended to also kill the per-pane tailer powershell processes
+  (matched by "temp\panes\tail_" command line), in addition to the existing detached
+  watcher kill + grepai watch --stop.
+
+----------------------------------------------------------------------
+4. VERIFICATION (real execution)
+----------------------------------------------------------------------
+- Initial (naive) 4-pane block was written with `wt -w _new` on the FIRST call
+  only, then bare `split-pane`/`focus-pane -t top-left` calls. Two REAL bugs,
+  confirmed against Microsoft's wt.exe CLI docs, not exercised end-to-end at the
+  time (grepai wouldn't launch headless):
+    BUG 1: on a default install windowingBehavior=useNew, every `wt` call WITHOUT
+      -w opens a NEW window. So the 4 calls would spawn 4 STRAY single-pane windows,
+      not one grid. FIX: pass the SAME literal window name (`vadwatchers`) on every
+      call; first creates it, later calls target it by name regardless of the
+      windowingBehavior setting.
+    BUG 2: `focus-pane -t top-left` is invalid - -t takes a numeric creation-order
+      pane ID (0,1,2...), not a position string. wt rejects silently (no PS
+      exception), focus stays wrong, and the final split lands in the wrong quadrant
+      (old order put graphify-rs bottom-right and repowise bottom-left - backwards).
+      FIX: reordered to left column (-H: grepai over graphify-rs), focus-pane -t 0,
+      then -V splits add graphenium (next to grepai) and repowise (next to
+      graphify-rs) -> matches the status-message layout.
+    Added $LASTEXITCODE checks after every wt call so a rejected arg can't leave
+    $wtOk=$true on a broken grid.
+- User supplied the corrected full script; applied verbatim. Re-verified:
+    * PowerShell parse: PARSE_OK (zero syntax errors).
+    * Live wt reproduction of the exact build sequence (dummy panes): resulted in
+      ONE Windows Terminal window holding ALL 4 panes (tail_grepai, tail_graphenium,
+      tail_graphifyrs, tail_repowise). Confirms Bug 1 fix (1 window, not 4).
+    * Cleanup: test window + 4 panes killed, temp dir removed, WT procs = 0.
+- Real launcher full run still blocked at the PRE-EXISTING grepai gate here:
+  `grepai watch --background` does not complete in this headless session -> launcher
+  exits before opening panes. Environmental (user flagged "grepai won't be accurate"
+  headless), NOT a 4-pane defect. On a real desktop (grepai launches) it proceeds.
+
+----------------------------------------------------------------------
+5. RISKS / OPEN ITEMS
+----------------------------------------------------------------------
+- Quadrant layout is a SIDE EFFECT of the deterministic build order above (left col
+  = grepai/graphify-rs, right col = graphenium/repowise) and now matches the status
+  message. Still worth an eyeball on the real desktop; reorder splits if off.
+- Full-launcher end-to-end (live grepai + 4 panes + Ctrl+C teardown) still needs a
+  real desktop run to close the last 10%. Pane-grid-in-one-window is verified.
+
+----------------------------------------------------------------------
+6. CLEANUP (done)
+----------------------------------------------------------------------
+All spawned WT windows, tailer processes, and %TEMP% test scripts removed. The user's
+real gm/graphify-rs/repowise detached watchers were left untouched.

@@ -1,0 +1,119 @@
+================================================================================
+FIX: grepai watcher not tracking file changes
+================================================================================
+Date/Time : 2026-07-09 (Thu) ~17:40 local
+File      : ###launch watcher for grepai.ps1
+Author    : opencode (verified via empirical change-tracking test)
+
+--------------------------------------------------------------------------------
+SYMPTOM
+--------------------------------------------------------------------------------
+The grepai file watcher appeared to be "not working." Symptoms observed:
+  - `grepai watch --status` reported "not running" even though a
+    `grepai.exe watch` process was alive (PID 45404).
+  - `grepai watch --stop` reported "No background watcher is running" yet the
+    process had to be force-killed.
+  - Creating / modifying files did NOT update the index: `.grepai/index.gob`
+    LastWriteTime stayed static, and newly created files never appeared in
+    `grepai search` results.
+  - The running watch process was idle (CPU delta ~0.05s over 6s, 92MB static
+    working set) after completing its initial scan.
+
+--------------------------------------------------------------------------------
+ROOT CAUSE
+--------------------------------------------------------------------------------
+The launch script started the watcher in FOREGROUND mode by spawning a new
+console window:
+
+    $cmdStr = '...; grepai watch; if ($LASTEXITCODE -ne 0) {...}'
+    Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile","-Command",$cmdStr
+
+This bypasses grepai's own background-process registry, so:
+  1. grepai's native `--status` / `--stop` commands are blind to the process.
+  2. The foreground instance does not process filesystem events (it goes idle
+     after the initial scan and stops tracking changes).
+
+A background-mode instance (`grepai watch --background`) correctly registers
+with grepai and reliably tracks both new files and modifications.
+
+--------------------------------------------------------------------------------
+FIX
+--------------------------------------------------------------------------------
+Replaced the foreground `Start-Process` spawn (lines ~132-135) with a direct
+background launch plus exit-code error handling:
+
+    Write-Host "Starting grepai watch (background)..."
+    grepai watch --background
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "grepai watch --background exited with code $LASTEXITCODE..."
+        Write-Host "Press Enter to exit..."; $null = Read-Host; exit 1
+    }
+
+The existing `grepai watch --status` guard (top of script) now works as
+intended, and the CIM fallback check remains as a safety net.
+
+--------------------------------------------------------------------------------
+VERIFICATION (empirical, before vs after)
+--------------------------------------------------------------------------------
+BEFORE (foreground launch):
+  - index.gob mtime unchanged after creating a new file (VAD_WATCH_TEST_zzz.md).
+  - New file absent from `grepai search` results (top scores ~0.51, unrelated).
+  - index.gob mtime unchanged after modifying README.md.
+
+AFTER (background launch, PID 49796 via the actual launch script):
+  - index.gob mtime advanced 17:39:46 -> 17:40:17 after creating a new file.
+  - New file VAD_WATCH_TEST_final.md appeared in `grepai search` results
+    (score 0.523, top-10).
+  - `grepai watch --status` now correctly reports "Status: running (PID 49796)".
+  - `grepai watch --stop` now correctly stops the watcher.
+  - Modification of an existing file (README.md) also advanced index.gob mtime.
+
+All test artifacts (VAD_WATCH_TEST_*.md and README.md markers) were removed
+after each test; repository left clean.
+
+--------------------------------------------------------------------------------
+RECOMMENDATION / FOLLOW-UP
+--------------------------------------------------------------------------------
+- Keep the foreground-spawn pattern out of this script; only `grepai watch
+  --background` is tracked and actively watches.
+- Note: the earlier (Aug-07) grepai-worktree log also contained a Go
+  "fatal error: out of memory" (errno=1455) crash during a prior watch run.
+  If OOM recurs, consider reducing embedder.parallelism (currently 4) or the
+  RPG batch size in .grepai/config.yaml. Not related to this fix.
+
+--------------------------------------------------------------------------------
+TESTS ADDED (2026-07-09)
+--------------------------------------------------------------------------------
+File: tests/test_launch_watcher.py
+
+Added 3 tests covering the fix:
+  1. test_launch_watcher_uses_background_mode
+       - asserts the script invokes 'grepai watch --background' and checks its
+         exit code (the tracked background mode that actually watches).
+  2. test_launch_watcher_no_foreground_watch_spawn
+       - asserts the buggy foreground "Start-Process -> powershell -> grepai
+         watch" spawn is gone (it made the watcher invisible to --status and
+         idle / not tracking changes).
+  3. test_launch_watcher_background_tracks_changes  (integration, guarded)
+       - end-to-end: if grepai + Ollama are available, verifies a newly
+         created file becomes searchable via the background watcher. Skips
+         cleanly when grepai/Ollama are absent.
+
+Also fixed a PRE-EXISTING syntax corruption in the same file: the rename
+commit 299f3c80 ("rename root files from ! and @ prefixes to ###") stripped
+the opening quote from the path string literal in 10 places
+(e.g. `Path(...)/ ###launch watcher for grepai.ps1"`), which broke module
+collection. Restored from the correct HEAD version when re-adding tests.
+
+Verification (ran with --noconftest because the shared tests/conftest.py
+import chain HANGS in this environment; the new tests do not use conftest
+fixtures, so this is a valid isolated run):
+  - 13 grepai-script tests PASS (incl. the 3 new ones).
+  - 2 tests FAIL but are UNRELATED to this fix: they target a different,
+    untracked script "###launch watchers grepai and graphenium.ps1" created
+    today (not in HEAD) and assert it stays open tailing logs
+    (test_launch_watcher_stays_open_visible,
+     test_launch_watcher_shows_visible_view_markers). Those belong to the
+    graphenium launcher and were failing before this change. The graphenium
+    launcher likely shares the same foreground-watch defect and is a
+    candidate follow-up, but is out of scope for this task.

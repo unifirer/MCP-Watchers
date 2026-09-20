@@ -1,0 +1,115 @@
+PLAN: Launcher launch-success smoke test (close the "stuck before WT" blind spot)
+Created: 2026-08-25
+Specialist route: staff-engineer-mode -> testing-and-quality-gates (confidence: high)
+
+== 1. NAMED RISK ==
+Risk: the ###1 launcher can hang or die BETWEEN process start and the Windows
+Terminal grid build, and no test fails when it does. The user-facing contract is
+"double-click ###1 -> a vadwatchers WT window appears". That contract is untested.
+
+== 2. GAP ANALYSIS (current suite: tests/launcher_tests.ps1, T1-T19) ==
+Every existing test is one of two kinds:
+  A. Static source assertions on $src (T9, T15, T16, T17).
+  B. Block extraction + Invoke-Expression of a Substring of $src (T2-T8,
+     T10-T14, T18, T19).
+Both kinds BYPASS the launcher's top-level glue. Nothing ever runs:
+  powershell -NoProfile -File "###1. watchers ... .ps1"
+as a real process to completion of the WT-open step.
+
+== 3. MAPPED PRE-WT STALL POINTS (from ###1 source) ==
+  S1  Lock acquisition retry loop; exits with "Launcher lock could not be
+      acquired" after max retries (line ~138). A regression here can wait forever.
+  S2  Prior-instance tree-kill sweep ("Stopped prior ###1 launcher", line ~175).
+  S3  Exit-IfPortHeldByLauncherDaemon auto-heal loops: memtrace 50051 (~1394),
+      cerememory 8420 (~1473), claude-mcp-server 8080 (~1548).
+  S4  grepai gate + readiness polling loop ("Readiness: wait for a live watch
+      process"; Start-Sleep -Seconds 1 at ~634/762/782).
+  S5  Ollama offline start attempt (~623-639) with its own bounded poll.
+  S6  HARD TRAP: missing-grepai failure path blocks on Read-Host
+      ("Press Enter to exit...", lines 541-545). Under redirected stdin this
+      either hangs forever or returns immediately depending on stdin state.
+SUCCESS THRESHOLD in transcript: "All watchers running. Opening a Windows
+Terminal window with 4 panes:" (line ~2145), followed by a new CASCADIA HWND /
+vadwatchers window and four live panes\tail_* processes.
+
+== 4. DESIGN: TWO NEW TESTS IN tests/launcher_tests.ps1 ==
+
+T20 - END-TO-END LAUNCH SMOKE WITH WATCHDOG (the gap fix)
+  1. Skip guard: if a real ###1 session is active (reuse the T8
+     $t8LauncherActive probe), SKIP. The single-instance guard would make a new
+     instance exit by design; also prevents killing the user's live session.
+  2. Snapshot pre-state: CASCADIA HWND set, watcher PIDs, lock file existence.
+  3. Launch the REAL script headless:
+       Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy',
+         'Bypass','-File',"<launcher>"
+     with stdout+stderr redirected to temp\lt20_transcript.txt and stdin
+     redirected from an EMPTY FILE (so S6's Read-Host falls through instead of
+     hanging; EOF makes Read-Host return $null and the path exits 1 fast).
+  4. Poll every 2s until deadline for BOTH success signals:
+       a. transcript contains the line-2145 marker, AND
+       b. Get-NewCascadiaHwnds shows >=1 new window (or vadwatchers tailer
+          processes appear), matching T8b's HWND set-difference technique.
+  5. PASS only when (a AND b) inside budget.
+  6. FAIL PATH = the actual bug class this test exists for: process still alive
+     past deadline with no marker, OR process exited early. On fail:
+       - print last ~30 transcript lines, and
+       - map the LAST recognized stage marker (S1..S6 strings above) to a named
+         stage so the stall point is named, not guessed.
+  7. Teardown (scoped, mirrors T8 rules):
+       - minimize the new WT window ASAP via ShowWindowAsync(hwnd, 6);
+       - kill only THIS run's delta: pane-tailer processes matched by
+         'panes\tail_' command line, then remove transcript;
+       - never touch user-owned WT windows (pre-HWND snapshot excludes them).
+  Note AGENTS.md 4.3: visibility is inherent to the property under test (WT
+  really opens). Mitigation: minimize within ~200ms of first HWND sight.
+
+T21 - SECOND-INSTANCE FAST-EXIT (guards stall class S1 directly)
+  1. Craft the launcher lock exactly as Write-LauncherLock writes it (read that
+     function first during implementation; holder PID = current test PID, which
+     is alive).
+  2. Run the real script again, stdin from empty file.
+  3. Expect exit within 15s carrying "Launcher already running (PID <pid>)".
+     A hang past 15s fails: that is precisely "stuck before WT".
+  4. Remove crafted lock in finally.
+
+== 5. BUDGETS AND MEASUREMENT ==
+  Task 0 (before coding): measure one clean manual headless launch; record
+  elapsed seconds over 3 runs; set T20 deadline = max(90s, p95 x 2).
+  Provisional default until measured: 120s hard watchdog.
+  Runtime cost statement: T20 adds ~launch-duration to the canonical gate;
+  happy path equals real startup time, worst case adds the watchdog budget.
+  Gate-integrity rule: do NOT drop T8/T15 coverage to pay for T20; provide
+  param(-SkipSmoke) on launcher_tests.ps1 so fast iteration lanes exist without
+  deleting the blocking check from the canonical gate.
+
+== 6. FAILURE RESPONSE PER BLOCKING CHECK (specialist contract) ==
+  T20 FAIL: inspect printed transcript tail; the named stage tells which guard
+  regressed. Verify fix: re-run
+    powershell -NoProfile -ExecutionPolicy Bypass -File tests/run_launcher_tests.ps1
+  Quarantine: if 2 consecutive failures are proven environmental (tool missing,
+  port held by an external app), downgrade to [SKIP] WITH a dated expiry note
+  in the skip message; fix or re-promote within that window.
+  T21 FAIL: inspect lock dir %LOCALAPPDATA%\watchers\###1-launcher.lock and the
+  crafted fixture; verify with a single re-run after clearing stale locks.
+
+== 7. FLAKE POLICY ==
+  Skip guards (live ###1 session, wt.exe absent, grepai absent per T6/T7
+  precedent) keep environment-caused noise out of the blocking set. Rerun-
+  disagreement on T20 triggers quarantine review, not silent reruns.
+
+== 8. FILES TOUCHED ==
+  Modify ONLY tests/launcher_tests.ps1 (+ optional plumbing in
+  tests/run_launcher_tests.ps1 for -SkipSmoke passthrough).
+  ###-prefixed launchers are PROTECTED FROM EDITS (.planning/codebase/
+  STRUCTURE.md); the design needs zero launcher changes because both success
+  and stall signals are externally observable.
+
+== 9. VERIFICATION COMMANDS ==
+  powershell -NoProfile -ExecutionPolicy Bypass -File tests/run_launcher_tests.ps1
+  cd J:\audio\VAD\tests && pytest -c pytest.ini test_launcher.py -q   (shim lane)
+  Expected terminal proof: "[PASS] T20 launcher reaches WT-open marker within
+  budget" / "[PASS] T21 second instance exits fast".
+
+== 10. OUT OF SCOPE ==
+  No changes to ###1 body, no new pytest files, no CI wiring beyond the existing
+  canonical gate entry points.

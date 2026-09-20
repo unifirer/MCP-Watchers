@@ -1,0 +1,60 @@
+2026-07-18  launcher tab-scoped teardown (close only the tabs it opens, not the whole window)
+
+PROBLEM
+-------
+The ###1 launcher's teardown nuked the ENTIRE `vadwatchers` Windows Terminal
+window on Ctrl+C / [X] / pre-grid reset, via `wt close-window -w vadwatchers`.
+That also destroyed any OTHER tabs the user had opened inside that window
+(grep, ssh, other watchers), because close-window is window-scoped. The
+regression test (tests/launcher_equal_quarters.tests.ps1) was even asserting the
+whole-window close-window form, locking in the wrong behavior.
+
+FIX
+---
+Teardown now closes ONLY the 2x2 tab this launcher itself opened, never the
+whole window:
+
+1. Capture the launcher's own tab GUID.
+   - `new-tab` is now called with `--tabIdFile <tmp>`; WT 1.24 writes the new
+     tab's GUID there. We read it into $script:wtTabId and delete the temp file.
+   - Persist WtWindowName + TabId into the existing
+     %LOCALAPPDATA%/watchers/teardown-state.json (alongside RootPids).
+
+2. Ctrl+C trap -> `wt -w vadwatchers close-tab --target <tabId>` (real
+   -ArgumentList ARRAY, not a `& wt` whole-string which arg-collapses to
+   0x80070002). Falls back to close-window ONLY when $script:wtTabId is null
+   (wt build without --tabIdFile / first launch) -- better to close the window
+   than leak the pane grid.
+
+3. Pre-grid reset -> read the prior run's TabId from teardown-state.json and
+   `close-tab --target <priorTabId>`. This removes only the stale launcher tab
+   (the source of the old "2 tabs instead of 1" / unequal-quarters bug) while
+   leaving the user's other vadwatchers tabs alive. Whole-window close-window is
+   now only the no-state fallback. The readiness wait now probes the SPECIFIC
+   tab via `wt -w vadwatchers get-tabinfo --target <id>` (fails once gone)
+   instead of probing the whole window.
+
+4. Modules/watcher_teardown.ps1 Stop-AllWatchers (used by the PowerShell.Exiting
+   handler, which has no script scope) now also closes only the tab: it reads
+   TabId/WtWindowName from teardown-state.json and issues close-tab --target,
+   with the same close-window fallback.
+
+REGRESSION GUARD
+----------------
+tests/launcher_equal_quarters.tests.ps1 updated so the two teardown It blocks
+assert TAB-SCOPED teardown:
+- Reset happens between the window-name assignment and new-tab and uses
+  close-tab --target (array form), with close-window permitted only as the
+  no-tabId fallback.
+- Ctrl+C trap uses close-tab --target via -ArgumentList ARRAY (no `& wt`), and
+  the tab-scoped close appears BEFORE any close-window fallback.
+- Wait probe now expects get-tabinfo --target (tab-scoped), not the old
+  whole-window get-property probe.
+All 7 tests pass.
+
+VERIFIED
+--------
+- Invoke-Pester .\tests\launcher_equal_quarters.tests.ps1 -> 7 passed / 0 failed.
+- Launcher + teardown modules parse with zero syntax errors.
+- (Note: tests/launcher_tests.ps1 T7 fails ONLY due to a sandbox path-allowlist
+  block writing c:\temp\vad-watchers -- unrelated to this change, pre-existing.)

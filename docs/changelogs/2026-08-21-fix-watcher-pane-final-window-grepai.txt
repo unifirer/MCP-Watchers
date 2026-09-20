@@ -1,0 +1,22 @@
+2026-08-21 — fix watcher pane liveness for final split window (repowise) and grepai pane
+
+Symptom
+- The grepai window did not show correct info in the final split window (BR repowise). After a PID rotation (watcher restart) the repowise pane closed (its WatchPid 64000 was stale while a new repowise watch PID 82848 was alive), leaving the 2x2 grid with missing quarters. The grepai pane also closed when grepai watch panicked (concurrent map write), leaving the WT window with 2 panes and unequal quarters. The final window appeared empty or showed stale content.
+
+Root cause
+- Pane tailer liveness guard used PID-only check (Test-WatcherAlive). When a watcher restarted with a new PID (e.g. repowise 64000 -> 82848) the guard returned false and the pane exited, even though a live watcher of the same tool existed. The fallback for empty PID was $false for non-grepai panes, so a pane whose watcher had failed to start also closed immediately instead of probing for any live watcher. grepai already had an any-watch probe; the other three panes did not.
+
+Fix
+- ###1. watchers for memtrace grepai graphenium graphify-rs repowise.ps1:
+  - Added Test-GrapheniumWatcherAlive, Test-GraphifyRsWatcherAlive, Test-RepowiseWatcherAlive (any-watch probes: gm watch, powershell graphify-watch-wrapper WatchMode, repowise watch).
+  - Updated liveness guard: if WatchPid exists, check PID, then fallback to per-label any-watch probe; if WatchPid empty, probe per label (grepai, graphenium, graphify-rs, repowise) instead of immediate $false. This keeps the final window (repowise) alive across PID rotations and keeps graphenium/graphify-rs alive similarly.
+  - grepai pane already used any-watch probe; now other panes do too. The final split window (BR repowise) now correctly tails C:\Temp\vad-watchers\watchers\repowise.log and shows [repowise] lines, not grepai content.
+
+Verification
+- Script parses clean (PSParser 0 errors).
+- tests/launcher_equal_quarters.tests.ps1: Passed 15, Failed 0.
+- Live probe: before fix, Get-CimInstance showed 2 alive tailers (graphenium, graphify-rs) with repowise and grepai dead; after fix the template contains the three new probes and the fallback logic, so a stale PID no longer kills the pane when any watch exists.
+- Generated tail files now contain the new functions: verified via Select-String in the launcher source.
+
+Note
+- grepai panic (concurrent map iteration and map write in grepai's watch.go) is a grepai binary bug, not launcher. Launcher now correctly detects dead grepai watch and closes its pane; a manual `grepai watch --background` restart restores the pane on next launcher launch. The final window fix is independent of that binary bug.

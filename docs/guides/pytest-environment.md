@@ -83,11 +83,21 @@ Exception: ...launcher not found: J:\audio\MCP-Watchers\###2.launch_watcher_for_
 ```
 
 **Root cause.** `tests/launch_watcher_for_grepai.tests.ps1` exercises
-`###2.launch_watcher_for_grepai.ps1`, which MCP-Watchers (a stripped extraction
-of VAD) does not ship. The suite throws at load, so the pytest wrapper failed.
+`###2.launch_watcher_for_grepai.ps1`, which MCP-Watchers (then a stripped
+extraction of VAD) did not ship. The suite threw at load, so the pytest wrapper
+failed.
 
 **Fix in repo.** `test_launch_watcher_for_grepai_ps1.py` SKIPs when the target
 script is absent. In a checkout that ships it, the suite runs unchanged.
+
+**Status 2026-09-20: this section is now historical.** Tier B was ported from
+VAD — `###2.launch_watcher_for_grepai.ps1` and its double-click wrapper
+`###2.required_for_launch_watcher_for_grepai.bat` now sit at this repo's root,
+so the suite runs here and reports 19 passed, 0 failed instead of exiting 0 with
+a SKIP. The guard is deliberately kept: it still protects any checkout that does
+not ship the script, and it is what stops a genuinely missing launcher from
+being reported as a launcher defect. Do not remove it on the grounds that the
+target now exists.
 
 ## 4. `import llm_fallback_proxy` aborts the whole run
 

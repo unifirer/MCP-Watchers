@@ -1,0 +1,60 @@
+# Change log: port changed-files resolution to the repowise pane
+
+Date: 2026-07-12
+
+## Feature
+The repowise pane tailer now prints the resolved changed-file path(s) when
+repowise reports `Detected N changed file(s), updating...` with N < 5 —
+mirroring the behavior the graphify-rs pane already had.
+
+## Why
+repowise's `watch` mode logs only a COUNT (`Detected N changed file(s),
+updating...`) and never names the file(s), exactly like graphify-rs's
+`Files changed (N)` line. The pane previously echoed the count verbatim,
+so for a single changed file the user could not tell which file triggered
+the update. The graphify-rs pane already solved this with
+`Resolve-ChangedFiles` + `Show-ChangedFiles`; this ports that same
+mechanism to repowise.
+
+## What changed (in `###1. watchers for memtrace grepai graphenium graphify-rs repowise.ps1`)
+- `Show-ChangedFiles` is now **label-aware**: `param([string]$Label, [string]$Line)`.
+  - `graphify-rs` -> matches `Files changed \((\d+)\)`
+  - `repowise`   -> matches `Detected (\d+) changed`
+  - any other label (`gm`, `grepai`, `memtrace`) -> `return` (no-op; those
+    watchers already print the path inline on their change line, so running
+    the resolver on them would mis-fire a false "changed file:")
+- Both call sites (seed loop and live loop) now call it unconditionally
+  as `Show-ChangedFiles -Label '__LABEL__' $line` instead of being gated
+  behind `if ('__LABEL__' -eq 'graphify-rs')`. The label itself decides
+  whether resolution runs.
+- The repowise pane call to `New-WatcherPaneScript` gained `-RepoRoot $scriptDir`
+  so `Resolve-ChangedFiles` has a repo root to recurse (graphify-rs already
+  had it).
+- Output format unchanged and shared:
+  `[<label>]   -> changed file: <resolved-path>` (N < 5 only; N >= 5 silent).
+
+## Pitfalls found & fixed during the port
+- `Resolve-ChangedFiles` previously excluded the launcher's scratch dirs
+  with a case-**insensitive** `-contains $seg`. PowerShell's `-contains`
+  matches case-insensitively, so the OS `Temp` segment in `%TEMP%`-based
+  fixture paths was wrongly excluded and the whole fixture tree was dropped
+  (the resolver returned nothing for BOTH graphify-rs and repowise). Changed
+  to case-sensitive `-ccontains`, which only excludes the literal lowercase
+  `temp` segment. This fixes the same latent bug for graphify-rs, not just
+  repowise.
+
+## Verification
+- Unit tests (`tests/repowise_changed_files.tests.ps1`): repowise count-only
+  line resolves to the real changed file and excludes a `temp\` distractor;
+  graphify-rs still resolves (regression guard); gm/graphenium and grepai
+  lines are no-ops. 4/4 PASS.
+- Wiring tests (`tests/launcher_repowise_wiring.tests.ps1`): repowise pane
+  carries `-RepoRoot $scriptDir`; tailer calls `Show-ChangedFiles` label-aware;
+  old graphify-rs-only branch guard is gone. 3/3 PASS.
+- End-to-end test (`tests/repowise_e2e_resolve.tests.ps1`): generated the REAL
+  repowise tailer from the launcher, fed a `Detected 1 changed file(s),
+  updating...` log plus a non-matching banner and gm/grepai inline-path lines;
+  asserted exactly one `-> changed file:` with the resolved path, no false
+  positives on the other lines. 1/1 PASS.
+- Source-patch RED proof: breaking the graphify-rs pattern made only the
+  graphify-rs regression It fail; restored byte-identical, all green.

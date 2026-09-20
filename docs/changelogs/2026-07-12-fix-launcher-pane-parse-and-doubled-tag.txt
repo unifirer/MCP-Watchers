@@ -1,0 +1,67 @@
+================================================================================
+Change Log — 2026-07-12 — Fix broken ###1 launcher panes (ParserError + doubled tag)
+================================================================================
+
+CONTEXT
+-------
+User: "did u run all tests? because the launch script is broken" — the 4
+Windows-Terminal panes opened by ###1. watchers for memtrace grepai graphenium
+graphify-rs repowise.ps1 showed WRONG/ERROR info, not live watcher output.
+
+The 96/96 pytest suite only exercised the launcher at the STATIC level
+(regex/wiring checks via tests/launcher_tests.ps1 + the pytest shim
+test_launcher.py). It never actually executed the per-pane tailer scripts,
+so the runtime parse bug was invisible to the suite.
+
+ROOT CAUSE (two distinct bugs in the tailer template inside ###1...ps1)
+--------------------------------------------------------------------------------
+BUG 1 — orphaned comment line breaks EVERY pane script (parse failure).
+  The Get-CompleteLineCount function's trailing comment in the tailer template
+  was:
+      # ends on \n or \n
+   -> final line is whole
+  i.e. a literal newline split the comment so "-> final line is whole" became
+  its OWN line beginning with "-". PowerShell parses a line starting with "-"
+  as a unary operator -> "Missing expression after unary operator '-'".
+  Result: all 4 generated tail_*.ps1 failed to parse -> every pane showed a
+  ParserError instead of watcher output. Confirmed: all 4 tail_*.ps1 had the
+  same PARSE ERROR before the fix.
+
+BUG 2 — doubled [graphenium] prefix on the graphenium pane.
+  gm prints a uniform "[graphenium]" prefix on EVERY line. CleanLogLine only
+  stripped the severity variant "[graphenium ERR]" (regex \[graphenium [A-Z]+\]),
+  not the plain "[graphenium]". The pane then added its own [graphenium] prefix
+  -> "[graphenium] [graphenium] Watching ...". Garbled/wrong info.
+
+FIXES (in ###1. watchers for memtrace grepai graphenium graphify-rs repowise.ps1)
+-------------------------------------------------------------------------------------
+1. Removed the dangling "-> final line is whole" line; rewrote the comment to a
+   single safe line: "# final line is whole when file ends on a newline (LF=10 or CR=13)".
+2. Broadened CleanLogLine's graphenium strip to
+   '\[graphenium(?: [A-Z]+)?\]' so it removes BOTH "[graphenium]" and
+   "[graphenium ERR]".
+
+TEST (tests/launcher_tests.ps1)
+--------------------------------
+Updated T2's regression-guard assertion to match the broadened regex
+'(?: [A-Z]+)?' (it previously pinned the old '\[graphenium [A-Z]+\]' literal).
+
+VERIFICATION (real execution, no watchers/WT window launched)
+-------------------------------------------------------------
+- Regenerated the 4 tail_*.ps1 exactly as the launcher does; all 4 now
+  "SYNTAX OK" (were PARSE ERROR before).
+- Ran the graphenium pane tailer against a sample log: now prints clean
+  single-prefix lines:
+      [graphenium] Watching . (debounce 3.0s) — Ctrl+C to stop
+      [graphenium] Full rebuild in 0.74s — 1743 nodes
+      [graphenium] changed (code): J:\audio\VAD\Modules\VAD.py
+      [graphenium ERR] something noisy
+  (no doubled tag; [graphenium ERR] still stripped inside the line prefix).
+- tests/launcher_tests.ps1: 47/47 PASS (was 46/47).
+- pytest shim tests/test_launcher.py: 1 passed.
+- tests/test_launch_watcher.py + test_launch_watcher_standalone.py +
+  test_launch_watcher_teardown.py: 26 passed.
+
+NOTE: the live gm.log (stdout) being 0 bytes while gm.log.err has content is
+gm's own behaviour (it logs to stderr); the tailer reads both, so the
+graphenium pane shows content. Not a launcher-code bug.

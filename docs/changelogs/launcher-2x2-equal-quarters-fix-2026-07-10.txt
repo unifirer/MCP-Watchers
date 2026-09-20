@@ -1,0 +1,46 @@
+2026-07-10 — launcher 2x2 equal-quarters fix
+
+File: ###1. updater grepai graphenium graphify-rs repowise.ps1
+
+Symptom
+--------
+The Windows Terminal 2x2 pane grid did not render as four EQUAL quarters.
+Two watchers ended up in one half of the window (uneven regions), not one
+watcher per corner.
+
+Root cause
+----------
+The pane chain relied on wt's drifting "currently focused pane" as the split
+target. After `split-pane -H` (which creates the top/bottom rows), both
+`split-pane -V` calls targeted whatever pane happened to be focused, so both
+vertical splits landed in the SAME row. That row got 3 panes, the other row 1,
+producing unequal quarters.
+
+An earlier attempt (adding `split-pane -t 0` / `-t 1`) was rejected: explicit
+`-t` on split-pane is a silent no-op in a non-interactive wt session and is
+fragile on the desktop too.
+
+Fix
+---
+Anchor each vertical split to a SPECIFIC row by inserting `focus-pane -t <id>`
+between the splits:
+
+  new-tab            -> pane 0
+  split-pane -H      -> pane 1 (below 0)        top row = 0, bottom row = 1
+  focus-pane -t 0    -> focus TOP row
+  split-pane -V      -> pane 2 (right of 0)     top row -> TL(0) / TR(2)
+  focus-pane -t 1    -> focus BOTTOM row
+  split-pane -V      -> pane 3 (right of 1)     bottom row -> BL(1) / BR(3)
+
+Result: deterministic 2x2 — grepai TL, graphenium TR, graphify-rs BL,
+repowise BR — four equal quarters, one watcher in each corner.
+
+Verification
+------------
+- Script parses clean (PSParser: 2723 tokens, 0 errors).
+- Reproduced the exact 6-command chain headless: wt rc=0, 1 WindowsTerminal.exe
+  process + 4 pane children (A/B/C/D), all subcommands (incl. both
+  focus-pane -t 0 / -t 1) executed.
+- User confirmed the visual 2x2 on the desktop.
+- Geometry caveat: headless wt does not render UI, so literal pixel equality
+  was confirmed by the user's desktop run, not by headless measurement.

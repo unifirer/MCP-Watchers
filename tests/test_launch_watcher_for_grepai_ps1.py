@@ -5,10 +5,10 @@
 # on any failure.
 #
 # Environment rules (bead mcpw-tao -- do not re-diagnose these as code bugs):
-#   * The suite targets ###2.launch_watcher_for_grepai.ps1. That script is not
-#     shipped by every checkout of this repo (MCP-Watchers is a stripped
-#     extraction of VAD). When it is absent the test SKIPS: the harness has
-#     nothing to exercise.
+#   * The suite targets ###2.launch_watcher_for_grepai.ps1. Tier B was ported
+#     from VAD on 2026-09-20, so this checkout ships it and the suite runs
+#     (19 passed, 0 failed). The guard stays: a checkout that does not ship the
+#     script must still SKIP, because the harness then has nothing to exercise.
 #   * The host is resolved from PATH, pwsh first. When no host is resolvable
 #     the test SKIPS rather than failing.
 # See docs/guides/pytest-environment.md.

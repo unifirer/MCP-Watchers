@@ -1,0 +1,78 @@
+================================================================================
+FIX: launcher opened and immediately closed; made watcher visible + persistent
+================================================================================
+Date/Time : 2026-07-10 (Fri) local
+File      : ###launch watcher for grepai.ps1
+Author    : Hermes agent (user-reported: "the script opens and immediately closes")
+
+--------------------------------------------------------------------------------
+SYMPTOM
+--------------------------------------------------------------------------------
+Running the launcher produced a console window that appeared and vanished
+instantly. The watcher never stayed up and there was no visible indexing view.
+
+--------------------------------------------------------------------------------
+ROOT CAUSE
+--------------------------------------------------------------------------------
+1. FALSE-POSITIVE PROCESS CHECK (the actual "immediate close"):
+   The script had an early-exit guard:
+     $grepaiProcess = Get-CimInstance Win32_Process -Filter "Name LIKE 'grepai%'"
+                     | Where-Object { $_.CommandLine -like "*watch*" }
+     if ($grepaiProcess) { exit 0 }
+   A leftover / non-watcher grepai.exe (e.g. a one-off `grepai search`, or a
+   grepai process whose command line merely contained the substring "watch")
+   matched "*watch*" and made the launcher believe the watcher was "already
+   running", so it exited 0 immediately. Empirically confirmed: a stray
+   grepai.exe (PID 32472) with "watch" in its command line triggered this exact
+   silent exit. Same class of bug as the old bare "running" substring match that
+   the June 27 fix addressed - a substring false positive.
+2. NO VISIBLE VIEW: the launcher launched grepai --background and exited 0,
+   leaving no console open. grepai's own --background process has no visible
+   window, so the user saw nothing.
+3. LOG-PATH PARSE BUG (latent): log path was parsed with .Split(":", 2), which
+   broke on the Windows drive colon ("Log file: C:\Users\..."), so the live tail
+   fell through to "Could not locate grepai log file".
+
+--------------------------------------------------------------------------------
+FIX
+--------------------------------------------------------------------------------
+- Removed the over-broad Get-CimInstance "*watch*" exit guard entirely. The
+  launcher now relies ONLY on grepai's own authoritative `grepai watch --status`
+  (Status: running) to decide "already running". grepai is the single source of truth.
+- Made the launcher VISIBLE and PERSISTENT: it launches `grepai watch --background`
+  (the only mode grepai tracks - a foreground `grepai watch` window reports
+  "Status: NOT running" and does NOT track changes; verified 2026-07-10), confirms
+  "Status: running", then THIS console tails grepai's live index log via
+  `Get-Content -LiteralPath <log> -Wait -Tail 20` and stays open until Ctrl+C.
+  The user gets a real-time, visible watcher AND grepai keeps indexing because it
+  is the tracked background process.
+- Fixed the log-path parse: take everything after the first "log file:" token
+  (robust to the drive colon), with a regex fallback. Live tail now works.
+- Hard-failure paths (grepai missing / launch threw / never confirmed running /
+  log not found) hold the console with "Press Enter to exit" and exit 1.
+
+--------------------------------------------------------------------------------
+VERIFICATION (empirical)
+--------------------------------------------------------------------------------
+- Full suite: `venv/Scripts/python.exe -m pytest tests/test_launch_watcher.py`
+  -> 15 passed in 21.26s (RC=0), clean teardown (no leftover watcher).
+- New regression test test_launch_watcher_stays_open_visible: launches the script
+  as a subprocess and asserts it is STILL RUNNING after 8s (proves it no longer
+  "opens and closes immediately") and that grepai reports Status: running. PASSED.
+- New test test_launch_watcher_shows_visible_view_markers: asserts the launcher
+  sources Get-Content -Wait, "live index log", and "Ctrl+C" (guards the visible
+  view). PASSED.
+- Manual live run: launcher outputs "Starting grepai watch (background, tracked)..."
+  then "grepai watch is RUNNING..." then streams live lines e.g.
+  "[grepai-watch] ... Indexed fix_beads_doctor.py (11 chunks)" - confirming the
+  visible, real-time view and that tracking works.
+- Confirmed `grepai watch --status` is the reliable source of truth (foreground
+  `grepai watch` returns "Status: not running" - must stay background).
+
+--------------------------------------------------------------------------------
+NOTES
+--------------------------------------------------------------------------------
+- The script does NOT call any .bat. There is no ###launch watcher for grepai.bat
+  in the repo (only Setup_Dependencies.bat). For double-click launch under
+  Windows' Restricted policy, a `...bat` wrapper with -ExecutionPolicy Bypass is
+  still recommended (not yet recreated).

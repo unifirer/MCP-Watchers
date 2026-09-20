@@ -1,8 +1,15 @@
 # Codegraph Watch Implementation Plan
 
+> **SUPERSEDED IN PART 2026-09-20 (mcpw-0sp).** The "no 5th pane / 2x2 grid stays
+> intact" decision below was reversed: codegraph now owns the 5th cell of a **3x2**
+> grid, and a 6th cell is reserved empty. Everything else in this plan (headless
+> detached child, `Start-WatcherDetached`, per-workspace keying, teardown tracking)
+> still holds. Lines 18, 179, 302 and 309 below describe the OLD decision; do not
+> re-apply them.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add opt-in `codegraph watch` supervision to the ###1 launcher so `.codegraph/graph.db` stays fresh without changing the 2x2 pane grid.
+**Goal:** Add opt-in `codegraph watch` supervision to the ###1 launcher so `.codegraph/graph.db` stays fresh without changing the 2x2 pane grid. *(Pane part superseded, see above.)*
 
 **Architecture:** Treat `codegraph build` as the one-time prerequisite and `codegraph watch` as a headless detached child (memtrace precedent, no 5th pane). Launch via the existing `Start-WatcherDetached` raw-byte pump, keyed per-workspace, swept by the shared pattern list, tracked in `teardown-state.json` RootPids.
 

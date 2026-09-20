@@ -136,6 +136,20 @@ Describe 'backend sweep safety (vad-10m.3)' {
             }
         }
     }
+
+    It 'collapses a backend with its own companion process before the duplicate test' {
+        # mcpw-ttl.1 (2026-09-19): counting a server plus its own companion as
+        # two instances made the sweep reap a healthy singleton.
+        $launcher = Join-Path $repo '###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1'
+        $src = Get-Content -LiteralPath $launcher -Raw
+        ($src -match 'mcpw-ttl\.1') | Should Be $true
+        # cerememory's Toolport stdio bridge is excluded by role, never reaped.
+        ($src -match [regex]::Escape("Exclude = 'mcp --server-url'")) | Should Be $true
+        # A parent/child pair collapses to the parent, so no kill fires on 2
+        # matches that are really one server.
+        ($src -match 'candParentIds') | Should Be $true
+        ($src -match '\$cands = @\(\$cands \| Where-Object \{ -not \$candParentIds') | Should Be $true
+    }
 }
 
 if (-not $env:BACKEND_SWEEP_TEST_RAN) {

@@ -3111,12 +3111,15 @@ try { Ensure-LlmProxyRunning -Port ([int]$env:LLM_PROXY_PORT) -TimeoutSec 15 } c
 # Export the same base_url env some repowise builds read (harmless if ignored, required if config is missing).
 $env:REPOWISE_LITELLM_BASE_URL = "http://127.0.0.1:$env:LLM_PROXY_PORT/v1"
 $script:repowiseProc = Start-WatcherDetached "repowise" "repowise" @("watch", ".", "--index-only", "--debounce", "30000") $repowiseLog -ExePath $repowiseExe
-# -- codegraph: opt-in freshness watcher (headless, no 5th pane; 2x2 grid intact) --
+# -- codegraph: opt-in freshness watcher (headless process, OWN pane in the 3x2 grid) --
 # `codegraph build` (see Test-CodegraphReady) is the only prerequisite for
 # queries; `codegraph watch` just debounces file changes into incremental
 # `update` so the graph does not go stale during long sessions. Without it
-# queries still work from the last build/update. Memtrace precedent: headless
-# child, log under $logsDir, PID tracked for teardown, no WT pane.
+# queries still work from the last build/update.
+# mcpw-0sp: this used to say "headless, no 5th pane; 2x2 grid intact" (memtrace
+# precedent). That is wrong now -- codegraph gets its own pane. The PROCESS is
+# still headless (Start-WatcherDetached, log under $logsDir, PID tracked for
+# teardown); only the pane was added, and the grid went 2x2 -> 3x2.
 $codegraphLog = Join-Path $logsDir 'codegraph.log'
 $script:codegraphProc = $null
 $cgLaunch = Resolve-CodegraphLaunch
@@ -3215,12 +3218,14 @@ if ($repowiseExe -and (Test-Path -LiteralPath $repowiseExe)) {
 # It still dedups against an already-healthy daemon on :50051 (e.g. one the
 # gateway/proxy already started) so we never launch a second conflicting
 # instance on the same store.
-# (No 5th pane - the 2x2 grid is left intact; launcher-owned startup logs stay
-# under <repo>\.memdb\ - see the retained-nested-store note below.)
+# (mcpw-0sp: this comment used to read "No 5th pane - the 2x2 grid is left
+# intact". memtrace is still pane-less; the grid is now 3x2 with codegraph and
+# one reserved empty cell. Launcher-owned startup logs stay under
+# <repo>\.memdb\ - see the retained-nested-store note below.)
 # The index logic was ported here from the now-deleted
 # Modules/### start memtrace.ps1 so the launcher owns the index directly
 # (no separate detached script to launch). It runs in a BACKGROUND job
-# (non-blocking) so the 2x2 pane grid opens immediately, matching the old
+# (non-blocking) so the 3x2 pane grid opens immediately, matching the old
 # detached-script behaviour.
 # Resolve the repo's git top-level so the Memtrace state file lives at the
 # repo root even if this launcher script is in a subfolder. Fall back to the
@@ -4654,11 +4659,11 @@ if ($script:litellmProbeJob) {
     else { Write-Warning "litellm proxy did not become ready within 20s - check $litellmLog." }
 }
 
-# --- Combined watcher view: Windows Terminal 2x2 pane grid --------------------
-# A single PowerShell console owns ONE linear buffer and CANNOT show four
+# --- Combined watcher view: Windows Terminal 3x2 pane grid --------------------
+# A single PowerShell console owns ONE linear buffer and CANNOT show six
 # independent scroll regions. So instead of tailing all logs into this window,
-# we open ONE Windows Terminal window with a 2x2 pane grid: each pane tails its
-# own watcher's log live (Get-Content -Wait), giving four true quadrants. This
+# we open ONE Windows Terminal window with a 3x2 pane grid: each pane tails its
+# own watcher's log live (Get-Content -Wait), giving six true cells. This
 # launcher's console becomes the controller: it reports status and waits until
 # Ctrl+C (the trap below still kills the detached watchers + stops grepai).
 # Each pane runs a tiny per-watcher tailer script so the command line stays
@@ -4758,26 +4763,50 @@ $tailGrepai      = New-WatcherPaneScript -Label "grepai"      -LogPath $logFile 
 $tailGraphenium  = New-WatcherPaneScript -Label "graphenium"  -LogPath $gmLog              -ErrPath "$gmLog.err"      -RepoRoot $watchersWorkspaceRoot -HeartbeatPath (Join-Path $hbDir "graphenium.hb")  -WatchPid $gmWatchPid -LockFile $lockFile
 $tailGraphifyRs  = New-WatcherPaneScript -Label "graphify-rs" -LogPath $graphifyLog        -ErrPath "$graphifyLog.err" -RepoRoot $watchersWorkspaceRoot -HeartbeatPath (Join-Path $hbDir "graphify-rs.hb") -WatchPid $graphifyWatchPid
 $tailRepowise    = New-WatcherPaneScript -Label "repowise"    -LogPath $repowiseLog        -ErrPath "$repowiseLog.err" -RepoRoot $watchersWorkspaceRoot -HeartbeatPath (Join-Path $hbDir "repowise.hb")   -WatchPid $repowiseWatchPid
+# mcpw-0sp: codegraph gets its own pane (it is a managed watcher since
+# 2026-09-19 - see the launch site above), and a sixth RESERVED cell keeps the
+# grid a true 3x2 rectangle.
+# WatchPid is the launched `codegraph watch` PID when it started, and '' when it
+# did not (not installed / no `watch` verb / Test-CodegraphReady skipped it).
+# The template treats an empty PID on this label as "hold the slot", so the pane
+# never closes and the grid never re-flows (Modules/watcher_pane_scripts.ps1).
+$codegraphWatchPid = if ($script:codegraphProc) { $script:codegraphProc.Id } else { '' }
+$tailCodegraph   = New-WatcherPaneScript -Label "codegraph"   -LogPath $codegraphLog       -ErrPath ""                  -RepoRoot $watchersWorkspaceRoot -HeartbeatPath (Join-Path $hbDir "codegraph.hb")  -WatchPid $codegraphWatchPid
+# The reserved cell must run a BLOCKING tailer: a pane whose command exits is
+# closed by Windows Terminal (closeOnExit) and the other five panes re-flow.
+# It tails a one-line placeholder log, so the cell opens showing why it is
+# blank. The path still contains 'panes\tail_', so the pre-grid reset and the
+# Stop-AllWatchers sweep adopt it like every other pane.
+$emptyPaneLog    = Join-Path $logsDir 'empty-pane.log'
+try { Set-Content -LiteralPath $emptyPaneLog -Value '(reserved cell - no watcher assigned; the 3x2 grid keeps this slot free)' -Encoding UTF8 -ErrorAction Stop } catch {}
+$tailEmpty       = New-WatcherPaneScript -Label "empty"       -LogPath $emptyPaneLog       -ErrPath ""                  -RepoRoot $watchersWorkspaceRoot -HeartbeatPath (Join-Path $hbDir "empty.hb")
 # Collect the heartbeat paths so the controller loop can watch any of them.
 $script:hbPaths = @(
     (Join-Path $hbDir "grepai.hb"),
     (Join-Path $hbDir "graphenium.hb"),
     (Join-Path $hbDir "graphify-rs.hb"),
-    (Join-Path $hbDir "repowise.hb")
+    (Join-Path $hbDir "repowise.hb"),
+    (Join-Path $hbDir "codegraph.hb"),
+    (Join-Path $hbDir "empty.hb")
 )
 
 Write-Host ""
-Write-Host "All watchers running. Opening a Windows Terminal window with 4 panes:"
-Write-Host "  Top-Left     : grepai      (tracked background, stop: 'grepai watch --stop')"
-Write-Host "  Top-Right    : graphenium  (detached, kill gm.exe)"
-Write-Host "  Bottom-Left  : graphify-rs (detached, kill graphify-rs.exe)"
-Write-Host "  Bottom-Right : repowise    (detached, kill repowise.exe)"
+Write-Host "All watchers running. Opening a Windows Terminal window with 6 panes (3x2):"
+Write-Host "  Row 1: grepai | graphenium | graphify-rs"
+Write-Host "  Row 2: repowise | codegraph | (empty - reserved)"
+Write-Host "  grepai      : tracked background, stop: 'grepai watch --stop'"
+Write-Host "  graphenium  : detached, kill gm.exe"
+Write-Host "  graphify-rs : detached, kill graphify-rs.exe"
+Write-Host "  repowise    : detached, kill repowise.exe"
+Write-Host "  codegraph   : detached, kill the node.exe running 'codegraph watch'"
+Write-Host "  empty       : reserved cell, no watcher"
 Write-Host "Press Ctrl+C here to stop everything."
 
-# GOAL: one Windows Terminal window with 4 independent live-tailing panes,
-# one watcher per pane. The exact corner each watcher lands in is incidental,
-# not a requirement - what matters is that all 4 tailers end up as separate
-# panes in ONE window rather than four separate windows or a broken layout.
+# GOAL: one Windows Terminal window with 6 independent live-tailing panes in a
+# 3x2 grid (3 columns x 2 rows) - five watchers plus one reserved empty cell.
+# The exact cell each watcher lands in is incidental, not a requirement; what
+# matters is that all 6 tailers end up as separate panes in ONE window rather
+# than six separate windows or a broken, ragged layout.
 #
 # Built per the windows-terminal (wt-panes-tabs) skill rules:
 #   - "-w $wtWindowName"  target a DEDICATED, NAMED window that is (re)used on
@@ -4785,10 +4814,10 @@ Write-Host "Press Ctrl+C here to stop everything."
 #                         is fragile: focus-pane -t 0/1 target pane IDs that are
 #                         window-GLOBAL across ALL tabs, so when this launcher is
 #                         run from an existing WT window those IDs can resolve to
-#                         the controller tab instead of the new 2x2 tab - landing
-#                         a -V split in the wrong place and collapsing two quarters
-#                         into one half. A fixed named window isolates the pane
-#                         IDs of the 2x2 from every other tab. (This is the same
+#                         the controller tab instead of the new 3x2 tab - landing
+#                         a -V split in the wrong place and collapsing two cells
+#                         into one. A fixed named window isolates the pane
+#                         IDs of the 3x2 from every other tab. (This is the same
 #                         root cause the 2026-07-10 wt-2x2-grid regression fix hit,
 #                         just via the -w routing rather than the missing -w.)
 #   - "-d <ws>"     every subcommand opens its pane at $watchersWorkspaceRoot (mcpw-ybs.1)
@@ -4803,17 +4832,28 @@ Write-Host "Press Ctrl+C here to stop everything."
 # the wrong half (live failure measured 2026-08-26). Anchors are therefore
 # directional "move-focus up/down" moves, which carry NO pane ids.
 #
-# Build order (deterministic 2x2, one quarter per corner). Anchors are
+# Build order (deterministic 3x2: two rows of three equal columns). Anchors are
 # DIRECTIONAL move-focus commands, never numeric pane ids:
-#   new-tab grepai           -> TL;                    focus = TL
-#   split-pane -H graphify   -> full-width bottom row; focus = bottom
-#   move-focus up            -> focus TOP row (only pane above)
-#   split-pane -V graphenium -> TR; top halved;        focus = TR
-#   move-focus down          -> focus full-width bottom row
-#   split-pane -V repowise   -> bottom halved: BL + BR
-# Corner map: TL grepai, TR graphenium, BL graphify-rs, BR repowise.
+#   new-tab grepai                      -> row 1 col 1 (full window);  focus = grepai
+#   split-pane -H -s 0.5 repowise       -> row 2, FULL WIDTH;          focus = row 2
+#   move-focus up                       -> row 1 (only pane above)
+#   split-pane -V -s 0.6667 graphenium  -> row 1 = 1/3 | 2/3;          focus = graphenium
+#   split-pane -V -s 0.5 graphify-rs    -> row 1 = thirds;             focus = graphify-rs
+#   move-focus down                     -> row 2 (full-width repowise)
+#   split-pane -V -s 0.6667 codegraph   -> row 2 = 1/3 | 2/3;          focus = codegraph
+#   split-pane -V -s 0.5 empty          -> row 2 = thirds
+# Cell map: row 1 = grepai | graphenium | graphify-rs
+#           row 2 = repowise | codegraph | empty
+# WHY 0.6667 AND NOT 0.5: equal thirds are not dyadic - no sequence of even
+# splits produces them. Per the wt-panes-tabs skill, "-s <ratio>" is the size
+# of the NEW pane as a fraction of the pane being split (Microsoft's doc: "the
+# portion of the parent pane to use"), so -s 0.6667 leaves the existing pane
+# 1/3 and gives the new one 2/3; halving that 2/3 then yields two more 1/3
+# cells. The -H row split stays 0.5 (two equal rows). Steps 5 and 8 need no
+# anchor: after a split the focus is already on the new pane, which is exactly
+# the 2/3 cell the next -V has to halve.
 # Each step is a SEPARATE wt invocation with a settle/poll wait, so each
-# anchor resolves against a SETTLED layout and the two -V splits anchor to
+# anchor resolves against a SETTLED layout and the -V splits anchor to
 # DISTINCT rows -- they can never both land in the same half (the older
 # "unequal quarters / 3 on bottom" bug came from ONE chained wt ";" call).
 # Directional moves are unambiguous in this fixed sequence: after the -H
@@ -4830,10 +4870,10 @@ Write-Host "Press Ctrl+C here to stop everything."
 $wtWindowName = "vadwatchers-$workspaceKey"
 $wtOk = $false
 if (Get-Command "wt" -ErrorAction SilentlyContinue) {
-    # PRE-GRID RESET: tear down any SURVIVING vadwatchers 2x2 grid from a prior
+    # PRE-GRID RESET: tear down any SURVIVING vadwatchers pane grid from a prior
     # run BEFORE building the new grid, so new-tab never inherits a stale 2nd tab
     # (pane-targeting commands resolve against window-global state, so a stale tab
-    # makes the -V splits land in the wrong half and two quarters collapse
+    # makes the -V splits land in the wrong half and two cells collapse
     # together -- the "unequal quarters" bug). Windows Terminal's wt CLI (1.24)
     # has NO close-tab / get-tabinfo / --tabIdFile commands (verified against
     # the v1.24.11911.0 source; the 2026-07-18 change log's claim that `new-tab
@@ -4858,7 +4898,7 @@ if (Get-Command "wt" -ErrorAction SilentlyContinue) {
     # mcpw-ybs.5: attribute BEFORE terminating. The reset below used to
     # Terminate() EVERY 'panes\tail_' match machine-wide. mcpw-ybs.2b added an
     # attribution gate to the STARTUP orphan sweep but not here, so launching in
-    # repo B killed repo A's live 2x2 grid. Verified live 2026-09-17: VAD's
+    # repo B killed repo A's live pane grid. Verified live 2026-09-17: VAD's
     # un-keyed tailers are C:\Temp\vad-watchers\panes\tail_*.ps1 and matched.
     # Same FAIL-SAFE trade as the sweep: a skipped stale tailer can leave a
     # second tab, which is a layout wart; killing another repository's live
@@ -4880,11 +4920,14 @@ if (Get-Command "wt" -ErrorAction SilentlyContinue) {
     # static suites lock wt argument structure but cannot see the REALIZED
     # geometry. This probe enumerates the vadwatchers window's TermControl
     # rectangles via UI Automation AFTER the build and warns when any pane
-    # deviates >15% from its expected quarter share (25% width x 50% height).
+    # deviates >15% from its expected 3x2 cell share (1/3 width x 1/2 height).
     # Measured live on the 2026-08-26 failure: graphenium spanned 50% width and
     # graphify-rs 100% -- this probe would have surfaced it in the controller
-    # log. Probe failures NEVER abort the launch (best-effort visibility only);
-    # a minimized/hidden window reports unmeasurable and skips silently.
+    # log. It is also the only check that can catch a wrong -s direction on the
+    # two 0.6667 third-splits (mcpw-0sp), which would show up as one wide cell
+    # and two narrow ones. Probe failures NEVER abort the launch (best-effort
+    # visibility only); a minimized/hidden window reports unmeasurable and
+    # skips silently.
     function WatcherGridProbe {
         param([string]$WindowName)
         try {
@@ -4897,7 +4940,7 @@ if (Get-Command "wt" -ErrorAction SilentlyContinue) {
             $classCond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'CASCADIA_HOSTING_WINDOW_CLASS')
             $wins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $classCond)
             $termCond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'TermControl')
-            $want = @('grepai', 'graphenium', 'graphify-rs', 'repowise')
+            $want = @('grepai', 'graphenium', 'graphify-rs', 'repowise', 'codegraph', 'empty')
             $win = $null; $panes = $null
             foreach ($w in $wins) {
                 $tp = $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, $termCond)
@@ -4907,7 +4950,7 @@ if (Get-Command "wt" -ErrorAction SilentlyContinue) {
             }
             if (-not $win) { Write-Host "[grid-probe] watcher grid window not found - skipping"; return }
             Start-Sleep -Milliseconds 800   # let WT finalize pane layout before measuring
-            if ($panes.Count -ne 4) { Write-Warning "[grid-probe] expected 4 terminal panes, found $($panes.Count) - layout NOT verified"; return }
+            if ($panes.Count -ne 6) { Write-Warning "[grid-probe] expected 6 terminal panes, found $($panes.Count) - layout NOT verified"; return }
             $rects = @(); foreach ($p in $panes) { $rects += $p.Current.BoundingRectangle }
             $minX = ($rects | ForEach-Object { $_.X } | Measure-Object -Minimum).Minimum
             $minY = ($rects | ForEach-Object { $_.Y } | Measure-Object -Minimum).Minimum
@@ -4919,14 +4962,15 @@ if (Get-Command "wt" -ErrorAction SilentlyContinue) {
             foreach ($p in $panes) {
                 $r = $p.Current.BoundingRectangle
                 $wPct = $r.Width / $clientW; $hPct = $r.Height / $clientH
-                if (([Math]::Abs($wPct - 0.25) -gt 0.15) -or ([Math]::Abs($hPct - 0.50) -gt 0.15)) {
+                # 3x2: every cell is 1/3 of the width and 1/2 of the height.
+                if (([Math]::Abs($wPct - (1.0 / 3.0)) -gt 0.15) -or ([Math]::Abs($hPct - 0.50) -gt 0.15)) {
                     $bad += ("{0} ({1:p0} x {2:p0})" -f $p.Current.Name, $wPct, $hPct)
                 }
             }
             if ($bad.Count -gt 0) {
-                Write-Warning "[grid-probe] UNEQUAL QUARTERS detected - check these panes: $($bad -join ', ')"
+                Write-Warning "[grid-probe] UNEQUAL CELLS detected - check these panes: $($bad -join ', ')"
             } else {
-                Write-Host "[grid-probe] 2x2 layout verified: 4 near-equal quadrants."
+                Write-Host "[grid-probe] 3x2 layout verified: 6 near-equal cells (1/3 x 1/2)."
             }
         } catch { Write-Host "[grid-probe] skipped: $($_.Exception.Message)" }
     }
@@ -4966,7 +5010,7 @@ if (Get-Command "wt" -ErrorAction SilentlyContinue) {
     # (pattern-scoped, never the whole window) keeps that fix and preserves the
     # user's other vadwatchers tabs.
     try {
-        # Build the 2x2 grid as SEPARATE wt invocations, each followed by a short
+        # Build the 3x2 grid as SEPARATE wt invocations, each followed by a short
         # settle wait. Two fixes shaped this: (a) SEPARATE invocations instead of
         # ONE chained ";" call, so each anchor resolves against a settled layout;
         # (b) 2026-08-26: anchors are directional move-focus up/down, NOT numeric
@@ -4976,11 +5020,12 @@ if (Get-Command "wt" -ErrorAction SilentlyContinue) {
         # whatever pane WT held focused (measured live 2026-08-26: the repowise
         # -V re-split the TL pane -> 25/25/50 top + full-width bottom).
         # Directional moves have no ids to go stale. -w targets the dedicated
-        # named window. EVERY split is an explicit even split (-s 0.5) and is
-        # guarded by tests/launcher_equal_quarters.tests.ps1 so the "unequal
-        # quarters" regression cannot sneak back in. NEVER change -w to '-w 0'
+        # named window. Every split carries an EXPLICIT -s (0.5 for the row
+        # split, 0.6667 then 0.5 for each row's thirds) and is guarded by
+        # tests/launcher_equal_quarters.tests.ps1 so the "unequal quarters"
+        # regression cannot sneak back in. NEVER change -w to '-w 0'
         # here: -w 0 routes the -V splits into the wrong half and collapses two
-        # quarters into one (see commit 6a8ac8b).
+        # cells into one (see commit 6a8ac8b).
         # The 12ms settle below is NOT the layout guard anymore (it was measured
         # ~27x too short on the warm path: a pane tailer spawns ~330ms AFTER
         # wt.exe exits, so a blind sleep let the next focus-pane / -V split race
@@ -5049,7 +5094,7 @@ if (Get-Command "wt" -ErrorAction SilentlyContinue) {
         # window when it does not exist (verified: the grid builds the correct
         # single-tab window without any pre-create). So the simplest correct path
         # is to let new-tab own window creation. See change log 2026-07-19.
-        # pane 0 (TL): the new tab opens in the named window. NOTE: we do NOT
+        # row 1 col 1: the new tab opens in the named window. NOTE: we do NOT
         # pass `--tabIdFile` here. This build of Windows Terminal does not honor
         # it (it never writes the file), and passing it is exactly what triggers
         # the 0x80070002 mis-parse where WT treats the flag's .txt value as the
@@ -5058,29 +5103,37 @@ if (Get-Command "wt" -ErrorAction SilentlyContinue) {
         # -File <tailer>`. Teardown therefore always uses the close-window
         # fallback (see trap / controller loop), which is already implemented for
         # the $wtTabId -eq $null case. See change log 2026-07-18 / 2026-07-19.
+        # -- row 1 -----------------------------------------------------------
         Build-GridStep @('-w', $wtWindowName, 'new-tab', '-d', $watchersWorkspaceRoot, '--title', 'grepai', 'powershell', '-NoProfile', '-File', $tailGrepai) 1
         # $wtTabId stays $null: this WT build does not support --tabIdFile, so we
         # rely on the close-window fallback for teardown (already handled in the
         # trap / controller loop for the $null case).
         $script:wtTabId = $null
         if (Test-Path -LiteralPath "variable:wtTabIdFile") { Remove-Variable -Name wtTabIdFile -Scope Script -ErrorAction SilentlyContinue }
-        # pane 1 (BL): horizontal split below pane 0
-        Build-GridStep @('-w', $wtWindowName, 'split-pane', '-H', '-s', '0.5', '-d', $watchersWorkspaceRoot, '--title', 'graphify-rs', 'powershell', '-NoProfile', '-File', $tailGraphifyRs) 2
-        # focus the TOP row before its vertical split. Directional move (no pane
+        # row 2: horizontal split BELOW row 1, full width, not yet column-split.
+        Build-GridStep @('-w', $wtWindowName, 'split-pane', '-H', '-s', '0.5', '-d', $watchersWorkspaceRoot, '--title', 'repowise', 'powershell', '-NoProfile', '-File', $tailRepowise) 2
+        # focus the TOP row before its column splits. Directional move (no pane
         # id): after the -H split exactly two rows exist, so "up" uniquely
         # selects the top (grepai) pane. A numeric focus-pane -t id went stale
         # across rebuilds here and mis-anchored the following -V split.
         Build-GridStep @('-w', $wtWindowName, 'move-focus', 'up') 2
-        # pane 2 (TR): vertical split to the right of pane 0
-        Build-GridStep @('-w', $wtWindowName, 'split-pane', '-V', '-s', '0.5', '-d', $watchersWorkspaceRoot, '--title', 'graphenium', 'powershell', '-NoProfile', '-File', $tailGraphenium) 3
-        # focus the BOTTOM row before its vertical split. Focus currently sits on
-        # the just-created TR pane; "down" uniquely selects the full-width bottom
-        # (graphify-rs) pane, so the final -V halves the bottom row.
-        Build-GridStep @('-w', $wtWindowName, 'move-focus', 'down') 3
-        # pane 3 (BR): vertical split to the right of pane 1
-        Build-GridStep @('-w', $wtWindowName, 'split-pane', '-V', '-s', '0.5', '-d', $watchersWorkspaceRoot, '--title', 'repowise', 'powershell', '-NoProfile', '-File', $tailRepowise) 4
+        # row 1 col 2: -s 0.6667 gives the NEW pane 2/3 of the row, leaving
+        # grepai 1/3. Focus lands on the new 2/3 pane, which the next step halves.
+        Build-GridStep @('-w', $wtWindowName, 'split-pane', '-V', '-s', '0.6667', '-d', $watchersWorkspaceRoot, '--title', 'graphenium', 'powershell', '-NoProfile', '-File', $tailGraphenium) 3
+        # row 1 col 3: halve the 2/3 pane -> two more 1/3 cells. Row 1 is now
+        # grepai | graphenium | graphify-rs. No anchor needed: the focus is
+        # already on the 2/3 pane this split has to halve.
+        Build-GridStep @('-w', $wtWindowName, 'split-pane', '-V', '-s', '0.5', '-d', $watchersWorkspaceRoot, '--title', 'graphify-rs', 'powershell', '-NoProfile', '-File', $tailGraphifyRs) 4
+        # focus the BOTTOM row before its column splits. Focus currently sits on
+        # the just-created row 1 col 3 pane; "down" uniquely selects the
+        # full-width bottom (repowise) pane, which the next -V has to split.
+        Build-GridStep @('-w', $wtWindowName, 'move-focus', 'down') 4
+        # row 2 col 2: same 1/3 + 2/3 shape as row 1.
+        Build-GridStep @('-w', $wtWindowName, 'split-pane', '-V', '-s', '0.6667', '-d', $watchersWorkspaceRoot, '--title', 'codegraph', 'powershell', '-NoProfile', '-File', $tailCodegraph) 5
+        # row 2 col 3: the reserved cell. Row 2 is now repowise | codegraph | empty.
+        Build-GridStep @('-w', $wtWindowName, 'split-pane', '-V', '-s', '0.5', '-d', $watchersWorkspaceRoot, '--title', 'empty', 'powershell', '-NoProfile', '-File', $tailEmpty) 6
         $wtOk = $true
-        # Self-hide the controller console. The 2x2 Windows Terminal window
+        # Self-hide the controller console. The 3x2 Windows Terminal window
         # (vadwatchers) is already open and is where the user reads the watcher
         # logs, so this window's only remaining job is to host Ctrl+C / [X]
         # teardown. Hiding it removes the redundant, empty controller window
@@ -5129,6 +5182,7 @@ if (-not $wtOk) {
         @{ Label = "graphenium";  Path = $gmLog },
         @{ Label = "graphify-rs"; Path = $graphifyLog },
         @{ Label = "repowise";    Path = $repowiseLog },
+        @{ Label = "codegraph";   Path = $codegraphLog },
         @{ Label = "graphenium";  Path = "$gmLog.err" },
         @{ Label = "graphify-rs"; Path = "$graphifyLog.err" },
         @{ Label = "repowise";    Path = "$repowiseLog.err" }
@@ -5172,7 +5226,7 @@ if (-not $wtOk) {
 # Controller loop (WT panes open): keep this window alive as the controller.
 # Ctrl+C triggers the trap above which kills watchers + stops grepai.
 Write-Host "=================================================================="
-Write-Host "4-pane Windows Terminal window is open. This window is the controller."
+Write-Host "6-pane (3x2) Windows Terminal window is open. This window is the controller."
 Write-Host "Press Ctrl+C to stop all watchers and close everything."
 # Persist tracked root PIDs so the PowerShell.Exiting handler (separate
 # runspace, no script scope) can tree-kill them on window [X] close. Use

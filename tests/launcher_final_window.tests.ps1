@@ -36,25 +36,28 @@ function Get-TailerTemplateBody {
 
 Describe 'final split window (repowise BR) shows correct info, not grepai' {
 
-    It 'four pane tailers map label to correct log variable (grepai->logFile, repowise->repowiseLog)' {
+    It 'six pane tailers map label to correct log variable (grepai->logFile, codegraph->codegraphLog)' {
         $code = Get-LauncherCode | Out-String
         $code | Should Match 'New-WatcherPaneScript -Label "grepai".*-LogPath \$logFile'
         $code | Should Match 'New-WatcherPaneScript -Label "repowise".*-LogPath \$repowiseLog'
         $code | Should Match 'New-WatcherPaneScript -Label "graphenium".*-LogPath \$gmLog'
         $code | Should Match 'New-WatcherPaneScript -Label "graphify-rs".*-LogPath \$graphifyLog'
+        # mcpw-0sp: codegraph owns the 5th cell, the 6th is the reserved one.
+        $code | Should Match 'New-WatcherPaneScript -Label "codegraph".*-LogPath \$codegraphLog'
+        $code | Should Match 'New-WatcherPaneScript -Label "empty".*-LogPath \$emptyPaneLog'
     }
 
-    It 'final Build-GridStep is repowise BR with title repowise and file tailRepowise' {
+    It 'final Build-GridStep is the reserved empty cell (BR); grepai is still first, 8 steps total' {
         $code = Get-LauncherCode | Out-String
         $titleSteps = [regex]::Matches($code, "Build-GridStep @\('-w',.*?'--title', '(.*?)'")
-        $titleSteps.Count | Should Be 4
+        $titleSteps.Count | Should Be 6
         $last = $titleSteps[$titleSteps.Count - 1]
-        $last.Groups[1].Value | Should Be 'repowise'
+        $last.Groups[1].Value | Should Be 'empty'
         $first = $titleSteps[0]
         $first.Groups[1].Value | Should Be 'grepai'
-        # Total Build-GridStep calls is 6 (3 pane splits + 2 focus + 1 new-tab)
+        # mcpw-0sp: 3x2 = new-tab + 5 splits (1 x -H, 4 x -V) + 2 focus moves.
         $allSteps = [regex]::Matches($code, "Build-GridStep @\(")
-        $allSteps.Count | Should Be 6
+        $allSteps.Count | Should Be 8
     }
 
     It 'tailer template defines any-watch probes for all four watchers' {

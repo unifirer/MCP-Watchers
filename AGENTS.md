@@ -150,18 +150,6 @@ Complete this cognitive process before taking any action.
   semantic analysis; use `--no-semantic` to skip it when only AST
   context is needed.
 
-- Opentoken MCP: The `@mrgray17/opentoken-mcp@2.2.0` server is installed in
-  Toolport. Its verbs are `opentoken-transform`, `opentoken-rewrite`, and
-  `opentoken-stats`. No `wrap` verb exists in that server.
-
-- Opentoken CLI: A patched `@mrgray17/opentoken-cli@2.2.0` is installed
-  globally through bun (`~/.bun/bin/opentoken.exe`). It supplies the `wrap`
-  verb. Use `opentoken wrap <command>`. The user PATH lists `~/.bun/bin`
-  before `~/.declick/bin`, so the bare name reaches the CLI. The npm publish
-  of 2.2.0 is broken: it declares `workspace:*` for
-  `@mrgray17/opentoken-core`. Do not run `bun x @mrgray17/opentoken-cli` at
-  version 2.2.0. Pin `@2.1.1` instead.
-
 - Required Signatures: Follow strict parameter schemas for
   automem\_\_store\_memory, automem\_\_recall\_memory, repowise\_\_get\_context,
   beads\_\_context, and serena\_\_activate\_project.
@@ -208,6 +196,48 @@ Complete this cognitive process before taking any action.
 - Reference folder for engineering-craft refreshers: `###swe-books-md`.
 
 - Before a non-trivial task, refresh relevant knowledge from this folder.
+
+
+
+
+
+
+
+
+
+
+
+
+
+<!-- lean-ctx -->
+<!-- lean-ctx-claude-v9 -->
+## lean-ctx — Replace Mode (native Grep/Glob denied by policy)
+
+Native Grep/Glob are denied by policy. Prefer `ctx_*` MCP tools for project work:
+- `ctx_read` for exploration reads (cached, 10 modes, unchanged full/auto re-reads ~13 tokens)
+- `ctx_shell` for shell commands (95+ compression patterns)
+- `ctx_search` instead of Grep/rg (compact results)
+- `ctx_tree` instead of ls/find (compact directory maps)
+- `ctx_glob` instead of Glob (file pattern matching)
+- Project edits: `ctx_read(mode="anchored")` → `ctx_patch` (line+hash anchors; `op=create` for new files).
+
+Native `Read` is reserved for the edit gate (read-before-write) only.
+For exploration, orientation, and code understanding: ALWAYS use `ctx_read`.
+Claude auto memory (`~/.claude/projects/<slug>/memory/` — MEMORY.md and topic
+files) uses native Read/Edit internally; do NOT call MCP `resources/read` with
+file:// URIs (lean-ctx resources are `lean-ctx://context/*` only). Native Delete is fine.
+
+Read modes: anchored (edit), full (verbatim), map (overview), signatures (API), diff (post-edit), lines:N-M (range), auto.
+Details live in the `lean-ctx` skill (loads on demand — keep this file lean).
+<!-- /lean-ctx -->
+
+<!-- lean-ctx-solution -->
+SOLUTION EFFICIENCY: stop at first level that applies:
+skip (YAGNI) → reuse codebase → stdlib → native platform → installed dep → one-line → minimum code.
+Never skip: validation, security, error handling.
+<!-- /lean-ctx-solution -->
+
+
 
 
 ### Ponytail, lazy senior dev mode

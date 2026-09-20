@@ -77,7 +77,8 @@ def test_launcher_launches_every_watcher_except_destructive_gm_watch():
     # memtrace headless daemon + readiness port.
     assert "start --headless" in src, "memtrace must launch headless."
     assert "50051" in src, "memtrace readiness port 50051 must be referenced."
-    # codegraph: opt-in freshness watcher (headless, 2x2 grid intact).
+    # codegraph: opt-in freshness watcher. mcpw-0sp: it is no longer pane-less --
+    # it owns the 5th cell of the 3x2 grid (the 6th cell is reserved empty).
     # Resolution is shim-aware: `codegraph` has no native .exe on this box, so it
     # is re-expressed as node.exe <entry> [adapter-name] <args>. TWO shim shapes
     # exist (2026-09-19): the npm bin shim of the REAL CLI
@@ -116,9 +117,13 @@ def test_launcher_launches_every_watcher_except_destructive_gm_watch():
     # ('"verbs": ['), otherwise a native CLI that prints a plain version string
     # would be skipped even though it does carry watch/build.
     assert '"verbs"\\s*:\\s*\\[' in src, "codegraph verb gate must require an enumerated verb list."
-    # No 5th pane: codegraph stays headless like memtrace.
-    assert 'New-WatcherPaneScript -Label "codegraph"' not in src, (
-        "codegraph must NOT take a WT pane (2x2 grid intact)."
+    # mcpw-0sp: codegraph now takes its own pane (5th cell of the 3x2 grid),
+    # and a 6th EMPTY cell is reserved so the grid is a true rectangle.
+    assert 'New-WatcherPaneScript -Label "codegraph"' in src, (
+        "codegraph must take a WT pane (3x2 grid)."
+    )
+    assert 'New-WatcherPaneScript -Label "empty"' in src, (
+        "the 3x2 grid must reserve an empty 6th cell."
     )
 
 

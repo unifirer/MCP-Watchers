@@ -49,3 +49,6 @@ desktop.ini
 .repowise/*.tmp
 .repowise/*.pkltmp
 .repowise/.update.lock.*
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/

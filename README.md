@@ -57,13 +57,13 @@ tests\                                                                 25 Pester
 docs\                                                                  guides, reviews, plans, changelogs
 ```
 
-The graphiti glue is shared infrastructure, not repo code. `embed_server.py`
-(:8003) is resolved from the shared tree at runtime - default the
-`shared\graphiti` sibling of this repository's parent
-(`J:\audio\shared\graphiti` on this machine) - with the `%LOCALAPPDATA%`
-install copy as fallback. Override the shared location with
-`$env:GRAPHITI_SHARED_DIR`. `mcp_proxy.py` still lives in that shared tree but
-is unused since 2026-09-20 (see above).
+The graphiti glue is install-resident, not repo code. `embed_server.py`
+(:8003) is resolved from the graphiti-mcp install tree at runtime:
+`%LOCALAPPDATA%\Programs\graphiti-mcp\mcp_server\embed_server.py`. The former
+shared copy (`J:\audio\shared\graphiti`) was retired on 2026-09-20 - it was a
+byte-identical duplicate of the install copy and has been deleted.
+`mcp_proxy.py` (the old :8004 adapter) is also retired and unused since
+2026-09-20 (see above).
 
 ## Run
 

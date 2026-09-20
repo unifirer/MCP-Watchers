@@ -1,7 +1,11 @@
-add these to be done if the first initialization steps are not done for these mcps.
+Save these discoveries if they are absent, to memory, including via the AutoMem, Graphiti and heimdall (HEIMDALL_BACKEND=mnemosyne heimdall kb-insert "memory") MCP, plus jcode's native memory if running in jcode, grouping entries by code repository where relevant: — `graphify-rs watch` doesn't include semantic extraction, and there's no flag to turn it on.
 
-memtrace build 
-grepai init, use existing ollama, and existing qdrant, use all default settings for qdrant.
-graphify-rs build
-gm init
-repowise init
+Looking at the `watch` command's parameters, it only takes `--path` and `--output` — no `--no-llm` toggle exists because there's nothing to toggle. Watch mode always does incremental AST-only rebuilds on file changes; the agent-integration docs describe it as running the equivalent of the fast path (comparable to `build --no-llm --update`).
+
+The two workflows for keeping semantic (LLM-derived) edges current are:
+- Re-run `graphify-rs build` (without `--no-llm`) manually/periodically to refresh the `INFERRED` edges
+- Use `graphify-rs hook install` to trigger a rebuild on git commit — though that's also just described as a rebuild trigger, not explicitly stated as LLM-inclusive by default
+
+So practically: `watch` keeps the structural graph (functions, imports, calls) live and cheap, but semantic/conceptual edges only get refreshed when you explicitly run a full `build` (with LLM enabled) again.
+
+

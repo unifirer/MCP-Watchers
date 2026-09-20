@@ -1,10 +1,11 @@
 # tests/launcher_watcher_panes.tests.ps1
 # Pester 3.4.0 team idiom. Run via:
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/launcher_watcher_panes.tests.ps1
-# Proves the 2x2 pane grid created by
+# Proves the 3x2 pane grid created by
 # "###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1" shows
-# info for all four pane-backed watchers (grepai, graphenium, graphify-rs, repowise).
-# memtrace is intentionally pane-less (launcher lines 475-476) and is NOT covered.
+# info for all five pane-backed watchers (grepai, graphenium, graphify-rs,
+# repowise, codegraph) plus the reserved empty cell. mcpw-0sp.
+# memtrace is intentionally pane-less and is NOT covered.
 $launcher = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')).Path '###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1'
 $paneModule = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')).Path 'Modules\watcher_pane_scripts.ps1'
 if (-not $env:VAD_WORKSPACE_ROOT) { $env:VAD_WORKSPACE_ROOT = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path }
@@ -40,7 +41,7 @@ Describe 'pane tailer generation' {
         finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
     }
 
-    It 'bakes the correct Label + LogPath + ErrPath into each of the 4 tailers' {
+    It 'bakes the correct Label + LogPath + ErrPath into each of the 6 tailers' {
         $src = Extract-FunctionAst -Path $paneModule -Name 'New-WatcherPaneScript'
         $tmp = Join-Path $env:TEMP ('fn_' + [guid]::NewGuid().ToString('N') + '.ps1')
         Set-Content -LiteralPath $tmp -Value $src -Encoding utf8
@@ -48,7 +49,7 @@ Describe 'pane tailer generation' {
         New-Item -ItemType Directory -Path $wtPaneDir -Force | Out-Null
         try {
             . $tmp
-            $labels = @('grepai', 'graphenium', 'graphify-rs', 'repowise')
+            $labels = @('grepai', 'graphenium', 'graphify-rs', 'repowise', 'codegraph', 'empty')
             foreach ($lbl in $labels) {
                 $log = Join-Path $env:TEMP ("log_$lbl.txt")
                 $err = "$log.err"
@@ -74,12 +75,14 @@ Describe 'pane tailer generation' {
 }
 
 Describe 'pane grid wiring' {
-    It 'generates exactly one tailer per pane-backed watcher (grepai/graphenium/graphify-rs/repowise)' {
+    It 'generates exactly one tailer per pane-backed watcher (grepai/graphenium/graphify-rs/repowise/codegraph) plus the reserved empty cell' {
         $c = Get-Content -LiteralPath $launcher -Raw
         $c | Should Match 'New-WatcherPaneScript -Label "grepai"'
         $c | Should Match 'New-WatcherPaneScript -Label "graphenium"'
         $c | Should Match 'New-WatcherPaneScript -Label "graphify-rs"'
         $c | Should Match 'New-WatcherPaneScript -Label "repowise"'
+        $c | Should Match 'New-WatcherPaneScript -Label "codegraph"'
+        $c | Should Match 'New-WatcherPaneScript -Label "empty"'
     }
 
     It 'wires each watcher to the correct log path' {
@@ -94,18 +97,22 @@ Describe 'pane grid wiring' {
         $c | Should Match 'New-WatcherPaneScript -Label "grepai"\s+-LogPath \$logFile\s+-ErrPath ""'
     }
 
-    It 'wt 2x2 grid references all 4 tailer scripts and a --title per watcher' {
+    It 'wt 3x2 grid references all 6 tailer scripts and a --title per pane' {
         $c = Get-Content -LiteralPath $launcher -Raw
         $c | Should Match '\$tailGrepai'
         $c | Should Match '\$tailGraphenium'
         $c | Should Match '\$tailGraphifyRs'
         $c | Should Match '\$tailRepowise'
+        $c | Should Match '\$tailCodegraph'
+        $c | Should Match '\$tailEmpty'
         # one --title per watcher, quoted token form used by the wt args
         $c | Should Match "'grepai'"
         $c | Should Match "'graphenium'"
         $c | Should Match "'graphify-rs'"
         $c | Should Match "'repowise'"
-        (($c | Select-String -Pattern "--title" -AllMatches).Matches.Count) | Should BeGreaterThan 3
+        $c | Should Match "'codegraph'"
+        $c | Should Match "'empty'"
+        (($c | Select-String -Pattern "--title" -AllMatches).Matches.Count) | Should BeGreaterThan 5
     }
 }
 
@@ -172,6 +179,49 @@ Describe 'pane tailer shows watcher info at runtime' {
                 Remove-Item -LiteralPath $cap -Force -ErrorAction SilentlyContinue
                 Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
                 Remove-Item -LiteralPath $err -Force -ErrorAction SilentlyContinue
+            }
+        }
+        finally {
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $wtPaneDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+Describe 'reserved and optional panes stay open (mcpw-0sp)' {
+    # The 3x2 grid is only stable if these two cells never close themselves: a
+    # pane whose command exits is closed by Windows Terminal (closeOnExit) and
+    # the surviving panes re-flow into a ragged layout. Before mcpw-0sp the
+    # template's liveness chain fell through to "else { $alive = $false }" for
+    # any label it did not recognise, so BOTH panes exited on their first tick.
+    It 'the empty cell and a PID-less codegraph pane never self-close' {
+        $src = Extract-FunctionAst -Path $paneModule -Name 'New-WatcherPaneScript'
+        $tmp = Join-Path $env:TEMP ('fn_' + [guid]::NewGuid().ToString('N') + '.ps1')
+        Set-Content -LiteralPath $tmp -Value $src -Encoding utf8
+        $wtPaneDir = Join-Path $env:TEMP ('panes_' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $wtPaneDir -Force | Out-Null
+        . $tmp
+        try {
+            foreach ($lbl in @('empty', 'codegraph')) {
+                $log = Join-Path $env:TEMP ("log_$lbl.txt")
+                Set-Content -LiteralPath $log -Value 'seed line' -Encoding utf8
+                # NO -WatchPid: exactly how the launcher builds these two panes
+                # (empty always; codegraph when the watcher never started).
+                $tailer = New-WatcherPaneScript -Label $lbl -LogPath $log -ErrPath '' -RepoRoot ''
+                $cap = Join-Path $env:TEMP ("cap_$lbl.txt")
+                $proc = Start-Process -FilePath (Get-Command powershell).Source -PassThru -WindowStyle Hidden `
+                    -ArgumentList @('-NoProfile', '-Command', "& '$tailer' 6>&1") -RedirectStandardOutput $cap
+                # 4s = ~7 poll ticks, well past the first liveness branch.
+                Start-Sleep -Seconds 4
+                $stillUp = $null
+                try { $stillUp = Get-Process -Id $proc.Id -ErrorAction Stop } catch { $stillUp = $null }
+                try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+                Start-Sleep -Milliseconds 200
+                $out = Get-Content -LiteralPath $cap -Raw -ErrorAction SilentlyContinue
+                $stillUp | Should Not BeNullOrEmpty
+                $out | Should Not Match 'closing pane'
+                Remove-Item -LiteralPath $cap -Force -ErrorAction SilentlyContinue
+                Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
             }
         }
         finally {

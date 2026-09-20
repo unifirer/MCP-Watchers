@@ -812,6 +812,14 @@ while ($true) {
     elseif ('__LABEL__' -eq 'graphenium') { $alive = Test-GrapheniumWatcherAlive }
     elseif ('__LABEL__' -eq 'graphify-rs') { $alive = Test-GraphifyRsWatcherAlive }
     elseif ('__LABEL__' -eq 'repowise') { $alive = Test-RepowiseWatcherAlive }
+    # mcpw-0sp: these two panes are CELLS of a fixed 3x2 grid, so they never
+    # self-close -- a closed pane makes the remaining five re-flow into a ragged
+    # layout. codegraph is optional (it may legitimately never start: no `watch`
+    # verb, not installed, or skipped by Test-CodegraphReady), so an empty PID
+    # means "hold the slot", not "the watcher died". The empty cell has nothing
+    # to watch at all. Both stay open for the whole session.
+    elseif ('__LABEL__' -eq 'codegraph') { $alive = $true }
+    elseif ('__LABEL__' -eq 'empty') { $alive = $true }
     else { $alive = $false }   # tracked pane with no watcher PID and no probe: close immediately
     # graphenium heal grace (beads VAD-be9): right after Invoke-GrapheniumAutoFix
     # kills the old watcher, the respawn may take a moment to surface via CIM;
@@ -841,6 +849,21 @@ while ($true) {
                 }
                 if ($script:deadTicks -lt 60) { $alive = $true }
             }
+        } elseif ('__LABEL__' -eq 'codegraph') {
+            # mcpw-0sp: codegraph is an OPTIONAL watcher and its pane is one cell
+            # of a fixed 3x2 grid, so it PARKS instead of exiting -- WT closing
+            # this pane would re-flow the other five into a ragged layout (the
+            # same "pane vanished" complaint mcpw-c1t / mcpw-uu9 raise for
+            # repowise). Surface the loss as a marker, then remind every 240
+            # ticks (~2 min) so a dead codegraph is not silently invisible.
+            # Do NOT reuse $script:deadTicks here: the live branch below zeroes
+            # it on every tick, and we force $alive back to $true.
+            if (-not $script:cgParkTick) { $script:cgParkTick = 0 }
+            $script:cgParkTick++
+            if ($script:cgParkTick -eq 1 -or $script:cgParkTick % 240 -eq 0) {
+                Write-Host "=== __LABEL__ watcher not running - pane parked (grid slot held; queries still served from the last build) ==="
+            }
+            $alive = $true
         } elseif ('__LABEL__' -eq 'graphenium' -or '__LABEL__' -eq 'graphify-rs' -or '__LABEL__' -eq 'repowise') {
             # mcpw-qfy RC3: 60 dead ticks @ 500ms ~= 30s grace, so a transient
             # CIM / Get-Process hiccup on one tick never closes the pane.

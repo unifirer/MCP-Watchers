@@ -1,13 +1,13 @@
 Import-Module Pester -RequiredVersion 3.4.0 -Force
 # tests/launcher_window_name_keying.tests.ps1 (mcpw-ybs.3)
 # Pester 3.4.0 (pinned). Guards the PER-WORKSPACE keying of the Windows
-# Terminal window name the launcher builds its 2x2 pane grid in.
+# Terminal window name the launcher builds its 3x2 pane grid in.
 #
 # Background: the name was the bare literal 'vadwatchers', so two repositories
 # launched at once shared ONE Windows Terminal window. Repo B's `new-tab -w
 # vadwatchers` landed in repo A's LIVE grid, and the directional move-focus /
 # split-pane anchors (which have no ids and resolve against whatever layout the
-# window currently holds) then operated on a 2x2 that already had repo A in it.
+# window currently holds) then operated on a grid that already had repo A in it.
 # mcpw-ybs.5 stopped the pre-grid reset from KILLING repo A's pane tailers, but
 # that only made the collision survivable -- it did not give each repo its own
 # window. Keying the name does.

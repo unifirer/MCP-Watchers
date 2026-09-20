@@ -1,9 +1,14 @@
 Import-Module Pester -ErrorAction Stop
 
-# Regression guard for the 2x2 watcher grid in ###1.
+# Regression guard for the 3x2 watcher grid in ###1.
 # Prevents the recurring "unequal quarters" bug by locking the wt-arg structure.
 # Comments are stripped before assertions so the documented "-w 0 is bad" note
 # in the comment block does not trip the "never -w 0" guard.
+#
+# mcpw-0sp: the grid went 2x2 (4 panes) -> 3x2 (6 panes: 5 watchers + 1 reserved
+# empty cell). Equal thirds are NOT dyadic, so the two column splits per row use
+# -s 0.6667 (new pane = 2/3) followed by -s 0.5 (halve the 2/3 into two thirds).
+# Every split still carries an explicit -s; none is left to the default.
 
 $launcher = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')).Path '###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1'
 
@@ -12,26 +17,36 @@ function Get-LauncherCode {
         Where-Object { $_.TrimStart().StartsWith('#') -eq $false }
 }
 
-Describe '###1 2x2 pane grid enforces EQUAL quarters' {
+Describe '###1 3x2 pane grid enforces EQUAL cells' {
 
-    It 'routes through a dedicated NAMED window, never -w 0 (which collapses two quarters into one half)' {
+    It 'routes through a dedicated NAMED window, never -w 0 (which collapses two cells into one)' {
         $code = Get-LauncherCode | Out-String
         $code.Contains("'-w', `$wtWindowName") | Should -Be $true
         $code | Should -Not -Match '\-w[\s,]+0\b'
     }
 
-    It 'splits every pane EXACTLY in half: all three split-pane calls carry explicit -s 0.5' {
+    It 'splits the rows in half and the columns in thirds: 3 x -s 0.5 plus 2 x -s 0.6667, and no split without an explicit -s' {
         $code = Get-LauncherCode | Out-String
-        $splits = [regex]::Matches($code, "'split-pane',\s*'-[HV]',\s*'-s',\s*'0\.5'")
-        $splits.Count | Should -Be 3
+        # Rows: one -H 0.5 (two equal rows). Columns: per row one -V 0.6667
+        # (new pane = 2/3, leaving the source pane 1/3) then one -V 0.5 to halve
+        # that 2/3 into two more thirds. mcpw-0sp.
+        $halves   = [regex]::Matches($code, "'split-pane',\s*'-[HV]',\s*'-s',\s*'0\.5'")
+        $thirds   = [regex]::Matches($code, "'split-pane',\s*'-[HV]',\s*'-s',\s*'0\.6667'")
+        $halves.Count | Should -Be 3
+        $thirds.Count | Should -Be 2
+        # Guard: no split is left to wt's default size.
+        $allSplits = [regex]::Matches($code, "'split-pane',\s*'-[HV]'")
+        $sized     = [regex]::Matches($code, "'split-pane',\s*'-[HV]',\s*'-s',\s*'0\.\d+'")
+        $allSplits.Count | Should -Be 5
+        $sized.Count     | Should -Be 5
     }
 
-    It 'builds the 2x2 as SEPARATE wt invocations with DIRECTIONAL move-focus anchors BETWEEN the two -V splits (no numeric pane ids): new-tab; split -H; move-focus up; split -V; move-focus down; split -V' {
+    It 'builds the 3x2 as SEPARATE wt invocations with DIRECTIONAL move-focus anchors BETWEEN the row splits (no numeric pane ids): new-tab; split -H; move-focus up; split -V; split -V; move-focus down; split -V; split -V' {
         $code = Get-LauncherCode | Out-String
         # Every grid step targets the named window so pane targeting stays scoped
-        # to the single 2x2 tab.
+        # to the single 3x2 tab.
         $namedWin = [regex]::Matches($code, "Build-GridStep @\('-w', [$]wtWindowName")
-        $namedWin.Count | Should -Be 6
+        $namedWin.Count | Should -Be 8
         # Exactly two DIRECTIONAL anchors (top then bottom row), each its OWN
         # invocation so it resolves against a settled layout. Numeric
         # "focus-pane -t <id>" anchors are BANNED: they carry window-global
@@ -44,31 +59,42 @@ Describe '###1 2x2 pane grid enforces EQUAL quarters' {
         $upCount   | Should -Be 1
         $downCount | Should -Be 1
         $code | Should -Not -Match "'focus-pane'"
-        # Canonical order: new-tab -> split -H -> move up -> split -V -> move down -> split -V
+        # Canonical 3x2 order: new-tab -> split -H -> move up -> split -V ->
+        # split -V -> move down -> split -V -> split -V
         $iNewTab = $code.IndexOf("'new-tab'")
         $iH      = $code.IndexOf("'split-pane', '-H'")
         $iUp     = $code.IndexOf("'move-focus', 'up'")
         $iV1     = $code.IndexOf("'split-pane', '-V'")
         $iDown   = $code.IndexOf("'move-focus', 'down'")
         $iV2     = $code.IndexOf("'split-pane', '-V'", $iV1 + 1)
-        @($iNewTab, $iH, $iUp, $iV1, $iDown, $iV2) | ForEach-Object { $_ | Should -BeGreaterThan -1 }
+        # 3x2: the two row-1 column splits both precede the single move-focus
+        # down, then the two row-2 column splits follow it.
+        $iV3     = $code.IndexOf("'split-pane', '-V'", $iV2 + 1)
+        $iV4     = $code.IndexOf("'split-pane', '-V'", $iV3 + 1)
+        @($iNewTab, $iH, $iUp, $iV1, $iV2, $iDown, $iV3, $iV4) | ForEach-Object { $_ | Should -BeGreaterThan -1 }
         $iNewTab -lt $iH    | Should -Be $true
         $iH      -lt $iUp   | Should -Be $true
         $iUp     -lt $iV1   | Should -Be $true
-        $iV1     -lt $iDown | Should -Be $true
-        $iDown   -lt $iV2   | Should -Be $true
+        $iV1     -lt $iV2   | Should -Be $true
+        $iV2     -lt $iDown | Should -Be $true
+        $iDown   -lt $iV3   | Should -Be $true
+        $iV3     -lt $iV4   | Should -Be $true
         # A settle wait must follow every step (the race was in-chained focus/split;
         # serializing + waiting is what makes each anchor resolve deterministically).
         $code | Should -Match 'Start-Sleep -Milliseconds'
     }
 
-    It 'targets exactly 4 panes (one watcher per quarter) each with a --title' {
+    It 'targets exactly 6 panes (5 watchers + 1 reserved empty cell) each with a --title' {
         $code = Get-LauncherCode | Out-String
-        $titles = [regex]::Matches($code, "'--title', '(grepai|graphenium|graphify-rs|repowise)'")
-        $titles.Count | Should -Be 4
+        $titles = [regex]::Matches($code, "'--title', '(grepai|graphenium|graphify-rs|repowise|codegraph|empty)'")
+        $titles.Count | Should -Be 6
+        # Every one of the six cells is titled exactly once.
+        foreach ($lbl in @('grepai', 'graphenium', 'graphify-rs', 'repowise', 'codegraph', 'empty')) {
+            [regex]::Matches($code, "'--title', '$lbl'").Count | Should -Be 1
+        }
     }
 
-    It 'resets any SURVIVING vadwatchers 2x2 grid BEFORE building the grid (a pre-grid pane-tailer kill between the window-name assignment and new-tab), so new-tab never inherits a stale 2nd tab that makes focus-pane -t mis-resolve and collapse two quarters into one half -- and so teardown only closes the tab(s) it opened, not the whole window' {
+    It 'resets any SURVIVING vadwatchers pane grid BEFORE building the grid (a pre-grid pane-tailer kill between the window-name assignment and new-tab), so new-tab never inherits a stale 2nd tab that makes focus-pane -t mis-resolve and collapse two cells into one -- and so teardown only closes the tab(s) it opened, not the whole window' {
         $code = Get-LauncherCode | Out-String
         # Prefix, no closing quote: mcpw-ybs.3 keys the name per workspace
         # ('vadwatchers-<key>'), so the old full literal no longer exists and
@@ -104,7 +130,7 @@ Describe '###1 2x2 pane grid enforces EQUAL quarters' {
         $code | Should -Not -Match 'public class WtHostWin'
     }
 
-    It 'tears down the 2x2 tab on Ctrl+C by killing its pane tailers through the Stop-AllWatchers sweep -- wt (1.24) has no close-tab command, and a tab whose panes all exited closes by itself (the whole window is never nuked; the user''s other vadwatchers tabs survive)' {
+    It 'tears down the grid tab on Ctrl+C by killing its pane tailers through the Stop-AllWatchers sweep -- wt (1.24) has no close-tab command, and a tab whose panes all exited closes by itself (the whole window is never nuked; the user''s other vadwatchers tabs survive)' {
         $code = Get-LauncherCode | Out-String
         $trapIdx = $code.IndexOf('trap {')
         $trapIdx | Should -BeGreaterThan -1
@@ -120,7 +146,7 @@ Describe '###1 2x2 pane grid enforces EQUAL quarters' {
     }
 }
 
-Describe '###1 2x2 grid survives a COLD START (WT not already running)' {
+Describe '###1 3x2 grid survives a COLD START (WT not already running)' {
 
     It 'builds each grid step through a named GridStep helper that does bounded polling (not a blind fixed sleep)' {
         $code = Get-LauncherCode | Out-String
@@ -161,9 +187,12 @@ Describe '###1 2x2 grid survives a COLD START (WT not already running)' {
         # so a slow spawn degrades instead of stalling the launch.
         $fnBody | Should -Match '\$gridStableMs'
         $fnBody | Should -Match '\$gridWaitDeadline'
-        # Every one of the 6 grid steps must pass its expected tailer count.
+        # Every one of the 8 grid steps must pass its expected tailer count,
+        # and the counts must run 1..6 (one new tailer per pane-creating step).
         $countArgs = [regex]::Matches($code, 'Build-GridStep @\([^)]*\) \d+')
-        $countArgs.Count | Should -Be 6
+        $countArgs.Count | Should -Be 8
+        $counts = @($countArgs | ForEach-Object { [int]([regex]::Match($_.Value, '(\d+)$').Groups[1].Value) })
+        ($counts -join ',') | Should -Be '1,2,2,3,4,4,5,6'
     }
 
     It 'treats a still-running wt process as success on cold start (the host stays alive) and only fails on a real non-zero exit' {

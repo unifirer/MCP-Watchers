@@ -1,7 +1,7 @@
 Import-Module Pester -RequiredVersion 3.4.0 -Force
 # tests/launcher_grid_reset_attribution.tests.ps1 (mcpw-ybs.5)
 # Pester 3.4.0 (pinned). Guards the PRE-GRID pane-tailer reset in ###1, the
-# step that tears down a surviving 2x2 grid before the new one is built.
+# step that tears down a surviving pane grid before the new one is built.
 #
 # Background: that reset matched 'panes\tail_' on CommandLine and terminated
 # EVERY match machine-wide. mcpw-ybs.2b put an attribution gate on the STARTUP

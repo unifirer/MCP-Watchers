@@ -53,7 +53,7 @@ Describe 'launcher relaunch leaves at most one wrapper' {
             $after | Should BeLessThan 2
         } finally {
             # Tree-kill the WHOLE subtree of each launched launcher (gm/repowise/
-            # grepai/memtrace children + the Windows Terminal 2x2 grid it opened).
+            # grepai/memtrace children + the Windows Terminal pane grid it opened).
             foreach ($p in $launched) {
                 try { Stop-WatcherTree -RootPid $p.Id | Out-Null } catch {}
             }

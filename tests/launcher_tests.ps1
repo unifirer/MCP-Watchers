@@ -20,7 +20,7 @@
 #   T5  tailer prints [LABEL ERR] lines from the stderr sidecar
 #   T6  grepai gate does NOT throw on a LIVE watcher and sets $grepaiOk = $true
 #   T7  grepai gate RECOVERS from a stale worktree lock (orphan PID + lock) and still proceeds
-#   T8  wt pane block opens exactly ONE window with FOUR panes (plugin rules: -w 0 -d . ;)
+#   T8  wt pane block opens exactly ONE window with SIX panes (3x2: 5 watchers + 1 empty; plugin rules: -w 0 -d . ;)
 #   T9  no stale references to the removed named-window / dead vars remain in the script
 #   T20 END-TO-END: the REAL launcher process reaches the WT-open marker in budget
 #   T21 second instance resolves fast (prior-sweep / first-wins / lock-retry), never stacks
@@ -298,7 +298,7 @@ try {
 }
 }
 
-Write-Host "=== T8: wt pane block opens exactly ONE window with FOUR panes ==="
+Write-Host "=== T8: wt pane block opens exactly ONE window with SIX panes (3x2: 5 watchers + 1 empty) ==="
 # Skip T8 when a real ###1 launcher session is active. Like the Python tests
 # (test_launcher_watcher_live_tracking.py / test_launcher_teardown_state_live.py)
 # which skip via _launcher_session_active(), T8 must NOT run its own live watcher
@@ -328,6 +328,9 @@ try {
     $gmLog = Join-Path $env:TEMP 'gm.log'
     $graphifyLog = Join-Path $env:TEMP 'graphify-rs.log'
     $repowiseLog = Join-Path $env:TEMP 'repowise.log'
+    # mcpw-0sp: the 3x2 block also builds a codegraph pane; give it a log path
+    # the way the other three get one.
+    $codegraphLog = Join-Path $env:TEMP 'codegraph.log'
     # Shared isolation helpers (unique window name + unique pane dir + HWND enum).
     # Dot-sourced here so T8 runs the launcher's REAL pane block against a
     # per-run SANDBOX (unique WT window name + unique pane dir) instead of the
@@ -337,7 +340,7 @@ try {
     # T8's own file-check dir is the UNIQUE sandbox dir, so the tailer census
     # counts ONLY the files this run wrote (never ###1's).
     $panesDir = Join-Path $scratchRoot ('t8_' + $t8Guid + '\panes'); New-Item -ItemType Directory -Path $panesDir -Force | Out-Null
-    $gmLog = Join-Path $env:TEMP 'gm.log'; $graphifyLog = Join-Path $env:TEMP 'graphify-rs.log'; $repowiseLog = Join-Path $env:TEMP 'repowise.log'
+    $gmLog = Join-Path $env:TEMP 'gm.log'; $graphifyLog = Join-Path $env:TEMP 'graphify-rs.log'; $repowiseLog = Join-Path $env:TEMP 'repowise.log'; $codegraphLog = Join-Path $env:TEMP 'codegraph.log'
     $psiIdx = $src.IndexOf('$wtPaneDir = Join-Path $scratchRoot "vad-watchers')
     $peiIdx = $src.IndexOf('# Controller loop (WT panes open)')
     $paneBlock = $src.Substring($psiIdx, $peiIdx - $psiIdx)
@@ -346,7 +349,7 @@ try {
     $paneBlock = New-IsolatedPaneBlock -PaneBlock $paneBlock -Guid $t8Guid
     # AGENTS.md Sec. 4.3: a test must not show a visible window unless visibility is
     # strictly required for the assertion. T8 only checks the WindowsTerminal
-    # process count and the four tailer files -- neither needs an on-screen
+    # process count and the six tailer files -- neither needs an on-screen
     # window. Run the launcher's REAL serialized `Build-GridStep` spawn (so $wtOk
     # reflects the genuine result of the launcher's own exit-code check -- the
     # previous `$LASTEXITCODE = 0` fraud forced $wtOk true and hid any real spawn
@@ -390,7 +393,7 @@ public class Win32Placement {
     # exists, then returns. It is spliced INTO Build-GridStep (via the string
     # replacement below) so the window is minimized within ~200ms of its first
     # appearance (right after the new-tab step) and re-minimized before every
-    # subsequent step -- the 2x2 grid (~2.4s across 6 serialized steps) is built
+    # subsequent step -- the 3x2 grid (~3.2s across 8 serialized steps) is built
     # with the window ALREADY off-screen. T8's assertions (process count, tailer
     # files, live processes, T8b minimized end-state) need no on-screen window,
     # so this satisfies AGENTS.md Sec. 4.3 without changing the launcher's behavior.
@@ -474,7 +477,7 @@ public class Win32Placement {
     Start-Sleep -Seconds 1
 
     # --- T8 auto-start: bring up any watcher that is currently undetected ---
-    # The 2x2 pane grid is only meaningful when all four watchers are actually
+    # The 3x2 pane grid is only meaningful when all the watchers are actually
     # running (each pane tails its watcher's log). If a watcher process is not
     # detected this session (e.g. grepai was disabled), auto-start it so T8
     # does not fail purely on environmental state. We reuse the launcher's OWN
@@ -558,7 +561,7 @@ public class Win32Placement {
         Where-Object { $_.Id -notin $preWtIds } | Select-Object -ExpandProperty Id)
     try { $myWtPids | ForEach-Object { $_ } | Out-File -LiteralPath $wtPidFile -Encoding ASCII -ErrorAction SilentlyContinue } catch {}
     Assert ($wtOk -eq $true) 'T8 wtOk=$true' ("wtOk=$wtOk")
-    # Poll (rather than a single fixed sleep) for the four pane tailers to come
+    # Poll (rather than a single fixed sleep) for the pane tailers to come
     # up. The grepai pane is the first `new-tab` and occasionally needs a beat
     # longer; if its tailer is still missing after the initial wait we treat the
     # watcher as "undetected" again and re-auto-start it -- the same resilience
@@ -592,12 +595,21 @@ public class Win32Placement {
         $liveTailers = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
             Where-Object { $_.CommandLine -and $_.CommandLine -match 'panes[\\/]tail_' } |
             Select-Object -ExpandProperty CommandLine)
-        $liveLabels = @($liveTailers | ForEach-Object {
+        # mcpw-0sp: six panes now. codegraph and empty are panes but NOT
+        # watcher-backed, so they are counted separately -- the loop below
+        # breaks on the WATCHER pane count, and the two extra cells are
+        # asserted on their own afterwards. The Where-Object { $_ } drops the
+        # $null an unmatched tailer contributes, which would otherwise inflate
+        # the count and spin the loop for the full 15s.
+        $liveAllLabels = @($liveTailers | ForEach-Object {
                 if ($_ -match 'tail_grepai\.ps1') { 'grepai' }
                 elseif ($_ -match 'tail_graphenium\.ps1') { 'graphenium' }
                 elseif ($_ -match 'tail_graphify-rs\.ps1') { 'graphify-rs' }
                 elseif ($_ -match 'tail_repowise\.ps1') { 'repowise' }
-            } | Sort-Object -Unique)
+                elseif ($_ -match 'tail_codegraph\.ps1') { 'codegraph' }
+                elseif ($_ -match 'tail_empty\.ps1') { 'empty' }
+            } | Where-Object { $_ } | Sort-Object -Unique)
+        $liveLabels = @($liveAllLabels | Where-Object { $_ -notin @('codegraph', 'empty') })
         if ($liveLabels.Count -eq $expectedTailerCount) { break }
         if ('grepai' -notin $liveLabels) { Ensure-WatcherRunning 'grepai' 'grepai' @() $null }
         Start-Sleep -Seconds 2
@@ -608,27 +620,33 @@ public class Win32Placement {
     # so the delta is empty whenever the user already has a WT window open --
     # that unsound PID-scoping WAS the T8 flake. Window ownership is now proven
     # by the CASCADIA HWND set-difference in T8b below.
-    # The launcher's pane block writes exactly FOUR tailer scripts (one per pane)
+    # The launcher's pane block writes exactly SIX tailer scripts (one per pane)
     # via New-WatcherPaneScript with labels grepai / graphenium / graphify-rs /
-    # repowise. Those four distinct files are the deterministic artifact the
-    # launcher guarantees. ALSO assert the four pane tailers are actually RUNNING
+    # repowise / codegraph / empty (mcpw-0sp: the grid is 3x2 = 5 watchers + 1
+    # reserved empty cell). Those six distinct files are the deterministic artifact
+    # the launcher guarantees. ALSO assert the pane tailers are actually RUNNING
     # as live powershell.exe processes -- this is the genuine runtime signal that
-    # the 2x2 grid truly spawned. The previous test counted only the files, which
+    # the grid truly spawned. The previous test counted only the files, which
     # passed even when wt never built the grid (a no-op spawn still writes files).
     # NOTE: pane *size* equality is NOT asserted at runtime -- Windows Terminal
     # exposes no pane geometry to the CLI or to UI Automation (only 2 Pane
     # controls: tab strip + content). Equal-size geometry is guarded structurally
     # by T15 + tests/launcher_equal_quarters.tests.ps1.
-    $expectedTailers = @('tail_grepai.ps1', 'tail_graphenium.ps1', 'tail_graphify-rs.ps1', 'tail_repowise.ps1')
+    $expectedTailers = @('tail_grepai.ps1', 'tail_graphenium.ps1', 'tail_graphify-rs.ps1', 'tail_repowise.ps1', 'tail_codegraph.ps1', 'tail_empty.ps1')
     $foundTailers = @(Get-ChildItem -LiteralPath $panesDir -Filter 'tail_*.ps1' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
     $missing = @($expectedTailers | Where-Object { $_ -notin $foundTailers })
-    Assert ($missing.Count -eq 0) 'T8 all four pane tailer scripts written' ("missing=" + ($missing -join ','))
-    Assert ($foundTailers.Count -eq 4) 'T8 exactly four panes' ("count=" + $foundTailers.Count)
+    Assert ($missing.Count -eq 0) 'T8 all six pane tailer scripts written' ("missing=" + ($missing -join ','))
+    Assert ($foundTailers.Count -eq 6) 'T8 exactly six panes (3x2)' ("count=" + $foundTailers.Count)
+    # mcpw-0sp: the two non-watcher cells must be live too -- the reserved empty
+    # pane in particular is what keeps the grid a rectangle instead of letting
+    # five panes re-flow. They are checked separately from the watcher panes
+    # below because they have no watcher process to guard them.
+    Assert (('codegraph' -in $liveAllLabels) -and ('empty' -in $liveAllLabels)) 'T8 codegraph + empty panes live' ("live=" + ($liveAllLabels -join ','))
 
-    # --- T8 runtime signal: all four watchers are actually running ---
-    # The user-facing contract of T8 is "the launcher brings up a 2x2 watcher
+    # --- T8 runtime signal: all the watchers are actually running ---
+    # The user-facing contract of T8 is "the launcher brings up a 3x2 watcher
     # grid, auto-starting any watcher that was undetected this session". The
-    # deterministic check is therefore that all four WATCHER PROCESSES are live
+    # deterministic check is therefore that all the WATCHER PROCESSES are live
     # (grepai / gm / graphify-rs / repowise). This is what the auto-start logic
     # guarantees and is the meaningful runtime assertion.
     function Test-WatcherRunning([string]$Name, [string]$ExeName) {
@@ -685,8 +703,8 @@ public class Win32Placement {
     $expectedCount = $watchers.Count
     Assert ($runningWatchers.Count -eq $expectedCount) "T8 all $expectedCount watchers running (auto-started if undetected)" ("running=" + ($runningWatchers -join ','))
 
-    # The live PANE-TAILER process check is the secondary grid signal. ALL FOUR
-    # tailers must be live. (The earlier "known WT quirk with the first tab"
+    # The live PANE-TAILER process check is the secondary grid signal. Every
+    # watcher-backed tailer must be live. (The earlier "known WT quirk with the first tab"
     # exclusion for grepai was a misdiagnosis: the grepai pane never launched
     # because `new-tab --tabIdFile <path>` is not a wt option -- wt absorbed the
     # option and the rest of the line into the pane command line and failed with
@@ -759,7 +777,7 @@ Write-Host "=== T9: dedicated WT named window ($wtWindowName) is the -w target, 
 # closing quote -- a full-literal match would silently stop matching the moment
 # the name was keyed, and T9 would report "missing" for a present window.
 # Anchors are DIRECTIONAL move-focus commands (no numeric pane ids -- see T15);
-# the named window keeps every step scoped to the single 2x2 tab. T9 asserts
+# the named window keeps every step scoped to the single 3x2 tab. T9 asserts
 # that named window is PRESENT and wired as the -w target, and that no
 # dead/stale variable ($watchRunning) lingers.
 $hasWtVar = $src -match '\$wtWindowName\s*=\s*"vadwatchers'
@@ -1001,16 +1019,17 @@ $m4 = [regex]::Match('Files changed (4)', '\d+')
 Assert ($m8.Success -and [int]$m8.Value -eq 8) 'T14 regex reads N=8 (not 1)' ("val=" + $m8.Value)
 Assert ($m4.Success -and [int]$m4.Value -eq 4) 'T14 regex reads N=4 (not 1)' ("val=" + $m4.Value)
 
-# T15: regression test for the "4 equal quarters" 2x2 pane geometry.
+# T15: regression test for the equal-cell 3x2 pane geometry (mcpw-0sp: this
+# used to be the "4 equal quarters" 2x2 geometry).
 # The equal-quarter guarantee lives in the DETERMINISTIC build: SEPARATE wt
 # invocations (one per grid step, each followed by a settle wait) instead of the
 # OLD single chained ";" call. In the old chained call, focus-pane -t 0 / -t 1
 # could resolve against a not-yet-finalized layout so both -V splits landed in
 # the same half. Splitting the build means focus-pane resolves against a settled
-# layout. T8 only counts "4 panes in 1 window", which a broken layout (e.g. both
-# -V splits landing in one half) still passes. T15 statically asserts the
+# layout. T8 only counts "6 panes in 1 window", which a broken layout (e.g. a
+# -V split landing in the wrong row) still passes. T15 statically asserts the
 # structural sequence, so this regression is caught.
-Write-Host "=== T15: wt pane block keeps the 2x2 EQUAL-QUARTER split sequence ==="
+Write-Host "=== T15: wt pane block keeps the 3x2 EQUAL-CELL split sequence ==="
 function Find-InOrder {
     param([string]$Text, [string[]]$Tokens)
     $pos = 0; $idxs = @()
@@ -1025,10 +1044,11 @@ function Find-InOrder {
 $t15psi = $src.IndexOf('$wtPaneDir = Join-Path $scratchRoot "vad-watchers')
 $t15pei = $src.IndexOf('# Controller loop (WT panes open)')
 $t15block = $src.Substring($t15psi, $t15pei - $t15psi)
-# Counts: exactly one horizontal split, exactly two vertical splits, exactly
-# two DIRECTIONAL move-focus anchors (each -V is anchored by moving focus to
-# its row without any pane id), and SIX Build-GridStep invocations (new-tab,
-# -H split, move up, -V split, move down, -V split).
+# Counts (3x2): exactly one horizontal split (two rows), exactly FOUR vertical
+# splits (each row is cut into thirds: -s 0.6667 then -s 0.5), exactly two
+# DIRECTIONAL move-focus anchors (each row's pair of -V splits is anchored by
+# moving focus to that row, with no pane id), and EIGHT Build-GridStep
+# invocations (new-tab, -H split, move up, -V, -V, move down, -V, -V).
 $t15hCount = (@([regex]::Matches($t15block, '''-H''')).Count)
 $t15vCount = (@([regex]::Matches($t15block, '''-V''')).Count)
 $t15upCount   = (@([regex]::Matches($t15block, "'move-focus', 'up'")).Count)
@@ -1036,18 +1056,26 @@ $t15downCount = (@([regex]::Matches($t15block, "'move-focus', 'down'")).Count)
 $t15focusPaneCount = (@([regex]::Matches($t15block, '''focus-pane''')).Count)
 $t15steps = (@([regex]::Matches($t15block, 'Build-GridStep @\(')).Count)
 Assert ($t15hCount -eq 1) 'T15 exactly one horizontal split (-H)' ("count=$t15hCount")
-Assert ($t15vCount -eq 2) 'T15 exactly two vertical splits (-V)' ("count=$t15vCount")
+Assert ($t15vCount -eq 4) 'T15 exactly four vertical splits (-V): two rows cut into thirds' ("count=$t15vCount")
 Assert (($t15upCount -eq 1) -and ($t15downCount -eq 1)) 'T15 exactly two directional move-focus anchors (rows split independently)' ("up=$t15upCount down=$t15downCount")
 Assert ($t15focusPaneCount -eq 0) 'T15 NO numeric focus-pane anchors (stale-id regression source)' ("count=$t15focusPaneCount")
-Assert ($t15steps -eq 6) 'T15 six separate Build-GridStep wt invocations (serialized build)' ("steps=$t15steps")
-# Ordering: new-tab -> split-pane -H -> move-focus up -> split-pane -V ->
-# move-focus down -> split-pane -V. Each -V must follow its row's directional
-# anchor so the two halves are split independently (the "equal quarters"
-# invariant), and no anchor may depend on a numeric pane id.
+Assert ($t15steps -eq 8) 'T15 eight separate Build-GridStep wt invocations (serialized build)' ("steps=$t15steps")
+# Ordering: new-tab -> split-pane -H -> move-focus up -> split-pane -V -V ->
+# move-focus down -> split-pane -V -V. Each -V pair must follow its row's
+# directional anchor so the two rows are cut into thirds independently (the
+# "equal cells" invariant), and no anchor may depend on a numeric pane id.
 $t15order = @('''new-tab''', '''split-pane''', '''-H''', '''move-focus''', '''up''',
-               '''split-pane''', '''-V''', '''move-focus''', '''down''', '''split-pane''', '''-V''')
+               '''split-pane''', '''-V''', '''split-pane''', '''-V''',
+               '''move-focus''', '''down''', '''split-pane''', '''-V''', '''split-pane''', '''-V''')
 $t15idxs = Find-InOrder $t15block $t15order
-Assert ($null -ne $t15idxs) 'T15 equal-quarter split sequence present (order-correct)' ("missing-from-sequence")
+Assert ($null -ne $t15idxs) 'T15 equal-cell split sequence present (order-correct)' ("missing-from-sequence")
+# Equal thirds need a non-dyadic ratio: each row's first column split is 0.6667
+# (new pane = 2/3, leaving the source pane 1/3) and the second is 0.5 (halve the
+# 2/3). Assert both ratios are present exactly twice, once per row. mcpw-0sp.
+$t15thirds = (@([regex]::Matches($t15block, "'-s', '0.6667'")).Count)
+$t15halves = (@([regex]::Matches($t15block, "'-s', '0.5'")).Count)
+Assert ($t15thirds -eq 2) 'T15 two 0.6667 third splits (one per row)' ("count=$t15thirds")
+Assert ($t15halves -eq 3) 'T15 three 0.5 splits (row split + one per row)' ("count=$t15halves")
 # A settle wait must follow every step (the race was in-chained focus/split;
 # serializing + waiting is what makes each focus-pane resolve deterministically).
 Assert ($t15block -match 'Start-Sleep -Milliseconds') 'T15 every grid step followed by a settle wait' ("missing-settle")
@@ -1056,7 +1084,7 @@ Assert ($t15block -match 'Start-Sleep -Milliseconds') 'T15 every grid step follo
 # The -w target must be a DEDICATED NAMED window ('-w', $wtWindowName) - NOT
 # '-w', '0' (most-recently-focused window). With -w 0 the pane ids can leak into
 # the controller tab and a -V split can land in the wrong tab, collapsing two
-# quarters into one half. A fixed named window scopes the pane IDs to the 2x2
+# cells into one. A fixed named window scopes the pane IDs to the 3x2
 # tab.
 # Match the '-w' token then its partner arg (literal like '0' OR the variable
 # $wtWindowName). Reject the literal '0' target specifically.
@@ -1071,9 +1099,9 @@ Assert $t15wNamed 'T15 -w target is the dedicated named window ($wtWindowName)' 
 # the same "tail_.ps1"; the last call (repowise) overwrote the rest, so all four
 # panes loaded the repowise tailer and showed "=== repowise live log ===".
 # Guard the invariant two ways: (a) the source line must use $Label, never the
-# dead $safeLabel; (b) the four REAL labels must resolve to four DISTINCT,
+# dead $safeLabel; (b) the six REAL labels must resolve to six DISTINCT,
 # filesystem-safe filenames.
-Write-Host "=== T16: four pane tailers emit DISTINCT files (no `$safeLabel collision) ==="
+Write-Host "=== T16: six pane tailers emit DISTINCT files (no `$safeLabel collision) ==="
 $t16fnLine = ($tplSrc -split "`n" | Where-Object { $_ -match '\$scriptPath = Join-Path \$wtPaneDir' } | Select-Object -First 1)
 Assert ($null -ne $t16fnLine) 'T16 found tailer filename line' ("line=$t16fnLine")
 Assert ($t16fnLine -match '\$Label') 'T16 filename uses $Label param' ("line=$t16fnLine")
@@ -1081,7 +1109,7 @@ Assert ($t16fnLine -notmatch '\$safeLabel') 'T16 no dead $safeLabel reference' (
 # Execute the REAL filename expression against the four actual labels.
 $t16dir = Join-Path $env:TEMP ('t16_' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $t16dir -Force | Out-Null
-$t16labels = @('grepai', 'graphenium', 'graphify-rs', 'repowise')
+$t16labels = @('grepai', 'graphenium', 'graphify-rs', 'repowise', 'codegraph', 'empty')
 $t16paths = @()
 foreach ($l in $t16labels) {
     $p = Join-Path $t16dir ("tail_$l.ps1")
@@ -1089,7 +1117,7 @@ foreach ($l in $t16labels) {
     $t16paths += $p
 }
 $t16distinct = ($t16paths | Sort-Object -Unique).Count
-Assert ($t16distinct -eq 4) 'T16 four distinct tailer files' ("distinct=$t16distinct")
+Assert ($t16distinct -eq 6) 'T16 six distinct tailer files' ("distinct=$t16distinct")
 try { Remove-Item -LiteralPath $t16dir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
 
 # cleanup
@@ -1102,6 +1130,39 @@ Write-Host "=== T10: grepai index health (corruption check + Ollama) ==="
 function Write-Bytes([string]$Path, [byte[]]$Bytes) {
     [System.IO.File]::WriteAllBytes($Path, $Bytes)
 }
+# === grepai clean fixture (begin) ===
+# mcpw-zh7: build a CLEAN .grepai fixture under a parent dir and return its path.
+# T10b and T10d assert that a clean index is NOT deleted by
+# Repair-GrepaiIndexIfCorrupted. The repo's own .grepai is gitignored tool state
+# (.gitignore), so it is ABSENT on a fresh clone or an extracted archive. The old
+# unguarded whole-dir Copy-Item then threw under $ErrorActionPreference='Stop' and
+# aborted the whole suite before T18/T19 ever ran. Copy the real dir when present
+# (that authentic whole-dir copy is what makes grepai report clean); otherwise
+# synthesize a minimal non-corrupt fixture so the no-false-delete path still runs.
+# A synthetic fixture has no gobs, so the caller's gob snapshot is empty and its
+# existing [SKIP] branch still applies.
+function New-CleanGrepaiFixture {
+    param([string]$Parent)
+    if (-not (Test-Path -LiteralPath $Parent)) {
+        New-Item -ItemType Directory -Path $Parent -Force | Out-Null
+    }
+    $dest = Join-Path $Parent '.grepai'
+    $real = Join-Path $repoRoot '.grepai'
+    if (Test-Path -LiteralPath $real) {
+        Copy-Item -LiteralPath $real -Destination $dest -Recurse -Force
+    } else {
+        New-Item -ItemType Directory -Path $dest -Force | Out-Null
+        # The synthetic config MUST declare a store backend. With a bare
+        # `provider: ollama` config (no store.backend) grepai prints
+        # "unknown storage backend:" - the exact string Repair treats as
+        # corruption - so the fixture would be deleted and the no-false-delete
+        # assertion would fail. `backend: gob` makes `grepai status --no-ui`
+        # report a clean, empty index with no server dependency.
+        Set-Content -Path (Join-Path $dest 'config.yaml') -Value "version: 1`nstore:`n    backend: gob`n"
+    }
+    return $dest
+}
+# === grepai clean fixture (end) ===
 # Extract the REAL health-check functions from the launcher source between the
 # unique markers so we exercise the shipped logic, not a hand-copied replica
 # that could drift. Fail-closed: if the markers are absent the test fails.
@@ -1157,12 +1218,14 @@ if ($ghBegin -ge 0 -and $ghEnd -ge 0) {
     $cleanDir = Join-Path $env:TEMP ('gh_clean_' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $cleanDir -Force | Out-Null
     # Authentic CLEAN fixture: copy the repo's ENTIRE valid .grepai (all gobs +
-    # config + stats). A bare copied gob without its companion files makes grepai
-    # report "unknown storage backend:", which is indistinguishable from corruption;
-    # the whole-dir copy is what a genuinely-built index looks like, so grepai
-    # status reports clean and Repair must leave it untouched (no false delete).
-    Copy-Item -LiteralPath (Join-Path $repoRoot '.grepai') -Destination (Join-Path $cleanDir '.grepai') -Recurse -Force
-    $cleanGrepai = Join-Path $cleanDir '.grepai'
+    # config + stats) when it exists. A bare copied gob without its companion
+    # files makes grepai report "unknown storage backend:", which is
+    # indistinguishable from corruption; the whole-dir copy is what a genuinely-
+    # built index looks like, so grepai status reports clean and Repair must leave
+    # it untouched (no false delete). On a fresh clone .grepai is gitignored tool
+    # state and absent, so New-CleanGrepaiFixture synthesizes a minimal clean
+    # fixture instead of throwing (mcpw-zh7).
+    $cleanGrepai = New-CleanGrepaiFixture -Parent $cleanDir
     $cleanBefore = @($gobNames | Where-Object { Test-Path (Join-Path $cleanGrepai $_) })
     $clean = Repair-GrepaiIndexIfCorrupted -GrepaiDir $cleanGrepai
     Assert ($clean -eq $false) 'T10b clean index NOT "repaired" (no false delete)' ("clean=$clean")
@@ -1203,10 +1266,10 @@ if ($ghBegin -ge 0 -and $ghEnd -ge 0) {
     $rfs = [System.IO.File]::Open($rg, 'Open', 'Write'); try { $rfs.SetLength(377) } finally { $rfs.Close() }
     $wtDir = Join-Path $env:TEMP ('gh_wt_' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $wtDir -Force | Out-Null
-    # Authentic CLEAN worktree fixture (whole valid .grepai), so the orchestrator
-    # must leave it untouched while repairing the corrupted root.
-    Copy-Item -LiteralPath (Join-Path $repoRoot '.grepai') -Destination (Join-Path $wtDir '.grepai') -Recurse -Force
-    $wtGrepai = Join-Path $wtDir '.grepai'
+    # Authentic CLEAN worktree fixture (whole valid .grepai when present, else a
+    # synthetic config-only fixture - mcpw-zh7), so the orchestrator must leave it
+    # untouched while repairing the corrupted root.
+    $wtGrepai = New-CleanGrepaiFixture -Parent $wtDir
     # Snapshot the gobs this install actually ships (see $gobNames above) -- a
     # qdrant-backed install has no index.gob to assert on.
     $wtBefore = @($gobNames | Where-Object { Test-Path (Join-Path $wtGrepai $_) })

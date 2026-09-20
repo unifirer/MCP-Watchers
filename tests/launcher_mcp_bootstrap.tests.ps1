@@ -26,6 +26,13 @@
 # TOOLS (small .cmd shims) in a temp dir, so the suite needs NONE of the six
 # real CLIs installed and never touches a real repository's tool state.
 #
+# A FAKE MUST PROVISION, NOT JUST EXIT 0. Since bead mcpw-0zo.1 a stamp is
+# written only when the matching Test-<Mcp>Initialized probe confirms the repo
+# is initialized AFTER the command ran, so a fake that exits 0 and produces
+# nothing is a fake of a FAILED step. Those tests therefore have each fake
+# create the artifacts its probe looks for, and put fakeDir on PATH (a probe
+# resolves a tool by NAME, and fakeDir alone keeps the real installs out).
+#
 # WHY EVERY FAKE IS INJECTED VIA -ToolPaths RATHER THAN PUT ON PATH: the module
 # resolves a tool by trying <name>.exe FIRST (the detect module's rule, needed
 # because `gm` is also a PowerShell alias). A fake can only be a .cmd/.ps1, so
@@ -238,24 +245,79 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
 
         $log = Join-Path $sandbox 'calls.log'
         $crlf = "`r`n"
-        # One fake per MCP. Each records its own argv and exits 0. Every one is
-        # handed to the module through -ToolPaths, so no real install on this
-        # box can be picked up by the .exe-first resolver.
+        # One fake per MCP. Each records its own argv, PROVISIONS the artifacts
+        # its detection probe looks for, and exits 0. Every one is handed to the
+        # module through -ToolPaths, so no real install on this box can be picked
+        # up by the .exe-first resolver.
+        #
+        # THE PROVISIONING IS THE POINT. Since bead mcpw-0zo.1 a stamp is written
+        # only when the matching probe confirms the repository is really
+        # initialized, so a fake that merely exits 0 is a fake of a FAILED step,
+        # not of a successful one - which is exactly the bug that bead fixes.
         $names = @{ graphenium = 'gm'; repowise = 'repowise'; 'graphify-rs' = 'graphify-rs'; graft = 'graft'; memtrace = 'memtrace'; grepai = 'grepai' }
+        $provision = @{
+            graphenium = @(
+                'type nul > .grapheniumignore',
+                'mkdir graphenium-out 2>nul',
+                'echo {}> graphenium-out\graph.json'
+            )
+            repowise = @(
+                'if "%1"=="doctor" goto doc',
+                'mkdir .repowise 2>nul',
+                'goto :eof',
+                ':doc',
+                'echo Claude Code MCP entry ^| OK ^| registered'
+            )
+            'graphify-rs' = @(
+                'mkdir graphify-out 2>nul',
+                'echo {}> graphify-out\graph.json'
+            )
+            graft = @(
+                'mkdir graft\.graph 2>nul',
+                'echo {}> graft\.graph\wiring.json',
+                'echo # graph> graft\INDEX.md'
+            )
+            memtrace = @(
+                'set P=%~2',
+                'set P=%P:\=/%',
+                'mkdir .memdb 2>nul',
+                'echo {"version":1,"members":[{"repo_id":"t","path":"%P%"}]}> .memdb\.memtrace-store-scope.json'
+            )
+            grepai = @(
+                'if "%1"=="init" goto cfg',
+                'if "%1"=="status" goto st',
+                'goto :eof',
+                ':cfg',
+                'mkdir .grepai 2>nul',
+                'echo embedder: test> .grepai\config.yaml',
+                'goto :eof',
+                ':st',
+                'echo Files indexed: 0',
+                'echo Total chunks: 5'
+            )
+        }
         $toolPaths = @{}
         foreach ($mcp in $names.Keys) {
             $file = Join-Path $fakeDir ($names[$mcp] + '.cmd')
-            $body = '@echo off' + $crlf + 'echo ' + $mcp + ' %* >> "' + $log + '"' + $crlf + 'exit /b 0' + $crlf
-            [System.IO.File]::WriteAllText($file, $body, (New-Object System.Text.ASCIIEncoding))
+            $lines = @('@echo off', ('echo ' + $mcp + ' %* >> "' + $log + '"'))
+            $lines += $provision[$mcp]
+            $lines += 'exit /b 0'
+            [System.IO.File]::WriteAllText($file, (($lines -join $crlf) + $crlf), (New-Object System.Text.ASCIIEncoding))
             $toolPaths[$mcp] = $file
         }
 
+        # A probe resolves a tool by NAME from PATH, so the fakes must be ON PATH
+        # for the post-command gate to be able to ask them. PATH made of just
+        # fakeDir keeps every real install on this box out of the lookup.
+        $savedPath = $env:Path
         try {
+            $env:Path = $fakeDir
+
             # ---- run 1: everything really runs --------------------------------
             $first = Invoke-McpBootstrapForRepo -Path $repo -ToolPaths $toolPaths -TimeoutMs 30000 -FirstScanTimeoutMs 30000
             $first.Total | Should -Be 6
             $bad = @($first.Results | Where-Object { $_.Status -ne 'done' } | ForEach-Object { "$($_.Mcp)=$($_.Status) ($($_.Reason))" })
-            ($bad -join '; ') | Should -Be '' -Because 'with fake tools present every step should complete'
+            ($bad -join '; ') | Should -Be '' -Because 'a fake tool that provisions what its probe looks for must complete'
             $first.Done | Should -Be 6
             $first.Stamped | Should -Be 0
 
@@ -283,10 +345,17 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
             (@(Get-Content -LiteralPath $log).Count -eq $callsAfterFirst) | Should -BeTrue -Because 'the second run must spawn nothing'
 
             # ---- -Force ignores the stamp -------------------------------------
+            # The artifacts have to go first. -Force bypasses the STAMP, not the
+            # pre-command probe, so with the artifacts still in place every step
+            # would report 'stamped' and no tool would be spawned.
+            foreach ($d in @('.grapheniumignore', 'graphenium-out', '.repowise', 'graphify-out', 'graft', '.memdb', '.grepai')) {
+                Remove-Item -LiteralPath (Join-Path $repo $d) -Recurse -Force -ErrorAction SilentlyContinue
+            }
             $forced = Invoke-McpBootstrapForRepo -Path $repo -ToolPaths $toolPaths -Force -TimeoutMs 30000 -FirstScanTimeoutMs 30000
             $forced.Done | Should -Be 6
             (@(Get-Content -LiteralPath $log).Count -gt $callsAfterFirst) | Should -BeTrue -Because '-Force must re-run the steps'
         } finally {
+            $env:Path = $savedPath
             Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
@@ -306,18 +375,67 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
         $log = Join-Path $sandbox 'calls.log'
         $crlf = "`r`n"
         $names = @{ graphenium = 'gm'; repowise = 'repowise'; 'graphify-rs' = 'graphify-rs'; graft = 'graft'; memtrace = 'memtrace'; grepai = 'grepai' }
+        # The five non-saboteurs provision what their probes look for (bead
+        # mcpw-0zo.1: a stamp now needs a confirmed probe, not just exit 0).
+        $provision = @{
+            graphenium = @(
+                'type nul > .grapheniumignore',
+                'mkdir graphenium-out 2>nul',
+                'echo {}> graphenium-out\graph.json'
+            )
+            repowise = @(
+                'if "%1"=="doctor" goto doc',
+                'mkdir .repowise 2>nul',
+                'goto :eof',
+                ':doc',
+                'echo Claude Code MCP entry ^| OK ^| registered'
+            )
+            'graphify-rs' = @(
+                'mkdir graphify-out 2>nul',
+                'echo {}> graphify-out\graph.json'
+            )
+            graft = @()
+            memtrace = @(
+                'set P=%~2',
+                'set P=%P:\=/%',
+                'mkdir .memdb 2>nul',
+                'echo {"version":1,"members":[{"repo_id":"t","path":"%P%"}]}> .memdb\.memtrace-store-scope.json'
+            )
+            grepai = @(
+                'if "%1"=="init" goto cfg',
+                'if "%1"=="status" goto st',
+                'goto :eof',
+                ':cfg',
+                'mkdir .grepai 2>nul',
+                'echo embedder: test> .grepai\config.yaml',
+                'goto :eof',
+                ':st',
+                'echo Files indexed: 0',
+                'echo Total chunks: 5'
+            )
+        }
         $toolPaths = @{}
         foreach ($mcp in $names.Keys) {
-            # graft is the saboteur: it exits 7 and complains on stderr.
-            $body = '@echo off' + $crlf + 'echo ' + $mcp + ' %* >> "' + $log + '"' + $crlf
-            if ($mcp -eq 'graft') { $body += 'echo graft refused to build 1>&2' + $crlf + 'exit /b 7' + $crlf }
-            else { $body += 'exit /b 0' + $crlf }
+            $lines = @('@echo off', ('echo ' + $mcp + ' %* >> "' + $log + '"'))
+            # graft is the saboteur: it exits 7, complains on stderr, and
+            # deliberately provisions nothing.
+            if ($mcp -eq 'graft') {
+                $lines += 'echo graft refused to build 1>&2'
+                $lines += 'exit /b 7'
+            } else {
+                $lines += $provision[$mcp]
+                $lines += 'exit /b 0'
+            }
             $file = Join-Path $fakeDir ($names[$mcp] + '.cmd')
-            [System.IO.File]::WriteAllText($file, $body, (New-Object System.Text.ASCIIEncoding))
+            [System.IO.File]::WriteAllText($file, (($lines -join $crlf) + $crlf), (New-Object System.Text.ASCIIEncoding))
             $toolPaths[$mcp] = $file
         }
 
+        # The probes resolve a tool by NAME from PATH, so the fakes must be there
+        # for the post-command gate; fakeDir alone keeps the real installs out.
+        $savedPath = $env:Path
         try {
+            $env:Path = $fakeDir
             $summary = Invoke-McpBootstrapForRepo -Path $repo -ToolPaths $toolPaths -TimeoutMs 30000 -FirstScanTimeoutMs 30000
 
             $summary.Total | Should -Be 6
@@ -332,6 +450,7 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
             (Test-McpBootstrapStamp -Path $repo -Mcp 'graft') | Should -BeFalse
             (Test-McpBootstrapStamp -Path $repo -Mcp 'memtrace') | Should -BeTrue
         } finally {
+            $env:Path = $savedPath
             Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
@@ -379,14 +498,64 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
         foreach ($d in @($repoA, $repoB, $fakeDir)) { $null = New-Item -ItemType Directory -Path $d -Force }
         $crlf = "`r`n"
         $names = @{ graphenium = 'gm'; repowise = 'repowise'; 'graphify-rs' = 'graphify-rs'; graft = 'graft'; memtrace = 'memtrace'; grepai = 'grepai' }
+        # Each fake provisions what its probe looks for (bead mcpw-0zo.1: a stamp
+        # needs a confirmed probe, not just exit 0) and writes into its own cwd,
+        # which is the repo the step was given - so repo-a and repo-b get
+        # separate artifacts as well as separate stamps.
+        $provision = @{
+            graphenium = @(
+                'type nul > .grapheniumignore',
+                'mkdir graphenium-out 2>nul',
+                'echo {}> graphenium-out\graph.json'
+            )
+            repowise = @(
+                'if "%1"=="doctor" goto doc',
+                'mkdir .repowise 2>nul',
+                'goto :eof',
+                ':doc',
+                'echo Claude Code MCP entry ^| OK ^| registered'
+            )
+            'graphify-rs' = @(
+                'mkdir graphify-out 2>nul',
+                'echo {}> graphify-out\graph.json'
+            )
+            graft = @(
+                'mkdir graft\.graph 2>nul',
+                'echo {}> graft\.graph\wiring.json',
+                'echo # graph> graft\INDEX.md'
+            )
+            memtrace = @(
+                'set P=%~2',
+                'set P=%P:\=/%',
+                'mkdir .memdb 2>nul',
+                'echo {"version":1,"members":[{"repo_id":"t","path":"%P%"}]}> .memdb\.memtrace-store-scope.json'
+            )
+            grepai = @(
+                'if "%1"=="init" goto cfg',
+                'if "%1"=="status" goto st',
+                'goto :eof',
+                ':cfg',
+                'mkdir .grepai 2>nul',
+                'echo embedder: test> .grepai\config.yaml',
+                'goto :eof',
+                ':st',
+                'echo Files indexed: 0',
+                'echo Total chunks: 5'
+            )
+        }
         $toolPaths = @{}
         foreach ($mcp in $names.Keys) {
             $file = Join-Path $fakeDir ($names[$mcp] + '.cmd')
-            [System.IO.File]::WriteAllText($file, '@echo off' + $crlf + 'exit /b 0' + $crlf, (New-Object System.Text.ASCIIEncoding))
+            $lines = @('@echo off') + $provision[$mcp] + 'exit /b 0'
+            [System.IO.File]::WriteAllText($file, (($lines -join $crlf) + $crlf), (New-Object System.Text.ASCIIEncoding))
             $toolPaths[$mcp] = $file
         }
 
+        $savedPath = $env:Path
         try {
+            # The probes resolve a tool by NAME from PATH; fakeDir alone keeps the
+            # real installs on this box out of the lookup.
+            $env:Path = $fakeDir
             # Default state dir roots at -Path, not at the machine or the module.
             (Get-McpBootstrapStateDir -Path $repoA) | Should -Be (Join-Path $repoA '.mcpw-bootstrap')
             # An explicit -StateDir wins.
@@ -402,6 +571,7 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
             $b.Stamped | Should -Be 0
             ($b.Done -gt 0) | Should -BeTrue
         } finally {
+            $env:Path = $savedPath
             Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
@@ -496,6 +666,63 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
             # bound so a loaded box cannot false-fail this.
             ($sw.Elapsed.TotalSeconds -lt 30) | Should -BeTrue -Because 'the runner must not wait for the child'
         } finally {
+            Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'refuses to stamp a step whose command exits 0 without provisioning' {
+        # Bead mcpw-0zo.1. The historical false-success shape: every child exits
+        # 0 and produces NOTHING the matching probe looks for. Before the fix all
+        # six were stamped 'done' on the exit code alone, so the repo was
+        # recorded as provisioned forever and every later launch skipped it.
+        $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+        . (Join-Path $repoRoot 'Modules\watcher_mcp_detect.ps1')
+        . (Join-Path $repoRoot 'Modules\watcher_mcp_bootstrap.ps1')
+
+        $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ('mcpw-boot-' + [guid]::NewGuid().ToString('N'))
+        $repo = Join-Path $sandbox 'repo'
+        $fakeDir = Join-Path $sandbox 'fakes'
+        $null = New-Item -ItemType Directory -Path $repo -Force
+        $null = New-Item -ItemType Directory -Path $fakeDir -Force
+        # Keep the optional step in play: without graphify-rs.toml it would skip
+        # as optional BEFORE any command ran, which is not what this asserts.
+        [System.IO.File]::WriteAllText((Join-Path $repo 'graphify-rs.toml'), "[graph]`n", (New-Object System.Text.UTF8Encoding($false)))
+
+        $crlf = "`r`n"
+        $names = @{ graphenium = 'gm'; repowise = 'repowise'; 'graphify-rs' = 'graphify-rs'; graft = 'graft'; memtrace = 'memtrace'; grepai = 'grepai' }
+        $toolPaths = @{}
+        foreach ($mcp in $names.Keys) {
+            $file = Join-Path $fakeDir ($names[$mcp] + '.cmd')
+            [System.IO.File]::WriteAllText($file, '@echo off' + $crlf + 'exit /b 0' + $crlf, (New-Object System.Text.ASCIIEncoding))
+            $toolPaths[$mcp] = $file
+        }
+
+        $savedPath = $env:Path
+        try {
+            # PATH holds only the fakes, so every probe can resolve its binary and
+            # the verdict is decided by the ARTIFACTS alone.
+            $env:Path = $fakeDir
+
+            $summary = Invoke-McpBootstrapForRepo -Path $repo -ToolPaths $toolPaths -TimeoutMs 30000 -FirstScanTimeoutMs 30000
+            $summary.Total | Should -Be 6
+            $summary.Done | Should -Be 0 -Because 'exit 0 is not proof of provisioning'
+            $summary.Stamped | Should -Be 0
+            $summary.Skipped | Should -Be 6
+            $bad = @()
+            foreach ($row in @($summary.Results)) {
+                if ($row.Status -ne 'skipped') { $bad += "$($row.Mcp)=$($row.Status)"; continue }
+                if ($row.Reason -notmatch 'exited 0 but the probe still reports') {
+                    $bad += "$($row.Mcp): reason does not carry the probe verdict ('$($row.Reason)')"
+                }
+            }
+            ($bad -join '; ') | Should -Be ''
+            # A refused stamp is a refusal to RECORD: nothing on disk...
+            Test-Path -LiteralPath (Join-Path $repo '.mcpw-bootstrap\state.json') -PathType Leaf | Should -BeFalse
+            # ...so a later run retries the step instead of skipping it forever.
+            (Test-McpBootstrapStamp -Path $repo -Mcp 'graft') | Should -BeFalse
+            (Test-McpBootstrapStamp -Path $repo -Mcp 'memtrace') | Should -BeFalse
+        } finally {
+            $env:Path = $savedPath
             Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
         }
     }

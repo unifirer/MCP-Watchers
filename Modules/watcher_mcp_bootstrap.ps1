@@ -18,14 +18,16 @@
 #        .Results[]  where each row is
 #                    .Mcp .Status .Reason .Tool .Stamp .Optional .Phase
 #        .Status is one of exactly three values:
-#           'done'    the init step ran and exited 0
+#           'done'    the init step ran, exited 0, AND the matching detection
+#                     probe then confirmed the repository is really initialized
 #           'stamped' nothing to do - already initialized (detection), or a
 #                     stamp from an earlier successful run
-#           'skipped' the step did NOT run: binary absent, optional input
-#                     missing, launch failure, timeout, or a non-zero exit.
-#                     There is no 'failed' status on purpose - a bootstrap
-#                     problem degrades to a logged skip and the other five MCPs
-#                     still get their chance.
+#           'skipped' the step did NOT run, or ran without provisioning: binary
+#                     absent, optional input missing, launch failure, timeout, a
+#                     non-zero exit, or an exit 0 the post-command probe refused
+#                     to confirm. There is no 'failed' status on purpose - a
+#                     bootstrap problem degrades to a logged skip and the other
+#                     five MCPs still get their chance.
 #
 #   Initialize-<Mcp>ForRepo -Path <repoRoot> [-StateDir] [-ToolPath] [-Force]
 #                           [-TimeoutMs] [-FirstScanTimeoutMs]
@@ -39,6 +41,14 @@
 #     one key inside <repo>/.mcpw-bootstrap/state.json. The stamp is checked
 #     BEFORE anything else, so a second run re-runs no build and spawns no
 #     probe. -Force re-runs everything. The tests assert on the stamp file.
+#   * THE STAMP IS EARNED, NEVER ASSUMED. Set-McpBootstrapStamp is called only
+#     after the matching Test-<Mcp>Initialized probe has confirmed the
+#     repository is initialized - either BEFORE the command (already done) or
+#     AFTER it (Get-McpBootstrapPostCommandGate, bead mcpw-0zo.1). An exit code
+#     of 0 is never on its own enough: gm init exits 0 without the graph, graft
+#     build exits 0 without --deep, and a stamp on the exit code alone records a
+#     repository as provisioned that never was, after which every launch skips
+#     it silently.
 #   * NON-INTERACTIVE, unconditionally. Every child gets stdin CLOSED, so a
 #     prompt reads EOF instead of blocking the launcher forever; children run
 #     with CreateNoWindow and a hard timeout, and are killed on timeout. On top
@@ -70,11 +80,12 @@
 #             foreground watch. Keeping that daemon alive across the
 #             supervisor's idle-TTL reap is bead mcpw-rkg.4 - deliberately NOT
 #             attempted here.
-#   gm        No `.graphenium/` config dir exists. `gm init [PATH]` defaults to
-#             ".", so the root is always passed explicitly. `gm init` writes
-#             `.grapheniumignore` - a FILE, and the only artifact it produces -
-#             and does NOT create the `.graphenium/` dir, which gm only ever
-#             READS policy.json from. The graph is `gm run`, which the
+#   gm        The workspace marker is `.grapheniumignore` - the FILE `gm init`
+#             writes, and the only artifact it produces. `gm init [PATH]`
+#             defaults to ".", so the root is always passed explicitly. It does
+#             NOT create a `.graphenium/` dir; gm only ever READS policy.json
+#             from there. Detection keys on `.grapheniumignore` plus
+#             graphenium-out/graph.json. The graph is `gm run`, which the
 #             launcher's own watcher owns.
 #   graphify-rs  `graphify-rs.toml` now EXISTS (bead mcpw-01g, OPTIONAL/P3).
 #             `graphify-rs init` (0.8.1) is non-interactive and key-free - the
@@ -588,6 +599,46 @@ function Get-McpBootstrapAlreadyReason {
     return @{ Ok = $ok; Reason = $reason }
 }
 
+function Get-McpBootstrapPostCommandGate {
+    <#
+    .SYNOPSIS
+        The post-command gate: did the command that just exited 0 actually
+        provision the repository?
+    .DESCRIPTION
+        Exit code 0 is NOT proof of provisioning (bead mcpw-0zo.1). Measured on
+        this box: `gm init` exits 0 having written only `.grapheniumignore`,
+        `graft build` exits 0 having written graft/.graph/wiring.json +
+        graft/INDEX.md, and neither produces everything its own detection probe
+        requires. A stamp written on the exit code alone records a repository as
+        provisioned that never was, and every later launch then SKIPS it - the
+        operator sees a clean launch and the watchers start against an
+        unprovisioned repo.
+
+        So the SAME probe the pre-command gate uses
+        (Get-McpBootstrapAlreadyReason, which dispatches to the matching
+        Test-<Mcp>Initialized) is asked a SECOND time, after the command, and
+        the caller stamps ONLY on a confirmed Ok. When it is not Ok the returned
+        Reason names the probe's own verdict, prefixed with the command that
+        exited 0, so the honest no-op shows up in the launcher log instead of
+        being laundered into a stamp.
+
+        Returns @{ Ok = [bool]; Reason = <text> }. Never throws: the probe it
+        wraps never throws, and a probe that cannot answer counts as
+        not-initialized - the safe direction.
+    #>
+    param(
+        [string]$Mcp,
+        [string]$Root,
+        [string]$Label,
+        [string]$ProbeOutput
+    )
+    $d = Get-McpBootstrapAlreadyReason -Mcp $Mcp -Root $Root -ProbeOutput $ProbeOutput
+    if ($d.Ok) { return @{ Ok = $true; Reason = [string]$d.Reason } }
+    $why = [string]$d.Reason
+    if (-not $why) { $why = 'the probe reports the repository is still not initialized' }
+    return @{ Ok = $false; Reason = "$Label exited 0 but the probe still reports: $why" }
+}
+
 # ---------------------------------------------------------------------------
 # graphenium (gm) - Phase: config (cheap)
 # ---------------------------------------------------------------------------
@@ -603,12 +654,16 @@ function Initialize-GrapheniumForRepo {
         explicitly because the command defaults to "." and the bootstrap must
         not depend on the caller's cwd.
 
-        Detection wants BOTH `.graphenium/` and `graphenium-out/graph.json`.
-        This step can only claim what `gm init` actually produced, so its
-        contract is "gm init ran", not "the workspace config exists" - the
-        `.graphenium/` dir is not something gm init creates. The graph is
-        `gm run`, which the launcher's own watcher owns - running the full
-        pipeline here would be an expensive duplicate.
+        Detection wants BOTH `.grapheniumignore` and `graphenium-out/graph.json`
+        (Test-GrapheniumInitialized keys on the file this step writes, so the two
+        agree). This step can only claim the config half - the graph is
+        `gm run`, which the launcher's own watcher owns, and running the full
+        pipeline here would be an expensive duplicate. So the post-command gate
+        (Get-McpBootstrapPostCommandGate) sees the config but not the graph and
+        reports the step 'skipped' with the probe's verdict rather than stamping
+        it; that is the documented division of labour, not a probe/tool
+        mismatch. The step still converges: once the watcher has run gm the
+        pre-command probe stamps the repo and gm init is never spawned again.
     #>
     param(
         [string]$Path,
@@ -632,6 +687,19 @@ function Initialize-GrapheniumForRepo {
             -Arguments (Get-McpBootstrapArgv -Mcp 'graphenium' -Path $pre.Root) `
             -WorkingDirectory $pre.Root -TimeoutMs $TimeoutMs
     if ($r.Launched -and -not $r.TimedOut -and $r.ExitCode -eq 0) {
+        # Exit 0 is NOT proof (bead mcpw-0zo.1). gm init writes only
+        # .grapheniumignore while the probe also wants
+        # graphenium-out/graph.json, which is `gm run` and belongs to the
+        # launcher's watcher. So a repo with the config but no graph is reported
+        # 'skipped' carrying the probe's own verdict instead of being stamped as
+        # done; the step then re-runs gm init (cheap, idempotent) on the next
+        # launch and earns its stamp as soon as the watcher has produced the
+        # graph.
+        $g = Get-McpBootstrapPostCommandGate -Mcp 'graphenium' -Root $pre.Root -Label 'gm init'
+        if (-not $g.Ok) {
+            return New-McpBootstrapRow -Mcp 'graphenium' -Status 'skipped' `
+                -Reason $g.Reason -Tool $pre.Tool -Stamp $pre.StateDir
+        }
         $null = Set-McpBootstrapStamp -Path $pre.Root -Mcp 'graphenium' -Detail 'gm init completed (wrote .grapheniumignore)' -Tool $pre.Tool -StateDir $pre.StateDir
         return New-McpBootstrapRow -Mcp 'graphenium' -Status 'done' `
             -Reason 'gm init wrote .grapheniumignore - it does NOT create .graphenium/ (graph is gm run, owned by the launcher watcher)' `
@@ -687,6 +755,13 @@ function Initialize-RepowiseForRepo {
             -Arguments (Get-McpBootstrapArgv -Mcp 'repowise' -Path $pre.Root) `
             -WorkingDirectory $pre.Root -TimeoutMs $TimeoutMs
     if ($r.Launched -and -not $r.TimedOut -and $r.ExitCode -eq 0) {
+        # Exit 0 is NOT proof (bead mcpw-0zo.1): the probe still has to see the
+        # Claude Code MCP entry registered.
+        $g = Get-McpBootstrapPostCommandGate -Mcp 'repowise' -Root $pre.Root -Label 'repowise agents add'
+        if (-not $g.Ok) {
+            return New-McpBootstrapRow -Mcp 'repowise' -Status 'skipped' `
+                -Reason $g.Reason -Tool $pre.Tool -Stamp $pre.StateDir
+        }
         $null = Set-McpBootstrapStamp -Path $pre.Root -Mcp 'repowise' -Detail 'agents add completed' -Tool $pre.Tool -StateDir $pre.StateDir
         return New-McpBootstrapRow -Mcp 'repowise' -Status 'done' `
             -Reason 'repowise agents add --target claude-code --scope project --yes' `
@@ -749,6 +824,13 @@ function Initialize-GraphifyRsForRepo {
             -Arguments (Get-McpBootstrapArgv -Mcp 'graphify-rs' -Path $pre.Root) `
             -WorkingDirectory $pre.Root -TimeoutMs $TimeoutMs
     if ($r.Launched -and -not $r.TimedOut -and $r.ExitCode -eq 0) {
+        # Exit 0 is NOT proof (bead mcpw-0zo.1): the probe still has to see the
+        # built graphify-out/graph.json.
+        $g = Get-McpBootstrapPostCommandGate -Mcp 'graphify-rs' -Root $pre.Root -Label 'graphify-rs build'
+        if (-not $g.Ok) {
+            return New-McpBootstrapRow -Mcp 'graphify-rs' -Status 'skipped' `
+                -Reason $g.Reason -Tool $pre.Tool -Stamp $pre.StateDir
+        }
         $null = Set-McpBootstrapStamp -Path $pre.Root -Mcp 'graphify-rs' -Detail 'build completed' -Tool $pre.Tool -StateDir $pre.StateDir
         return New-McpBootstrapRow -Mcp 'graphify-rs' -Status 'done' `
             -Reason 'graphify-rs build --path . --update --no-llm' -Tool $pre.Tool -Stamp $pre.StateDir
@@ -794,6 +876,13 @@ function Initialize-GraftForRepo {
             -Arguments (Get-McpBootstrapArgv -Mcp 'graft' -Path $pre.Root) `
             -WorkingDirectory $pre.Root -TimeoutMs $TimeoutMs
     if ($r.Launched -and -not $r.TimedOut -and $r.ExitCode -eq 0) {
+        # Exit 0 is NOT proof (bead mcpw-0zo.1): the probe still has to see
+        # graft/.graph/wiring.json AND graft/INDEX.md together.
+        $g = Get-McpBootstrapPostCommandGate -Mcp 'graft' -Root $pre.Root -Label 'graft build'
+        if (-not $g.Ok) {
+            return New-McpBootstrapRow -Mcp 'graft' -Status 'skipped' `
+                -Reason $g.Reason -Tool $pre.Tool -Stamp $pre.StateDir
+        }
         $null = Set-McpBootstrapStamp -Path $pre.Root -Mcp 'graft' -Detail 'build completed' -Tool $pre.Tool -StateDir $pre.StateDir
         return New-McpBootstrapRow -Mcp 'graft' -Status 'done' `
             -Reason 'graft build (wiring graph + per-file cards; $0 no-key tier, no --deep)' `
@@ -844,6 +933,13 @@ function Initialize-MemtraceForRepo {
             -Arguments (Get-McpBootstrapArgv -Mcp 'memtrace' -Path $pre.Root) `
             -WorkingDirectory $pre.Root -TimeoutMs $TimeoutMs
     if ($r.Launched -and -not $r.TimedOut -and $r.ExitCode -eq 0) {
+        # Exit 0 is NOT proof (bead mcpw-0zo.1): the probe still has to see this
+        # repo listed in .memdb/.memtrace-store-scope.json.
+        $g = Get-McpBootstrapPostCommandGate -Mcp 'memtrace' -Root $pre.Root -Label 'memtrace index'
+        if (-not $g.Ok) {
+            return New-McpBootstrapRow -Mcp 'memtrace' -Status 'skipped' `
+                -Reason $g.Reason -Tool $pre.Tool -Stamp $pre.StateDir
+        }
         $null = Set-McpBootstrapStamp -Path $pre.Root -Mcp 'memtrace' -Detail 'index completed' -Tool $pre.Tool -StateDir $pre.StateDir
         return New-McpBootstrapRow -Mcp 'memtrace' -Status 'done' `
             -Reason 'memtrace index <path> --allow-non-git (no build verb; start/mcp deliberately not run)' `

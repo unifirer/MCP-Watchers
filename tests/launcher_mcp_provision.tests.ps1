@@ -322,7 +322,7 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
             $first.Stamped | Should -Be 0
 
             # The stamp is the idempotence mechanism, so assert on the FILE.
-            $stampFile = Join-Path $repo '.mcpw-bootstrap\state.json'
+            $stampFile = Join-Path $repo '.mcpw-provision\state.json'
             Test-Path -LiteralPath $stampFile -PathType Leaf | Should -BeTrue
             $stampDoc = Get-Content -LiteralPath $stampFile -Raw -Encoding UTF8 | ConvertFrom-Json
             $stampedKeys = @($stampDoc.PSObject.Properties | ForEach-Object { $_.Name })
@@ -486,7 +486,7 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
         }
     }
 
-    It 'keys the stamp per repository, under the repo .mcpw-bootstrap dir by default' {
+    It 'keys the stamp per repository, under the repo .mcpw-provision dir by default' {
         $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
         . (Join-Path $repoRoot 'Modules\watcher_mcp_detect.ps1')
         . (Join-Path $repoRoot 'Modules\watcher_mcp_provision.ps1')
@@ -557,7 +557,7 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
             # real installs on this box out of the lookup.
             $env:Path = $fakeDir
             # Default state dir roots at -Path, not at the machine or the module.
-            (Get-McpProvisionStateDir -Path $repoA) | Should -Be (Join-Path $repoA '.mcpw-bootstrap')
+            (Get-McpProvisionStateDir -Path $repoA) | Should -Be (Join-Path $repoA '.mcpw-provision')
             # An explicit -StateDir wins.
             $alt = Join-Path $sandbox 'alt-state'
             (Get-McpProvisionStateDir -Path $repoA -StateDir $alt) | Should -Be $alt
@@ -601,12 +601,12 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
             (Set-McpProvisionStamp -Path $sandbox -Mcp 'graft' -Detail 'unit' -Tool 'graft.exe') | Should -BeTrue
             (Test-McpProvisionStamp -Path $sandbox -Mcp 'graft') | Should -BeTrue
             (Test-McpProvisionStamp -Path $sandbox -Mcp 'memtrace') | Should -BeFalse
-            $doc = Get-Content -LiteralPath (Join-Path $sandbox '.mcpw-bootstrap\state.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+            $doc = Get-Content -LiteralPath (Join-Path $sandbox '.mcpw-provision\state.json') -Raw -Encoding UTF8 | ConvertFrom-Json
             $doc.graft.Detail | Should -Be 'unit'
 
             # A truncated stamp must read as "not initialized" (so the step runs
             # again) and must never throw.
-            [System.IO.File]::WriteAllText((Join-Path $sandbox '.mcpw-bootstrap\state.json'), '{ not json', (New-Object System.Text.UTF8Encoding($false)))
+            [System.IO.File]::WriteAllText((Join-Path $sandbox '.mcpw-provision\state.json'), '{ not json', (New-Object System.Text.UTF8Encoding($false)))
             (Test-McpProvisionStamp -Path $sandbox -Mcp 'graft') | Should -BeFalse
             (Set-McpProvisionStamp -Path $sandbox -Mcp 'graft' -Detail 'repaired' -Tool 'graft.exe') | Should -BeTrue
             (Test-McpProvisionStamp -Path $sandbox -Mcp 'graft') | Should -BeTrue
@@ -717,7 +717,7 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
             }
             ($bad -join '; ') | Should -Be ''
             # A refused stamp is a refusal to RECORD: nothing on disk...
-            Test-Path -LiteralPath (Join-Path $repo '.mcpw-bootstrap\state.json') -PathType Leaf | Should -BeFalse
+            Test-Path -LiteralPath (Join-Path $repo '.mcpw-provision\state.json') -PathType Leaf | Should -BeFalse
             # ...so a later run retries the step instead of skipping it forever.
             (Test-McpProvisionStamp -Path $repo -Mcp 'graft') | Should -BeFalse
             (Test-McpProvisionStamp -Path $repo -Mcp 'memtrace') | Should -BeFalse

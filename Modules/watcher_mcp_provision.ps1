@@ -38,7 +38,7 @@
 # HARD RULES ENCODED HERE
 # -----------------------
 #   * IDEMPOTENT. A successful (or already-initialized) step writes a STAMP -
-#     one key inside <repo>/.mcpw-bootstrap/state.json. The stamp is checked
+#     one key inside <repo>/.mcpw-provision/state.json. The stamp is checked
 #     BEFORE anything else, so a second run re-runs no build and spawns no
 #     probe. -Force re-runs everything. The tests assert on the stamp file.
 #   * THE STAMP IS EARNED, NEVER ASSUMED. Set-McpProvisionStamp is called only
@@ -149,16 +149,57 @@ function Get-McpProvisionStateDir {
           1. the explicit -StateDir argument (tests, and a launcher that wants
              its state elsewhere)
           2. MCPW_PROVISION_STATE_DIR
-          3. <repo>/.mcpw-bootstrap - the default. Rooted at -Path, so the
+          3. <repo>/.mcpw-provision - the default. Rooted at -Path, so the
              stamp travels with the repository it describes and two repos on
              one machine can never share a stamp.
+
+        The directory used to be .mcpw-bootstrap, from before the
+        bootstrap-to-provision rename. A repo stamped by the old launcher is
+        migrated on first read - see Import-McpProvisionLegacyStamp. A bare
+        rename without that migration would invalidate every existing stamp
+        and force a full six-step re-provision, including the grepai first
+        scan.
     #>
     param([string]$Path, [string]$StateDir)
     if ($StateDir) { return $StateDir.TrimEnd('\', '/') }
     if ($env:MCPW_PROVISION_STATE_DIR) { return $env:MCPW_PROVISION_STATE_DIR.TrimEnd('\', '/') }
     $root = Get-McpProvisionRoot -Path $Path
     if (-not $root) { return '' }
-    return (Join-Path $root '.mcpw-bootstrap')
+    return (Join-Path $root '.mcpw-provision')
+}
+
+function Import-McpProvisionLegacyStamp {
+    <#
+    .SYNOPSIS
+        One-time migration of the pre-rename .mcpw-bootstrap stamp.
+    .DESCRIPTION
+        Copies <repo>/.mcpw-bootstrap/state.json to <repo>/.mcpw-provision/
+        state.json when the new file is absent and the old one exists, then
+        removes the old directory. Never throws: a repo that has no legacy
+        stamp simply gets nothing, and a failed migration costs at most one
+        extra provision run.
+    #>
+    param([string]$StateDir)
+    if (-not $StateDir) { return }
+    $newFile = Get-McpProvisionStateFile -StateDir $StateDir
+    if (-not $newFile) { return }
+    if (Test-Path -LiteralPath $newFile -PathType Leaf) { return }
+
+    # Only the default layout is migrated. An explicit -StateDir (the tests
+    # use one) is whatever the caller asked for and must not be invented from.
+    if ((Split-Path -Leaf $StateDir) -ne '.mcpw-provision') { return }
+    $root = Split-Path -Parent $StateDir
+    if (-not $root) { return }
+    $legacyFile = Join-Path (Join-Path $root '.mcpw-bootstrap') 'state.json'
+    if (-not (Test-Path -LiteralPath $legacyFile -PathType Leaf)) { return }
+
+    try {
+        if (-not (Test-Path -LiteralPath $StateDir -PathType Container)) {
+            New-Item -ItemType Directory -Path $StateDir -Force | Out-Null
+        }
+        Copy-Item -LiteralPath $legacyFile -Destination $newFile -Force
+        Remove-Item -LiteralPath (Join-Path $root '.mcpw-bootstrap') -Recurse -Force -ErrorAction SilentlyContinue
+    } catch { }
 }
 
 function Get-McpProvisionStateFile {
@@ -172,6 +213,9 @@ function Read-McpProvisionState {
     # corrupt file reads as an empty hashtable - never throws, so a truncated
     # stamp can only cause one extra (safe) provision run, never a crash.
     param([string]$StateDir)
+    # Migrate a pre-rename .mcpw-bootstrap stamp before the first read, so a
+    # repo provisioned by the old launcher is not re-provisioned from scratch.
+    Import-McpProvisionLegacyStamp -StateDir $StateDir
     $state = @{}
     $file = Get-McpProvisionStateFile -StateDir $StateDir
     if (-not $file) { return $state }
@@ -1086,7 +1130,7 @@ function Invoke-McpProvisionForRepo {
     .PARAMETER Path
         The repository root. Everything is derived from it.
     .PARAMETER StateDir
-        Where the idempotence stamp lives. Defaults to <Path>/.mcpw-bootstrap.
+        Where the idempotence stamp lives. Defaults to <Path>/.mcpw-provision.
     .PARAMETER ToolPaths
         Per-MCP binary overrides, keyed by MCP name (e.g.
         @{ repowise = 'C:\...\repowise.exe' }). Used by the tests to inject

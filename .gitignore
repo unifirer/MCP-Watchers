@@ -17,7 +17,7 @@ repowise-out/
 
 # Launcher provisioning stamp (Modules/watcher_mcp_bootstrap.ps1) — records that
 # the per-repo steps already ran. Regenerable, so it must never dirty a repo.
-.mcpw-bootstrap/
+.mcpw-provision/
 
 # Panes and scratch
 .panes/

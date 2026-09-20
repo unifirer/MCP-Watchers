@@ -1681,7 +1681,19 @@ if ($grepaiOk) {
         # Modules\watcher_job_helpers.ps1 (Get-GrepaiIdleTimeoutMinutes /
         # Get-GrepaiIdleMinutes). 0 disables the TTL. Tune with
         # watch.idle_timeout_minutes in .grepai/config.yaml.
-        $idleTtlMin = Get-GrepaiIdleTimeoutMinutes -ConfigPath (Join-Path $RepoRoot '.grepai\config.yaml')
+        #
+        # mcpw-zc3: THIS LAUNCHER ASKS FOR 120 MINUTES, and the 20-minute
+        # fallback stays where it is. Two things forced that shape:
+        #   - the config key cannot be used. Proven 2026-09-21: writing
+        #     idle_timeout_minutes under watch: in .grepai/config.yaml lasts
+        #     only until grepai next rewrites the file (observed: written 04:39,
+        #     gone by 04:43:26). grepai owns that file and drops the key.
+        #   - the function's own default must stay 20, because
+        #     tests/launcher_grepai_idle_clock_reap.tests.ps1 pins it.
+        # So the value is raised HERE, at the only production call site, where
+        # grepai cannot strip it and the pinning test is untouched. The key in
+        # config.yaml still wins when grepai happens to preserve it.
+        $idleTtlMin = Get-GrepaiIdleTimeoutMinutes -ConfigPath (Join-Path $RepoRoot '.grepai\config.yaml') -DefaultMinutes 120
         $idleTicks = 0
         Write-SupLog "grepai idle TTL armed: $idleTtlMin minute(s) (0 = disabled)"
         $consecutiveRestarts = 0

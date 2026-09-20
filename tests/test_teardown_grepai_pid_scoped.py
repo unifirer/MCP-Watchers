@@ -48,7 +48,7 @@ def test_all_daemon_pids_tracked_or_documented(launcher_src):
     """Regression for VAD-v14z.4: every background daemon must be PID-tracked.
 
     Only Start-WatcherDetached PIDs entered $global:WatcherChildren; memtrace,
-    cerememory, claude-mcp and mail start in background jobs and litellm via
+    claude-mcp and mail start in background jobs and litellm via
     Start-WatcherDetached + supervisor jobs. Each daemon must either persist
     its PID path to teardown-state.json / WatcherChildren (RootPids, GrepaiPid,
     MemtraceStatePath) or carry an explicit intentional-persistence note, and
@@ -68,7 +68,6 @@ def test_all_daemon_pids_tracked_or_documented(launcher_src):
     # Singleton persistent services keep their start-job handles and document
     # intentional exclusion from WatcherChildren/teardown.
     for var in (
-        "$script:cerememoryStartJob",
         "$script:claudeMcpStartJob",
         "$script:mailMcpStartJob",
     ):

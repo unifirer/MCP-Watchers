@@ -69,15 +69,15 @@ def test_launcher_kills_watchers_when_wt_tab_closed():
 def test_first_wins_port_gate_teardowns_before_exit():
     """Regression for VAD-ygdo.7: FIRST-WINS port exit must not orphan watchers.
 
-    Exit-IfPortHeldByLauncherDaemon can exit 0 at the memtrace (:50051),
-    cerememory (:8420) and claude-mcp-server (:8080) gates. Those gates run
+    Exit-IfPortHeldByLauncherDaemon can exit 0 at the memtrace (:50051)
+    and claude-mcp-server (:8080) gates. Those gates run
     AFTER the launcher already spawned detached watchers (litellm, gm watch,
     graphify-rs wrapper, repowise, grepai watch), while teardown-state.json
     (written near the end) and the PowerShell.Exiting handler (registered
     mid-script) are never reached -- so five processes orphan.
 
     Acceptance (either satisfies):
-      (a) all three port gates run before the first Start-WatcherDetached
+      (a) both port gates run before the first Start-WatcherDetached
           spawn, OR
       (b) the exit-0 path inside Exit-IfPortHeldByLauncherDaemon invokes
           Stop-AllWatchers first (with explicit PIDs, since the state file
@@ -90,9 +90,9 @@ def test_first_wins_port_gate_teardowns_before_exit():
             r"Exit-IfPortHeldByLauncherDaemon\s+-Port", content
         )
     ]
-    assert len(gate_calls) >= 3, (
-        "Expected at least three FIRST-WINS port gates "
-        "(memtrace/cerememory/claude-mcp-server)."
+    assert len(gate_calls) >= 2, (
+        "Expected at least two FIRST-WINS port gates "
+        "(memtrace/claude-mcp-server)."
     )
     spawn_calls = [
         m.start()

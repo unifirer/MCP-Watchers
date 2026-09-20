@@ -17,23 +17,19 @@ Describe 'backend sweep safety (vad-10m.3)' {
 
     It 'matches real backend command lines against their own patterns' {
         . $patternsModule
-        $cerememory = @($script:WatcherSweepPatterns | Where-Object { $_.Name -eq 'cerememory.exe' })[0]
         # Select by Pattern, not by index: python.exe now carries several
         # token-scoped entries (mail :8765, embed :8003) and
         # index order is not part of the contract.
         $mail = @($script:WatcherSweepPatterns | Where-Object { $_.Name -eq 'python.exe' -and $_.Pattern -eq 'mcp_agent_mail' })[0]
         $claude = @($script:WatcherSweepPatterns | Where-Object { $_.Name -eq 'node.exe' })[0]
-        @($script:WatcherSweepPatterns | Where-Object { $_.Name -eq 'cerememory.exe' }).Count | Should Be 1
         # Each token-scoped python.exe pattern must be declared exactly once.
         # graphiti-mcp (:8002) is a Docker container now, not a python.exe, so
         # only mail + embed remain here.
         foreach ($pat in @('mcp_agent_mail', 'embed_server')) {
             @($script:WatcherSweepPatterns | Where-Object { $_.Name -eq 'python.exe' -and $_.Pattern -eq $pat }).Count | Should Be 1
         }
-        $cerememoryCmd = 'C:\ProgramData\cerememory\cerememory.exe serve --config C:\ProgramData\cerememory\cerememory.toml'
         $mailCmd = 'C:\Python311\python.exe C:\Users\yuni\.local\mcp-agent-mail\mcp_agent_mail\server.py --port 8765'
         $claudeCmd = 'C:\Program Files\nodejs\node.exe C:\npm-global\node_modules\claude-mcp-server\dist\cli.js --port 8080'
-        Test-WatcherSweepMatch -CommandLine $cerememoryCmd -Pattern $cerememory.Pattern | Should Be $true
         Test-WatcherSweepMatch -CommandLine $mailCmd -Pattern $mail.Pattern | Should Be $true
         Test-WatcherSweepMatch -CommandLine $claudeCmd -Pattern $claude.Pattern | Should Be $true
     }
@@ -41,12 +37,12 @@ Describe 'backend sweep safety (vad-10m.3)' {
     It 'leaves unrelated decoy processes unmatched by every backend pattern' {
         . $patternsModule
         $backendEntries = @($script:WatcherSweepPatterns | Where-Object {
-            $_.Name -eq 'cerememory.exe' -or $_.Name -eq 'python.exe' -or $_.Name -eq 'node.exe' })
+            $_.Name -eq 'python.exe' -or $_.Name -eq 'node.exe' })
         # Do not pin the entry count: new token-scoped backends get added over
         # time (mail :8765, embed :8003). What matters is that
         # every backend image name is represented, so the decoy loop below is
         # never vacuously true.
-        foreach ($name in @('cerememory.exe', 'python.exe', 'node.exe')) {
+        foreach ($name in @('python.exe', 'node.exe')) {
             @($backendEntries | Where-Object { $_.Name -eq $name }).Count | Should BeGreaterThan 0
         }
         $pythonDecoy = 'C:\tools\python.exe worker.py'
@@ -102,7 +98,7 @@ Describe 'backend sweep safety (vad-10m.3)' {
                 (([string]$e.Pattern).Length -gt 0) | Should Be $true
             }
         }
-        foreach ($name in @('claude-mcp.exe', 'node.exe', 'cerememory.exe', 'python.exe')) {
+        foreach ($name in @('claude-mcp.exe', 'node.exe', 'python.exe')) {
             $hit = @($script:WatcherSweepPatterns | Where-Object { $_.Name -eq $name -and $_.Persistent })
             ($hit.Count -ge 1) | Should Be $true
         }
@@ -113,7 +109,7 @@ Describe 'backend sweep safety (vad-10m.3)' {
         $src = Get-Content -LiteralPath $launcher -Raw
         $bStart = $src.IndexOf('$backendSupervisorScript = {')
         ($bStart -ge 0) | Should Be $true
-        $bEnd = $src.IndexOf('$script:cerememorySupJob', $bStart)
+        $bEnd = $src.IndexOf('$script:mailSupJob', $bStart)
         ($bEnd -gt $bStart) | Should Be $true
         $sup = $src.Substring($bStart, $bEnd - $bStart)
         $supLines = @($sup -split "`r?`n")
@@ -143,8 +139,6 @@ Describe 'backend sweep safety (vad-10m.3)' {
         $launcher = Join-Path $repo '###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1'
         $src = Get-Content -LiteralPath $launcher -Raw
         ($src -match 'mcpw-ttl\.1') | Should Be $true
-        # cerememory's Toolport stdio bridge is excluded by role, never reaped.
-        ($src -match [regex]::Escape("Exclude = 'mcp --server-url'")) | Should Be $true
         # A parent/child pair collapses to the parent, so no kill fires on 2
         # matches that are really one server.
         ($src -match 'candParentIds') | Should Be $true

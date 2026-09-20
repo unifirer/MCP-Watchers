@@ -21,7 +21,6 @@ The launcher also supervises the backends:
 
 | Service | Port |
 |---------|------|
-| cerememory | 8420 |
 | litellm (LLM fallback proxy) | 4000 |
 | mcp-agent-mail | 8765 |
 | claude-mcp | 8080 |
@@ -121,7 +120,7 @@ the launcher continues with the remaining steps.
 The launcher does not bundle the watchers it supervises. Install these
 separately and keep them on `PATH`:
 
-`memtrace`, `grepai`, `gm` (graphenium), `repowise`, `codegraph`, `litellm`, `cerememory`,
+`memtrace`, `grepai`, `gm` (graphenium), `repowise`, `codegraph`, `litellm`,
 `ollama`, `node`, `python`, and Windows Terminal (`wt.exe`).
 
 `codegraph watch` is opt-in freshness only: `codegraph build` creates

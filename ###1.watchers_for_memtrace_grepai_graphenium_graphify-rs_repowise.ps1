@@ -432,13 +432,13 @@ if ($null -eq $global:LauncherLock) { exit 0 }
 #   daemon PID lives in .memdb/daemon-state.json, whose path persists to
 #   teardown-state.json MemtraceStatePath (Stop-AllWatchers step 4 kills by
 #   recorded pid). Start-job handle kept in $script:memtraceStartJob.
-# - cerememory (:8420), claude-mcp-server (:8080), mail (:8765),
+# - claude-mcp-server (:8080), mail (:8765),
 #   graphiti-embed (:8003): port-singleton
 #   persistent services, deduped by in-job port probe and REUSED across
 #   launchers/logon sessions. They PERSIST after launcher exit and are
 #   intentionally NOT added to $global:WatcherChildren / teardown (same rule
 #   as the mail block below). Start-job handles kept in
-#   $script:cerememoryStartJob / $script:claudeMcpStartJob / $script:mailMcpStartJob
+#   $script:claudeMcpStartJob / $script:mailMcpStartJob
 #   / $script:graphitiEmbedStartJob
 #   so no daemon job is fire-and-forget (Out-Null discarded).
 #   graphiti-mcp (:8002) is a Docker container (restart: always), NOT a
@@ -451,13 +451,12 @@ if ($null -eq $global:LauncherLock) { exit 0 }
 #   launcher (supervisor kills its own child on lock release).
 $global:WatcherChildren = @()
 $script:memtraceStartJob = $null
-$script:cerememoryStartJob = $null
 $script:claudeMcpStartJob = $null
 $script:mailMcpStartJob = $null
 $script:graphitiEmbedStartJob = $null
 
-# PORT CONFLICT FAIL-FAST: before starting memtrace/cerememory, check whether the
-# port is held by a launcher-owned process (a memtrace/cerememory daemon). If a
+# PORT CONFLICT FAIL-FAST: before starting memtrace, check whether the
+# port is held by a launcher-owned process (a memtrace daemon). If a
 # live launcher-spawned daemon owns the port, a sibling launcher is already
 # running - by default fail fast and exit 0 (consistent with FIRST-WINS).
 # With -AutoHeal, the stale daemon is force-killed and the launcher proceeds
@@ -510,7 +509,7 @@ function Test-PortHeldByLauncherDaemon {
 # ---------------------------------------------------------------------------
 # A daemon that holds the port AND answers an HTTP request is NOT stale. It is
 # the machine's resident singleton, and a second repo must ADOPT it, not kill
-# it. Killing it only because this launcher started later took :8420/:8080/
+# it. Killing it only because this launcher started later took :8080/
 # :8765 down for the other repo (observed 2026-09-18 from a sibling checkout).
 #
 # Source of truth for "which daemons are machine-wide singletons":
@@ -535,7 +534,7 @@ function Test-PortHeldByLauncherDaemon {
 # Liveness probe: TCP connect plus a short HTTP GET. ANY HTTP status line
 # (200/401/404/405...) proves an application is behind the socket and
 # answering; only refusal, reset or timeout means dead. Verified live
-# 2026-09-18 against the running daemons: :8420 cerememory, :8080
+# 2026-09-18 against the running daemons: :8080
 # claude-mcp-server and :8765 mcp_agent_mail each answered HTTP 404 to
 # "GET /" - all three are alive by this rule. Deliberately does NOT depend on
 # a documented health endpoint existing.
@@ -611,7 +610,7 @@ function Exit-IfPortHeldByLauncherDaemon {
         }
         # PERSISTENT SINGLETON: a resident that answers is healthy. Adopt it.
         # Safe because the downstream start job dedupes against an
-        # already-listening port ($cerememoryJobScript, $claudeMcpJobScript).
+        # already-listening port ($claudeMcpJobScript).
         if ($DeferToHealthy -and (Test-HttpPortAnswering -Port $Port)) {
             Write-Host "[$Label AUTO-HEAL] port $Port held by a healthy resident daemon (PID $stalePid) - adopting it, not killing it."
             return
@@ -2712,7 +2711,7 @@ function Test-LlmProxyReady {
         # handshakes complete; treat a listening socket as ready. VAD-ltnq
         # (2026-09-06): raw TcpClient probe instead of Test-NetConnection
         # (slow, emits warnings; the TcpClient pattern is already used
-        # elsewhere in this script for memtrace/cerememory readiness).
+        # elsewhere in this script for memtrace readiness).
         try {
             $sock = $null
             try {
@@ -3055,9 +3054,8 @@ function Stop-WatcherOrphans {
     # evidence (2+ token matches, or legacy :8291 live while :8080 canonical).
     # Keep ONE (the canonical-port owner, oldest on ties), reap extras via CIM.
     $backendDupes = @(
-        @{ Name = 'cerememory.exe'; Token = 'cerememory'; Port = 8420; Exclude = 'mcp --server-url' },
-        @{ Name = 'python.exe'; Token = 'mcp_agent_mail'; Port = 8765; Exclude = '' },
-        @{ Name = 'node.exe'; Token = 'claude-mcp-server'; Port = 8080; Exclude = '' }
+        @{ Name = 'python.exe'; Token = 'mcp_agent_mail'; Port = 8765 },
+        @{ Name = 'node.exe'; Token = 'claude-mcp-server'; Port = 8080 }
     )
     foreach ($spec in $backendDupes) {
         try {
@@ -3066,17 +3064,10 @@ function Stop-WatcherOrphans {
             # mcpw-ttl.1 (2026-09-19): a backend and its OWN companion process are
             # ONE server, not two. Counting them as duplicates made this sweep reap
             # a healthy singleton -- observed as mcp-agent-mail (:8765) dying every
-            # 20-40 min and Toolport's cerememory pipe closing mid-session.
-            #   - cerememory.exe: `serve --config` (the :8420 server) plus
-            #     `mcp --server-url` (Toolport's stdio bridge) both match the token.
-            #   - mail/claude: the server spawns a child that carries the same
-            #     command line, so parent and child both match.
-            # Drop the bridge by role regex, then collapse any remaining
-            # parent/child pair to the parent. Only genuine second servers reach
-            # the duplicate test below.
-            if ($spec.Exclude) {
-                $cands = @($cands | Where-Object { -not ($_.CommandLine -match $spec.Exclude) })
-            }
+            # 20-40 min. mail/claude each spawn a child carrying the same command
+            # line, so parent and child both match.
+            # Collapse any parent/child pair to the parent. Only genuine second
+            # servers reach the duplicate test below.
             $candParentIds = @{}
             foreach ($cand in $cands) { $candParentIds[[uint32]$cand.ParentProcessId] = $true }
             $cands = @($cands | Where-Object { -not $candParentIds.ContainsKey([uint32]$_.ProcessId) })
@@ -3152,7 +3143,7 @@ if (-not (Test-Path -LiteralPath $litellmConfig)) {
 }
 $litellmLog = Join-Path $logsDir "litellm-proxy.log"
 # VAD-u4w (2026-09-13): :4000 is INTENTIONALLY not covered by
-# Exit-IfPortHeldByLauncherDaemon -AutoHeal (unlike :50051 / :8420 / :8080).
+# Exit-IfPortHeldByLauncherDaemon -AutoHeal (unlike :50051 / :8080).
 # Rationale: (1) the proxy runs as python.exe / litellm.exe shim, so a
 # name-based AutoHeal kill risks hitting an unrelated python process - the
 # same too-broad-match class as the :8765 mail server exclusion below;
@@ -3185,7 +3176,7 @@ if ($litellmExe -and (Test-Path -LiteralPath $litellmConfig)) {
     # the rest of the watchers.
     # VAD-7m1y (2026-09-06): the probe no longer blocks the launcher inline. It
     # runs as a background job OVERLAPPED with the remaining startup (grepai
-    # supervisor, gm-semantic, memtrace, cerememory, claude/mail MCP jobs) and is
+    # supervisor, gm-semantic, memtrace, claude/mail MCP jobs) and is
     # joined right before the pane grid opens. Same probe, same 20s deadline, same
     # readiness/failure messages - only the wall-clock ordering changes. The job
     # needs no launcher variables (the probe URL is a literal).
@@ -4482,103 +4473,6 @@ if (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue) {
 }
 Write-Host "Memtrace auto-heal supervisor spawned (job $($memtraceHealJob.Id)) - log: $memtraceHealLog"
 
-# --- Cerememory memory backend (standalone `serve` HTTP backend on :8420) -----
-# TRAE launches the cerememory MCP *shim* (`cerememory.exe mcp --server-url
-# http://127.0.0.1:8420`), but that shim is a thin client that depends on a
-# SEPARATE backend process (`cerememory.exe serve --port 8420`) already
-# listening on 127.0.0.1:8420. This launcher previously omitted that backend, so
-# the shim faulted with a backend-down error until it was started by hand.
-# NOTE: the backend MUST be started with `--config %ProgramData%\cerememory\cerememory.toml`
-# so it uses the real data dir (%ProgramData%\cerememory\data). A bare `serve
-# --port 8420` falls back to a default data dir and would split the memory store.
-# We start it here (deduped against an already-listening :8420, with a readiness
-# gate) so the whole stack comes up automatically on launch.
-$cerememoryJobScript = {
-    param($ScriptDir)
-    $backendPort = 8420
-    $launchLog   = Join-Path $env:LOCALAPPDATA "cerememory\cerememory-serve.log"
-    $launchErr   = Join-Path $env:LOCALAPPDATA "cerememory\cerememory-serve.log.err"
-    try { New-Item -ItemType Directory -Path (Split-Path $launchLog) -Force | Out-Null } catch {}
-
-    # Dedup: reuse an already-listening :8420 backend (e.g. one started by hand).
-    $alreadyUp = $false
-    try {
-        $sock = New-Object System.Net.Sockets.TcpClient
-        $iar = $sock.BeginConnect("127.0.0.1", $backendPort, $null, $null)
-        if ($iar.AsyncWaitHandle.WaitOne(1000) -and $sock.Connected) {
-            $sock.EndConnect($iar)
-            $alreadyUp = $true
-        }
-    } catch {} finally { if ($sock) { try { $sock.Close() } catch {} } }
-    if ($alreadyUp) {
-        Write-Host "Cerememory backend already listening on 127.0.0.1:$backendPort - reusing it."
-        return
-    }
-
-    # Resolve the backend exe portably: prefer the per-machine ProgramData
-    # install (it is NOT on PATH by default); fall back to PATH only if the
-    # install path is gone. Both resolve through the ProgramData env root.
-    $cerememoryToml = Join-Path $env:ProgramData "cerememory\cerememory.toml"
-    $cerememoryExe  = Join-Path $env:ProgramData "cerememory\cerememory.exe"
-    if (-not (Test-Path -LiteralPath $cerememoryExe)) {
-        $cerememoryCmd = Get-Command "cerememory.exe" -ErrorAction SilentlyContinue
-        if ($cerememoryCmd) { $cerememoryExe = $cerememoryCmd.Source }
-    }
-    if (-not (Test-Path -LiteralPath $cerememoryExe)) {
-        Write-Warning "cerememory.exe not found (looked at $cerememoryExe and PATH). Skipping Cerememory backend start."
-        return
-    }
-    try {
-        Write-Host "Starting Cerememory backend (serve --config $cerememoryToml)..."
-        $p = Start-Process -FilePath $cerememoryExe `
-            -ArgumentList "serve", "--config", $cerememoryToml `
-            -WindowStyle Hidden `
-            -RedirectStandardOutput $launchLog -RedirectStandardError $launchErr -PassThru
-        # Readiness gate: wait until :8420 listens (up to ~20s).
-        $deadline = (Get-Date).AddSeconds(20)
-        $ready = $false
-        while ((Get-Date) -lt $deadline) {
-            $s2 = $null
-            try {
-                $s2 = New-Object System.Net.Sockets.TcpClient
-                $iar2 = $s2.BeginConnect("127.0.0.1", $backendPort, $null, $null)
-                if ($iar2.AsyncWaitHandle.WaitOne(1000) -and $s2.Connected) {
-                    $s2.EndConnect($iar2)
-                    $ready = $true
-                }
-            } catch {} finally { if ($s2) { try { $s2.Close() } catch {} } }
-            if ($ready) { break }
-            if ($p -and $p.HasExited) {
-                Write-Warning "Cerememory backend exited during startup (exit $($p.ExitCode)) - see $launchErr"
-                break
-            }
-            Start-Sleep -Milliseconds 750
-        }
-        if ($ready) {
-            Write-Host "Cerememory backend ready on 127.0.0.1:$backendPort - safe for mcp shim to attach."
-        } else {
-            Write-Warning "Cerememory backend did NOT become ready on 127.0.0.1:$backendPort within timeout. See $launchLog / $launchErr."
-        }
-    } catch {
-        Write-Warning "Failed to launch Cerememory backend: $($_.Exception.Message). Continuing without it."
-    }
-}
-Write-Host "Starting Cerememory backend (background)..."
-# mcpw-d0m: cerememory is a machine-wide PERSISTENT singleton
-# (Modules\watcher_patterns.ps1, cerememory.exe / Persistent = $true). A
-# healthy, answering :8420 resident is adopted, never killed.
-Exit-IfPortHeldByLauncherDaemon -Port 8420 -DaemonProcessNames @('cerememory') -Label 'cerememory' -AutoHeal -DeferToHealthy
-# VAD-v14z.4: cerememory is a port-singleton persistent service (:8420). The
-# in-job port probe reuses an already-listening backend, so it PERSISTS after
-# the launcher exits and is intentionally NOT added to
-# $global:WatcherChildren / teardown (same rule as mail/claude-mcp below).
-# Keep the start-job handle so the launch is tracked, not fire-and-forget.
-if (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue) {
-    $script:cerememoryStartJob = Start-ThreadJob -ScriptBlock $cerememoryJobScript -ArgumentList $scriptDir
-} else {
-    $script:cerememoryStartJob = Start-Job -ScriptBlock $cerememoryJobScript -ArgumentList $scriptDir
-}
-
 # --- Claude MCP Server (HTTP-based MCP server on :8080, canonical vad-10m.1) -----
 # claude-mcp-server (npm v0.1.0) is a headless HTTP MCP server. It runs
 # `node dist/cli.js` and listens on http://127.0.0.1:8080/mcp. MCP clients
@@ -4957,7 +4851,7 @@ try {
 }
 
 # --- Backend auto-heal supervisors (vad-10m.2, Option A) -----
-# One supervisor per persistent singleton (cerememory :8420, mail :8765,
+# One supervisor per persistent singleton (mail :8765,
 # claude-mcp :8080, graphiti-embed :8003), modelled
 # on the litellm/memtrace supervisors. The graphiti-mcp DOCKER container
 # (:8002) is Docker-owned and intentionally NOT supervised here. Its former
@@ -4999,22 +4893,6 @@ $backendSupervisorScript = {
             if ($iar.AsyncWaitHandle.WaitOne(1000) -and $s.Connected) { $s.EndConnect($iar); return $true }
             return $false
         } catch { return $false } finally { if ($s) { try { $s.Close() } catch {} } }
-    }
-    function Start-CerememoryBackend {
-        $toml = Join-Path $env:ProgramData "cerememory\cerememory.toml"
-        $exe = Join-Path $env:ProgramData "cerememory\cerememory.exe"
-        if (-not (Test-Path -LiteralPath $exe)) {
-            $c = Get-Command "cerememory.exe" -ErrorAction SilentlyContinue
-            if ($c) { $exe = $c.Source }
-        }
-        if (-not (Test-Path -LiteralPath $exe)) { Write-BackendSupLog "cerememory.exe not found - skipping relaunch"; return }
-        $log = Join-Path $env:LOCALAPPDATA "cerememory\cerememory-serve.log"
-        try { New-Item -ItemType Directory -Path (Split-Path $log) -Force | Out-Null } catch {}
-        try {
-            $p = Start-Process -FilePath $exe -ArgumentList "serve", "--config", $toml `
-                -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError "$log.err" -PassThru
-            if ($p) { Write-BackendSupLog "relaunched cerememory backend (PID $($p.Id))" }
-        } catch { Write-BackendSupLog "cerememory relaunch failed: $($_.Exception.Message)" }
     }
     function Start-MailBackend {
         $cmd = $null
@@ -5144,8 +5022,7 @@ $backendSupervisorScript = {
                 } else {
                     if (-not $throttled) { Write-BackendSupLog "$BackendName port $Port dead - relaunching (failure $fails)" }
                     elseif (($fails % 10) -eq 0) { Write-BackendSupLog "$BackendName still dead (failure $fails) - throttled, next probe in ${sleepSec}s" }
-                    if ($BackendName -eq 'cerememory') { Start-CerememoryBackend }
-                    elseif ($BackendName -eq 'mail') { Start-MailBackend }
+                    if ($BackendName -eq 'mail') { Start-MailBackend }
                     elseif ($BackendName -eq 'claude-mcp') { Start-ClaudeBackend }
                     elseif ($BackendName -eq 'graphiti-embed') { Start-GraphitiEmbedBackend }
                     elseif ($BackendName -eq 'lean-ctx') { Start-LeanCtxBackend }
@@ -5159,8 +5036,7 @@ $backendSupervisorScript = {
                 try {
                     $dupImage = ''
                     $dupToken = ''
-                    if ($BackendName -eq 'cerememory') { $dupImage = 'cerememory.exe'; $dupToken = 'cerememory' }
-                    elseif ($BackendName -eq 'mail') { $dupImage = 'python.exe'; $dupToken = 'mcp_agent_mail' }
+                    if ($BackendName -eq 'mail') { $dupImage = 'python.exe'; $dupToken = 'mcp_agent_mail' }
                     elseif ($BackendName -eq 'claude-mcp') { $dupImage = 'node.exe'; $dupToken = 'claude-mcp-server' }
                     elseif ($BackendName -eq 'graphiti-embed') { $dupImage = 'python.exe'; $dupToken = 'embed_server' }
                     if ($dupImage -ne '') {
@@ -5190,7 +5066,6 @@ $backendSupervisorScript = {
         }
     }
 }
-$supCerememoryLog = Join-Path $env:LOCALAPPDATA 'cerememory\supervisor.log'
 $supMailLog = Join-Path $env:LOCALAPPDATA 'mcp-agent-mail\supervisor.log'
 $supClaudeLog = Join-Path $env:LOCALAPPDATA 'claude-mcp-server\supervisor.log'
 $supGraphitiEmbedLog = Join-Path $env:LOCALAPPDATA 'graphiti-embed\supervisor.log'
@@ -5205,7 +5080,6 @@ function Start-BackendSupervisor {
     Write-Host "$Name auto-heal supervisor spawned (job $($j.Id)) - log: $Log"
     return $j
 }
-$script:cerememorySupJob = Start-BackendSupervisor -Name 'cerememory' -Port 8420 -Health 'http://127.0.0.1:8420/health' -Log $supCerememoryLog
 $script:mailSupJob = Start-BackendSupervisor -Name 'mail' -Port 8765 -Health '' -Log $supMailLog
 $script:claudeSupJob = Start-BackendSupervisor -Name 'claude-mcp' -Port 8080 -Health '' -Log $supClaudeLog
 $script:graphitiEmbedSupJob = Start-BackendSupervisor -Name 'graphiti-embed' -Port 8003 -Health 'http://127.0.0.1:8003/health' -Log $supGraphitiEmbedLog
@@ -5215,7 +5089,7 @@ $script:leanCtxSupJob = Start-BackendSupervisor -Name 'lean-ctx' -Port 4444 -Hea
 
 # VAD-7m1y (2026-09-06): join the litellm readiness probe job started at the
 # LiteLLM launch. It ran concurrently with all the watcher/job startup above
-# (grepai supervisor, gm-semantic, memtrace, cerememory, claude/mail MCP jobs),
+# (grepai supervisor, gm-semantic, memtrace, claude/mail MCP jobs),
 # so the 20s probe no longer adds serial wall-clock latency. The probe is
 # bounded (20s deadline), so a plain Wait-Job matches the old blocking
 # semantics; the messages below are identical to the old inline probe.
@@ -5805,10 +5679,10 @@ Write-Host "Press Ctrl+C to stop all watchers and close everything."
 # VAD-v14z.4 daemon coverage: RootPids carries Start-WatcherDetached children
 # (incl. $script:litellmProc); GrepaiPid carries $script:GrepaiPid;
 # MemtraceStatePath carries the memtrace daemon PID via .memdb/daemon-state.json
-# ($script:memtraceStartJob); cerememory / claude-mcp-server / mail /
+# ($script:memtraceStartJob); claude-mcp-server / mail /
 # graphiti-embed are
 # intentionally persistent singletons (see blocks above,
-# $script:cerememoryStartJob / $script:claudeMcpStartJob /
+# $script:claudeMcpStartJob /
 # $script:mailMcpStartJob / $script:graphitiEmbedStartJob)
 # and are excluded from RootPids by design. The graphiti-mcp CONTAINER (:8002)
 # is Docker-owned, also excluded by design; its host-side :8004 session adapter

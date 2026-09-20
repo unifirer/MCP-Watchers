@@ -10,13 +10,13 @@
 #
 # WHY -SkipSmoke MATTERS: T20 and T21 are END-TO-END launch smokes. T20 spawns
 # the REAL launcher, which opens a Windows Terminal window and starts the
-# backend daemons (cerememory :8420, litellm :4000, mail :8765, claude-mcp,
+# backend daemons (litellm :4000, mail :8765, claude-mcp,
 # memtrace :3030). Use -SkipSmoke for an unattended, repeated, or CI run.
 #
 # T20 also self-skips, and counts the skip as a PASS, when either of these is
 # already true:
 #   - a live ###1 launcher session exists (a second instance would FIRST-WINS exit)
-#   - memtrace / cerememory / claude-mcp already hold their ports
+#   - memtrace / claude-mcp already hold their ports
 # So a run without -SkipSmoke is not automatically destructive - but it is not
 # something to run casually either.
 #

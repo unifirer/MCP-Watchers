@@ -11,8 +11,9 @@
 # mcpw-d0m (2026-09-18): the second Describe covers the PERSISTENT-SINGLETON
 # staleness rule. Port auto-heal must ADOPT a healthy, answering resident
 # instead of killing it. The resident here is a REAL child process serving real
-# HTTP on a dynamic loopback port - no mock. Ports 8420/8080/8765 are never
-# touched; no privileged port is bound.
+# HTTP on a dynamic loopback port - no mock. Ports 8080/8765 are never
+# touched; no privileged port is bound. (:8420 belonged to the cerememory
+# backend, uninstalled 2026-09-21 - see mcpw-418.)
 #
 # Run (single pass, reliable exit code):
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^

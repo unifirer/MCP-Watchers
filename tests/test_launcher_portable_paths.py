@@ -1,7 +1,7 @@
 """Portability contract for the ###1 watcher launcher's absolute-path resolution.
 
 The launcher must not embed developer-machine paths. Every external tool it
-launches (litellm, mcp-agent-mail, cerememory, watcher_log_tail.ps1) resolves
+launches (litellm, mcp-agent-mail, watcher_log_tail.ps1) resolves
 through an env var, $PSScriptRoot, or a PATH lookup, with a portable fallback
 candidate list. Static source assertions only - no process is spawned.
 """
@@ -68,17 +68,6 @@ def test_mail_resolution_is_portable():
     )
 
 
-def test_cerememory_resolution_is_portable():
-    src = _read()
-    assert 'Join-Path $env:ProgramData "cerememory\\cerememory.toml"' in src, (
-        "cerememory.toml must resolve from $env:ProgramData."
-    )
-    assert 'Join-Path $env:ProgramData "cerememory\\cerememory.exe"' in src, (
-        "cerememory.exe must resolve from $env:ProgramData."
-    )
-    assert r"C:\ProgramData" not in src, "cerememory must not hardcode C:\\ProgramData."
-
-
 def test_watcher_log_tail_resolution_is_portable():
     # vad-uzb: the pane tailer template's resolution moved to the pane module,
     # so both watcher_log_tail.ps1 sites must stay $PSScriptRoot-relative.
@@ -107,14 +96,13 @@ def test_resolution_keeps_warn_and_skip():
     assert 'Write-Warning "litellm.exe not found' in src, "litellm must warn-and-skip."
     assert 'Write-Warning "litellm_config.yaml not found' in src, "litellm config must warn-and-skip."
     assert 'Write-Warning "mcp-agent-mail run_server.cmd not found' in src, "mail must warn-and-skip."
-    assert 'Write-Warning "cerememory.exe not found' in src, "cerememory must warn-and-skip."
 
 
 def _supervisor_block():
-    # vad-10m.5: the Option A backend supervisor (cerememory/mail/claude-mcp).
+    # vad-10m.5: the Option A backend supervisor (mail/claude-mcp).
     src = _read()
     start = src.index("$backendSupervisorScript = {")
-    end = src.index("$script:cerememorySupJob", start)
+    end = src.index("$script:mailSupJob", start)
     return src[start:end]
 
 
@@ -137,7 +125,6 @@ def test_backend_supervisor_keeps_portable_resolution():
     block = _supervisor_block()
     assert "Join-Path $env:USERPROFILE" in block, "supervisor mail paths must Join-Path from $env:USERPROFILE."
     assert "Join-Path $env:LOCALAPPDATA" in block, "supervisor logs must Join-Path from $env:LOCALAPPDATA."
-    assert "Join-Path $env:ProgramData" in block, "supervisor cerememory paths must Join-Path from $env:ProgramData."
 
 
 def test_orphan_backend_pass_uses_no_hardcoded_paths():

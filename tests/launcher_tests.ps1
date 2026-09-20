@@ -1705,9 +1705,9 @@ function Get-T20TailersLive {
 
 function Test-T20DaemonPortsHeld {
     # The launcher FIRST-WINS-exits (by design, before WT) when a healthy
-    # memtrace/cerememory/claude-mcp daemon holds its port (quorum-debug
+    # memtrace/claude-mcp daemon holds its port (quorum-debug
     # 2026-08-25 verdict). A held port is environment state, not a regression.
-    foreach ($port in @(50051, 8420, 8080)) {
+    foreach ($port in @(50051, 8080)) {
         try {
             if (@(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue).Count -gt 0) { return $true }
         } catch {}
@@ -1729,7 +1729,7 @@ if ($SkipSmoke) {
     Write-Host '  [SKIP] T20 a real ###1 launcher session is running (second instance would exit by design)'
     $script:PASS++
 } elseif (Test-T20DaemonPortsHeld) {
-    Write-Host '  [SKIP] T20 a memtrace/cerememory/claude-mcp daemon holds its port - the launcher would FIRST-WINS-exit before WT by design (stop the daemons to exercise the full smoke)'
+    Write-Host '  [SKIP] T20 a memtrace/claude-mcp daemon holds its port - the launcher would FIRST-WINS-exit before WT by design (stop the daemons to exercise the full smoke)'
     $script:PASS++
 } else {
     $t20Dir = $null
@@ -1966,7 +1966,7 @@ Write-Host "=== T25: backend supervisor dot-sources shared job helpers, no inlin
 # vad-10m.5: every new backend supervisor must reuse Modules\watcher_job_helpers.ps1
 # by literal dot-source (same drift class T22 pins for the grepai supervisor).
 $bSupStart = $src.IndexOf('$backendSupervisorScript = {')
-$bSupEnd = $src.IndexOf('$script:cerememorySupJob')
+$bSupEnd = $src.IndexOf('$script:mailSupJob')
 Assert ($bSupStart -ge 0) 'T25 backend supervisor block start found' ("idx=$bSupStart")
 Assert ($bSupEnd -gt $bSupStart) 'T25 backend supervisor block end found' ("idx=$bSupEnd")
 $bSupBlock = $src.Substring($bSupStart, $bSupEnd - $bSupStart)

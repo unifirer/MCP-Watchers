@@ -136,6 +136,46 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
         }
     }
 
+    # mcpw-rkg.5 item 5. The launcher owns the graphify-rs rebuild argv, so the
+    # provision module must CALL Get-GraphifyRebuildArgs instead of keeping its
+    # own copy - that hand-synced-copy failure is exactly the mcpw-0zj lesson.
+    # The neighbouring test only asserts the argv CONTAINS 'build' and
+    # '--no-llm', which both the function path and the fallback satisfy, so it
+    # cannot tell the two apart. This one can: the stub argv below is not a
+    # subset of the fallback, so a module that ignores the function fails here.
+    It 'takes graphify-rs rebuild argv from Get-GraphifyRebuildArgs, not a local copy' {
+        $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+        . (Join-Path $repoRoot 'Modules\watcher_mcp_detect.ps1')
+        . (Join-Path $repoRoot 'Modules\watcher_mcp_provision.ps1')
+
+        # Defined inside the It block on purpose: file scope is invisible here
+        # (see the header), and it must not leak into any other test.
+        function Get-GraphifyRebuildArgs { @('rebuild', '--from', 'launcher', '--no-llm') }
+
+        $argv = @(Get-McpProvisionArgv -Mcp 'graphify-rs' -Path 'C:\synthetic\repo')
+        ($argv -join ' ') | Should -Be 'rebuild --from launcher --no-llm' -Because `
+            'the module must call Get-GraphifyRebuildArgs when the launcher exposes it'
+    }
+
+    It 'falls back to the documented rebuild argv when Get-GraphifyRebuildArgs is absent' {
+        $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+        . (Join-Path $repoRoot 'Modules\watcher_mcp_detect.ps1')
+        . (Join-Path $repoRoot 'Modules\watcher_mcp_provision.ps1')
+
+        # Standalone module (no launcher loaded) - the fallback literal is used.
+        # Asserted needle-by-needle rather than as an exact literal so the test
+        # pins the CONTRACT (build, an explicit path, update, no LLM) and stays
+        # green if the launcher adds a flag to its own argv.
+        $argv = @(Get-McpProvisionArgv -Mcp 'graphify-rs' -Path 'C:\synthetic\repo')
+        foreach ($needle in @('build', '--path', '--update', '--no-llm')) {
+            $argv -contains $needle | Should -BeTrue -Because `
+                "the fallback rebuild argv must carry $needle"
+        }
+        # The real function is genuinely absent here, otherwise this test would
+        # be asserting the fallback while the function path was taken.
+        (Get-Command Get-GraphifyRebuildArgs -ErrorAction SilentlyContinue) | Should -BeNullOrEmpty
+    }
+
     It 'skips (never fails) every initializer when its binary is absent' {
         $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
         . (Join-Path $repoRoot 'Modules\watcher_mcp_detect.ps1')

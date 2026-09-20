@@ -115,6 +115,24 @@ A provisioning problem never aborts the launch: a missing binary, an
 unsatisfiable probe or a failed command degrades to a logged `skipped` row and
 the launcher continues with the remaining steps.
 
+### Previewing a run with `-ReportOnly`
+
+`Invoke-McpProvisionForRepo -ReportOnly` answers "what would this do?" without
+doing it. It runs the six detection probes and returns one row per MCP:
+
+- `stamped` — the probe already reports this repo provisioned; nothing would run.
+- `skipped` — no runnable tool, or an optional step's opt-in file is missing.
+- `planned` — this step would execute its command.
+
+No provisioning command runs and no stamp is written. It reports ground truth
+from the probes, **not** from the stamp, so a step whose stamp says done but
+whose artifact is gone comes back `planned` — the case the stamp gate cannot see.
+
+It is not free: a probe whose artifact already exists shells out to confirm it
+(`grepai status`, `repowise doctor`), measured at ~40s on this repo. A probe
+whose artifact is absent short-circuits without spawning anything. That is still
+far cheaper than the memtrace index and grepai first scan a real run spends.
+
 ## Prerequisites
 
 The launcher does not bundle the watchers it supervises. Install these

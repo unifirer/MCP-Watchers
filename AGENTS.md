@@ -956,12 +956,19 @@ When you do fall back to grep, prefer names-only and anchored queries, read the 
 
 ### MCP provisioning in the launcher
 
-The launcher provisions six MCPs in whatever repo it is launched from, before
-any watcher spawns. `Modules/watcher_mcp_detect.ps1` is the read side (is this
-repo already provisioned?); `Modules/watcher_mcp_provision.ps1` is the write
-side. The stamp lives at `.mcpw-provision/state.json` in the repo root and is
-gitignored, so a second launch runs no tool. Provisioning failures degrade to a
-logged skip and never abort the launch.
+The launcher provisions six MCPs in whatever repo it is launched from, before any
+watcher spawns. `Modules/watcher_mcp_detect.ps1` is the read side (is this repo
+already provisioned?); `Modules/watcher_mcp_provision.ps1` is the write side. The
+stamp lives at `.mcpw-provision/state.json` in the repo root and is gitignored, so
+a second launch runs no tool. Provisioning failures degrade to a logged skip and
+never abort the launch.
+
+`Invoke-McpProvisionForRepo -ReportOnly` answers "what would this do?" without
+doing it: it runs the probes and returns `stamped` / `skipped` / `planned` per MCP.
+No provisioning command runs and no stamp is written. Prefer it before a real run —
+the expensive steps are memtrace index and the grepai first scan, and it reads the
+probes rather than the stamp, so it also catches a false-success stamp whose
+artifact is gone.
 
 This server runs the **front door** surface: three tools reach every jCodeMunch capability, so the tool list stays small and the catalogue is fetched only when you need it.
 

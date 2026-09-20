@@ -90,6 +90,32 @@ the repository root. Do not copy the `.ps1` itself.
 locate `Modules\watcher_*.ps1` when the module folder is not next to the
 launcher. Leave it unset for normal use.
 
+## MCP provisioning
+
+The launcher provisions six MCPs in whatever repository it is launched from,
+before any watcher spawns: `graphenium`, `repowise`, `graphify-rs` (optional),
+`graft`, `memtrace`, `grepai`. It creates the per-repo artifacts each server
+needs — workspace config, wiring graph, store membership, vector index. It does
+not install the tools; see Prerequisites.
+
+Two modules split the job:
+
+- `Modules\watcher_mcp_detect.ps1` — the read side. `Test-<Mcp>Initialized`
+  answers "is this repo already provisioned?" and
+  `Get-McpInitializationReport` prints one row per MCP.
+- `Modules\watcher_mcp_provision.ps1` — the write side. Walks
+  `Get-McpProvisionPlan` in order and invokes each tool.
+
+It is idempotent. Each completed step is recorded in `.mcpw-provision/state.json`
+at the repo root (gitignored, regenerable), so a second launch runs no tool and
+costs well under a second. `-Force` re-runs everything. Every step is gated on a
+detection probe both before and after its command, so a tool that exits 0 without
+producing its artifact is reported as skipped rather than recorded as provisioned.
+
+A provisioning problem never aborts the launch: a missing binary, an
+unsatisfiable probe or a failed command degrades to a logged `skipped` row and
+the launcher continues with the remaining steps.
+
 ## Prerequisites
 
 The launcher does not bundle the watchers it supervises. Install these

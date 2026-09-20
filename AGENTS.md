@@ -239,7 +239,6 @@ Never skip: validation, security, error handling.
 
 
 
-
 ### Ponytail, lazy senior dev mode
 
 You are a lazy senior developer. Lazy means efficient, not careless. The best code is the code never written.
@@ -941,6 +940,29 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 Always use jCodeMunch-MCP for code navigation. Never fall back to Read, Grep, Glob, or Bash for code exploration.
 **Exception:** use `Read` when you are about to edit a file — the harness requires a `Read` before `Edit`/`Write`. Use jCodeMunch to *find and understand* code, then `Read` only the file you are changing.
 
+### grep and the search-tool hierarchy
+
+`grep` — and its equivalents (`Grep`/`Glob` tool calls, `git grep`, `rg`, `find`) — is **wasteful** for the exploration tasks this repo defines: it dumps raw text hits, ignores the project's semantic indexes, and burns tokens and context re-reading code the MCPs already rank for you. This repo ships **multiple MCP servers and CLI commands that replace grep** for those tasks — jCodeMunch, grepai, memtrace, repowise, graft, graphify-rs, graphenium, serena, and the `ctx_*` (lean-ctx) tools among them.
+
+Use this hierarchy; do **not** reach for grep first:
+
+1. **Start with jCodeMunch** — `order` / `route` / `menu` / `jcodemunch_guide` is the front door to the whole catalogue.
+2. **If jCodeMunch cannot answer it, try the other grep-replacing MCPs and CLIs in turn** — grepai (`search` / `trace` / `refs`), memtrace (`find_symbol` / `find_code`), repowise (`search_codebase`), graft (`grep`), graphify-rs, graphenium, serena, or lean-ctx (`ctx_search`). Try each one that fits the task and move on when one fails or is unavailable.
+3. **Reserve grep and its equivalents as a last resort**, and only when:
+   - every grep-replacing MCP/CLI that could serve the task has failed or is unavailable, **or**
+   - the task is genuinely narrow and grep is the correct tool for it — exact-string or exact-identifier matching, a canonical syntax anchor (e.g. `@main`, `func main(`), an exhaustive file-name checklist (e.g. `git grep -ilE 'err|handl' | head -50`), or searching files the indexes do not cover.
+
+When you do fall back to grep, prefer names-only and anchored queries, read the ranked hits first, and never dump full grep content for an intent query.
+
+### MCP provisioning in the launcher
+
+The launcher provisions six MCPs in whatever repo it is launched from, before
+any watcher spawns. `Modules/watcher_mcp_detect.ps1` is the read side (is this
+repo already provisioned?); `Modules/watcher_mcp_provision.ps1` is the write
+side. The stamp lives at `.mcpw-provision/state.json` in the repo root and is
+gitignored, so a second launch runs no tool. Provisioning failures degrade to a
+logged skip and never abort the launch.
+
 This server runs the **front door** surface: three tools reach every jCodeMunch capability, so the tool list stays small and the catalogue is fetched only when you need it.
 
 **Start any session:**
@@ -1007,7 +1029,7 @@ not rank. Never dump full grep content output for an intent query.
 
 ### Fallback
 
-If grepai fails (not running, index unavailable, or errors), fall back to standard Grep/Glob tools.
+If grepai fails (not running, index unavailable, or errors), continue down the search-tool hierarchy above — try the other grep-replacing MCPs/CLIs before falling back to grep. Only use grep directly as the last resort described in that hierarchy.
 
 ### Usage
 

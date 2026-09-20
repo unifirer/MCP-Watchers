@@ -66,16 +66,15 @@ TESTS_REL = "tests"
 
 # Ratchet: test files known-untracked and awaiting an explicit `git add`.
 # Every entry here is a debt. Prune it as soon as the file is tracked.
-# The 2026-09-20 sweep (mcpw-efu) found these on disk and untracked; several are
-# another agent's in-flight work in the same wave, so this tool reports them
-# rather than staging them (one shared index -- bead mcpw-gsj).
-PENDING_STAGING = (
-    "tests/declick_node24_pin.tests.ps1",
-    "tests/launcher_codegraph_resolve.tests.ps1",
-    "tests/launcher_grepai_clean_fixture.tests.ps1",
-    "tests/launcher_memtrace_orphan_sweep.tests.ps1",
-    "tests/test_test_hygiene.py",
-)
+# Empty as of 2026-09-21 (mcpw-9n1). The 2026-09-20 sweep (mcpw-efu) queued five
+# files, but every one of them was already staged: four by 03fe566 (the commit
+# that added this ratchet) and tests/launcher_memtrace_orphan_sweep.tests.ps1 by
+# 1f6ffc7. The queue was never pruned, so check() reported all five as
+# "now tracked -- prune it" and this gate returned 5 violations on every run
+# since it landed. Prune an entry as soon as its file is staged; an empty queue
+# is the healthy state. The tool still reports rather than stages (one shared
+# index -- bead mcpw-gsj).
+PENDING_STAGING = ()
 
 # A test file is either a Pester suite or a pytest module.
 TEST_FILE_RES = (

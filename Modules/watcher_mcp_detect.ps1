@@ -288,15 +288,20 @@ function Test-GrapheniumInitialized {
     .DESCRIPTION
         Signals, in order:
           1. the gm CLI is on PATH;
-          2. <Path>/.graphenium/ (the workspace config dir) exists;
+          2. <Path>/.graphenium/ exists - the dir gm READS policy.json from;
           3. <Path>/graphenium-out/graph.json exists.
 
         BOTH artifacts are required. Measured 2026-09-20 in this repo: the graph
         was present (graphenium-out/graph.json, 241 nodes, from an earlier
-        `gm run`) while .graphenium/ did NOT exist, because `gm init` was never
-        run. That state is NOT initialized - the MCP server is not wired to the
-        workspace. The config is therefore the discriminating signal, and it is
-        checked first so the reason names it.
+        `gm run`) while .graphenium/ did NOT exist. That state is NOT
+        initialized - the MCP server is not wired to the workspace. The
+        directory is therefore the discriminating signal, and it is checked
+        first so the reason names it.
+
+        Do NOT read signal 2 as "gm init ran". Measured in a scratch repo:
+        `gm init [PATH]` exits 0 and writes `.grapheniumignore` - a FILE, and
+        the only artifact it produces. It does NOT create the `.graphenium/`
+        directory; gm only ever READS `.graphenium/policy.json` out of it.
     #>
     param(
         [string] $Path,
@@ -311,7 +316,7 @@ function Test-GrapheniumInitialized {
     if ($bad) { Set-McpDetectReason $Reason $bad; return $false }
 
     if (-not (Test-Path -LiteralPath (Join-Path $root '.graphenium') -PathType Container)) {
-        Set-McpDetectReason $Reason 'workspace config missing: .graphenium/ (gm init never ran)'
+        Set-McpDetectReason $Reason 'workspace config missing: .graphenium/ (gm reads policy.json here; gm init does not create it)'
         return $false
     }
     $rel = 'graphenium-out/graph.json'
@@ -442,18 +447,22 @@ function Test-RepowiseInitialized {
 function Test-GraftInitialized {
     <#
     .SYNOPSIS
-        Does this repository have a graft manifest?
+        Does this repository have a graft graph built by the $0 no-key tier?
     .DESCRIPTION
         Signals, in order:
           1. the graft CLI is on PATH;
-          2. <Path>/graft/manifest.json exists.
+          2. BOTH <Path>/graft/.graph/wiring.json AND <Path>/graft/INDEX.md exist.
 
-        The manifest can be MISSING ENTIRELY, not merely stale. Measured
-        2026-09-20 in this repo: graft_check_freshness reported
-        "No graft/manifest.json found. Run graft build --deep first", and the
-        MCP tool separately reported "NO GRAPH". graft/.graph/wiring.json
-        existed at the time and is NOT sufficient - it is the wiring cache, not
-        the graph.
+        Plain `graft build <dir>` is the $0 no-key tier and writes exactly
+        graft/.graph/wiring.json, graft/INDEX.md and graft/.cache/*. It NEVER
+        writes graft/manifest.json - that is the `--deep` (LLM-key) artifact,
+        and the provisioner hard-forbids --deep. So the probe must key on what
+        the no-key build actually produces, not on the manifest.
+
+        wiring.json alone is NOT accepted: it is the wiring cache, and INDEX.md
+        is the human-readable graph the build emits alongside it. Requiring the
+        pair is the "is there a graph" signal; a lone wiring.json is a partial
+        or interrupted build.
     #>
     param(
         [string] $Path,
@@ -467,17 +476,23 @@ function Test-GraftInitialized {
     $bad = Test-McpDetectRootUsable -Root $root
     if ($bad) { Set-McpDetectReason $Reason $bad; return $false }
 
-    $rel = 'graft/manifest.json'
-    if (-not (Test-Path -LiteralPath (Join-Path $root $rel) -PathType Leaf)) {
-        if (Test-Path -LiteralPath (Join-Path $root 'graft/.graph/wiring.json') -PathType Leaf) {
-            Set-McpDetectReason $Reason "manifest missing: $rel (graft/.graph/wiring.json alone is not a graph)"
-        } else {
-            Set-McpDetectReason $Reason "manifest missing: $rel (run graft build --deep)"
-        }
-        return $false
+    $wiring = 'graft/.graph/wiring.json'
+    $index  = 'graft/INDEX.md'
+    $haveWiring = Test-Path -LiteralPath (Join-Path $root $wiring) -PathType Leaf
+    $haveIndex  = Test-Path -LiteralPath (Join-Path $root $index)  -PathType Leaf
+
+    if ($haveWiring -and $haveIndex) {
+        Set-McpDetectReason $Reason "graph present: $wiring + $index"
+        return $true
     }
-    Set-McpDetectReason $Reason "manifest present: $rel"
-    return $true
+    if ($haveWiring) {
+        Set-McpDetectReason $Reason "graph incomplete: $wiring present but $index missing (run graft build)"
+    } elseif ($haveIndex) {
+        Set-McpDetectReason $Reason "graph incomplete: $index present but $wiring missing (run graft build)"
+    } else {
+        Set-McpDetectReason $Reason "graph missing: neither $wiring nor $index (run graft build)"
+    }
+    return $false
 }
 
 # ---------------------------------------------------------------------------

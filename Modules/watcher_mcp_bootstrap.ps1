@@ -86,9 +86,12 @@
 #             targeted, cheap, non-interactive verb is `repowise agents add`
 #             (--yes), NOT `repowise init`, which regenerates the wiki with a
 #             model and can prompt for a key.
-#   graft     `graft/manifest.json` can be missing ENTIRELY. Plain
-#             `graft build <dir>` is the $0 no-key tier (wiring graph +
-#             per-file cards). --deep is NEVER passed: it needs an LLM key.
+#   graft     Plain `graft build <dir>` is the $0 no-key tier and writes
+#             graft/.graph/wiring.json, graft/INDEX.md and graft/.cache/*.
+#             It NEVER writes graft/manifest.json - that is the --deep
+#             (LLM-key) artifact - so detection keys on wiring.json +
+#             INDEX.md together, not on the manifest. --deep is NEVER passed:
+#             it needs an LLM key.
 #
 # Safe to dot-source: function definitions plus one sibling dot-source (the
 # detection module), matching Modules/watcher_teardown.ps1. No launches, no
@@ -741,9 +744,10 @@ function Initialize-GraftForRepo {
     .SYNOPSIS
         Build graft/'s wiring graph and per-file cards for this repository.
     .DESCRIPTION
-        `graft/manifest.json` can be missing ENTIRELY, and `graft/.graph/
-        wiring.json` alone is not a graph - so the plain `graft build <dir>`
-        ($0, no key) is what runs. --deep is NEVER passed: it needs an LLM key,
+        Plain `graft build <dir>` ($0, no key) writes graft/.graph/wiring.json,
+        graft/INDEX.md and graft/.cache/*, and is what runs. It NEVER writes
+        graft/manifest.json - that is the --deep artifact - so the probe pairs
+        wiring.json with INDEX.md. --deep is NEVER passed: it needs an LLM key,
         and swapping in a key or a model is out of bounds for this harness.
     #>
     param(

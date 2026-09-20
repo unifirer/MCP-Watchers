@@ -105,7 +105,11 @@ Describe 'watcher_mcp_detect: one initialization probe per MCP' {
             [System.IO.File]::WriteAllText((Join-Path $sandbox '.grepai\config.yaml'), "embedder:`n  provider: ollama`n", $utf8)
             [System.IO.File]::WriteAllText((Join-Path $sandbox 'graphenium-out\graph.json'), '{"nodes":[]}', $utf8)
             [System.IO.File]::WriteAllText((Join-Path $sandbox 'graphify-out\graph.json'), '{"nodes":[]}', $utf8)
-            [System.IO.File]::WriteAllText((Join-Path $sandbox 'graft\manifest.json'), '{"version":1}', $utf8)
+            # graft: the $0 no-key build writes wiring.json AND INDEX.md (never
+            # manifest.json, which is the --deep tier).
+            $null = New-Item -ItemType Directory -Path (Join-Path $sandbox 'graft\.graph') -Force
+            [System.IO.File]::WriteAllText((Join-Path $sandbox 'graft\.graph\wiring.json'), '{"wiring":[]}', $utf8)
+            [System.IO.File]::WriteAllText((Join-Path $sandbox 'graft\INDEX.md'), '# graft index', $utf8)
 
             # Shape copied from the real commands (raw captures are in
             # reports/2026-09-20-mcpw-rkg1-detection-contract.md). Injected so
@@ -232,8 +236,9 @@ Describe 'watcher_mcp_detect: one initialization probe per MCP' {
         $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ('mcpw-detect-' + [guid]::NewGuid().ToString('N'))
         $null = New-Item -ItemType Directory -Path (Join-Path $sandbox 'graft\.graph') -Force
         try {
-            # The measured counter-example: wiring.json is the wiring cache, not
-            # the graph. The manifest can be missing ENTIRELY. Must be FALSE.
+            # wiring.json alone is the wiring cache, not the graph - INDEX.md is
+            # the other half of the $0 build. A lone wiring.json is a partial or
+            # interrupted build. Must be FALSE.
             [System.IO.File]::WriteAllText((Join-Path $sandbox 'graft\.graph\wiring.json'),
                 '{"stale":true}', (New-Object System.Text.UTF8Encoding($false)))
 
@@ -241,7 +246,8 @@ Describe 'watcher_mcp_detect: one initialization probe per MCP' {
             $ok = [bool](Test-GraftInitialized -Path $sandbox -Reason ([ref]$reason))
             $ok | Should -BeFalse
             if (Resolve-McpDetectTool -Name 'graft') {
-                $reason | Should -Match 'manifest missing'
+                $reason | Should -Match 'graph incomplete'
+                $reason | Should -Match 'INDEX\.md'
             } else {
                 $reason | Should -Match '^binary not found:'
             }

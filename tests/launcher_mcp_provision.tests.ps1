@@ -785,7 +785,21 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
         $crlf = "`r`n"
         $sleeper = Join-Path $sandbox 'sleeper.cmd'
         # ping is used as a portable sleep; the timeout must cut it short.
-        $body = '@echo off' + $crlf + 'ping -n 60 127.0.0.1 > nul' + $crlf + 'exit /b 0' + $crlf
+        # It is addressed by ABSOLUTE PATH on purpose, not by bare name. A .cmd
+        # runs as a cmd.exe GRANDCHILD of this process, and in a hosted sandbox
+        # that grandchild does not resolve a bare `ping` even though its PATH is
+        # byte-identical to the parent's and does contain System32 (measured:
+        # 79 entries, C:\Windows\System32 present, yet the batch printed
+        # "'ping' is not recognized as an internal or external command" and
+        # exited in ~2 s). The mechanism is not established here and is not
+        # needed: the observable effect is that the payload never runs, so the
+        # child exits well inside the timeout, TimedOut comes back $false, and
+        # this test fails for a reason unrelated to the timeout kill it exists
+        # to prove. Naming the executable outright removes the dependency while
+        # still exercising the .cmd branch -- the normal path here, since
+        # memtrace and graft are npm shims.
+        $ping = Join-Path $env:SystemRoot 'System32\ping.exe'
+        $body = '@echo off' + $crlf + '"' + $ping + '" -n 60 127.0.0.1 > nul' + $crlf + 'exit /b 0' + $crlf
         [System.IO.File]::WriteAllText($sleeper, $body, (New-Object System.Text.ASCIIEncoding))
         try {
             $sw = [System.Diagnostics.Stopwatch]::StartNew()

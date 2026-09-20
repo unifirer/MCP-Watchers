@@ -133,6 +133,16 @@ It is not free: a probe whose artifact already exists shells out to confirm it
 whose artifact is absent short-circuits without spawning anything. That is still
 far cheaper than the memtrace index and grepai first scan a real run spends.
 
+`dev_tools\mcp_provision_report.ps1` is the runnable wrapper — it prints the
+per-MCP table and names what a real launch would run:
+
+```powershell
+.\dev_tools\mcp_provision_report.ps1 -Path J:\audio\VAD
+```
+
+It takes `-Path` (default: the current directory) and pauses before closing when
+it is double-clicked from Explorer.
+
 ## Prerequisites
 
 The launcher does not bundle the watchers it supervises. Install these

@@ -146,6 +146,40 @@ function Test-GrepaiIdleMarker {
         return (Test-Path -LiteralPath $marker)
     } catch { return $false }
 }
+# mcpw-6re: bare marker EXISTENCE is not the discriminator the heal needs.
+# The marker is a LATCH, and two different actors clear it:
+#   - the supervisor, at its own start (launcher, "drop that stale marker");
+#   - the pane itself, historically, whenever it observed a live watcher.
+# So "marker present" can be an ORPHAN (a supervisor has since taken over
+# healing) while "marker absent" can mean "a supervisor started, wiped the
+# record, then died" - which is exactly the window in which the pane fallback
+# heal used to re-spawn a deliberately reaped watcher and restart the cycle.
+#
+# The reliable discriminator is the RELATIVE ORDER of the two files, which the
+# supervisor's own tick order guarantees (verified against the live state dir
+# 2026-09-20: .sup 08:28:57.302, .idle 08:28:58.674, then the supervisor
+# returned and BOTH froze):
+#   - every supervisor tick stamps <lockfile>.sup FIRST;
+#   - the idle reap writes <lockfile>.idle LATER IN THE SAME TICK, then returns.
+# So at a deliberate reap marker-mtime > sup-mtime, and it stays that way
+# because nothing stamps .sup again. If .sup is newer than the marker, a
+# supervisor has ticked since the reap: the marker is an orphan and healing is
+# allowed again. That is "deliberately reaped" vs "died unexpectedly", decided
+# without a launcher change.
+function Test-GrepaiReapPending {
+    param([string]$LockPath)
+    if (-not (Test-GrepaiIdleMarker -LockPath $LockPath)) { return $false }
+    try {
+        $marker = [System.IO.Path]::ChangeExtension($LockPath, '.idle')
+        $stamp = [System.IO.Path]::ChangeExtension($LockPath, '.sup')
+        # Marker but no supervisor stamp at all: the marker is the only
+        # evidence on disk and it says "reaped". Treat it as authoritative.
+        if (-not (Test-Path -LiteralPath $stamp)) { return $true }
+        $markerTime = (Get-Item -LiteralPath $marker -ErrorAction Stop).LastWriteTimeUtc
+        $stampTime = (Get-Item -LiteralPath $stamp -ErrorAction Stop).LastWriteTimeUtc
+        return ($markerTime -ge $stampTime)
+    } catch { return $true }
+}
 function Test-GrapheniumWatcherAlive {
     # mcpw-qfy RC2: post-a8107e24 there is no `gm watch` process. Rebuilds
     # run as full `gm run` one-shots from the launcher's $gmSemJob thread
@@ -644,6 +678,17 @@ function Invoke-GrepaiHealthCheck {
     $alive0 = @(Get-CimInstance Win32_Process -Filter "Name='grepai.exe'" -ErrorAction SilentlyContinue |
         Where-Object { $_.CommandLine -and $_.CommandLine -match 'watch' }).Count -gt 0
     if ($alive0) { Write-Host "[grepai HEALTH] watch daemon is live - no heal needed"; return $false }
+    # mcpw-6re: re-check the deliberate-reap discriminator AT THE POINT OF ACTION.
+    # The caller gates on the same probe, but the pane only reaches tick 30 (or
+    # 60, 90, ...) 15s+ after it decided the watcher was down. A supervisor reap
+    # landing inside that window is invisible to the caller's decision, and the
+    # heal below would then clear locks and re-spawn the watcher the supervisor
+    # had just reaped on purpose. The check is cheap (two Test-Path + two
+    # Get-Item) and it is the last thing that runs before any destructive step.
+    if (Test-GrepaiReapPending -LockPath $LockFile) {
+        Write-Host "[grepai HEALTH] deliberate idle reap pending - skipping pane heal (not a crash)"
+        return $false
+    }
     # VAD-v14z.3 single healer: the thread-job supervisor owns healing while
     # the launcher is alive. The pane heals only as a last resort when the
     # supervisor is gone (launcher dead, pane survived); otherwise concurrent
@@ -831,7 +876,12 @@ while ($true) {
             # heals and never exits. Healing would relaunch the watcher and
             # undo the supervisor's memory saving; exiting would close the
             # pane the operator expects to stay up.
-            if (Test-GrepaiIdleMarker -LockPath $LockFile) {
+            # mcpw-6re: gate on Test-GrepaiReapPending, not on bare marker
+            # existence. "Marker present" also covers an ORPHAN marker left
+            # behind by a supervisor that has since ticked again, and parking
+            # on that forever would be the mirror-image bug (a genuinely
+            # crashed watcher that never heals).
+            if (Test-GrepaiReapPending -LockPath $LockFile) {
                 if (-not $script:idleShown) {
                     Write-Host "=== __LABEL__ [IDLE - WAITING FOR QUERIES] (index idle, watcher reaped to save memory) ==="
                     $script:idleShown = $true
@@ -881,16 +931,18 @@ while ($true) {
         }
     } else {
         $script:deadTicks = 0
-        # A live watcher invalidates a stale idle marker (e.g. a manual
-        # grepai watch while no supervisor runs), so a later crash heals
-        # instead of parking on a stale IDLE state.
-        if ($script:idleShown) {
-            $script:idleShown = $false
-            try {
-                $staleIdle = [System.IO.Path]::ChangeExtension($LockFile, '.idle')
-                if ($staleIdle -and (Test-Path -LiteralPath $staleIdle)) { Remove-Item -LiteralPath $staleIdle -Force -ErrorAction SilentlyContinue }
-            } catch { }
-        }
+        # mcpw-6re: this branch used to DELETE <lockfile>.idle as soon as a live
+        # watcher showed up ("a live watcher invalidates a stale idle marker").
+        # That made the pane a second writer of the supervisor's reap record and
+        # it is the mechanism behind the infinite spawn/reap cycle: the pane heal
+        # (or any other spawn) puts a watcher up, the pane wipes the record of
+        # the reap that had parked it, that watcher then dies, and the pane now
+        # sees "no marker, no supervisor" and heals - re-spawning the watcher the
+        # supervisor deliberately reaped. Only the supervisor owns that marker:
+        # it clears it at its own start, and Test-GrepaiReapPending already stops
+        # honouring it once a supervisor has ticked since the reap. All the pane
+        # needs to do here is reset its own DISPLAY state.
+        if ($script:idleShown) { $script:idleShown = $false }
     }
     Start-Sleep -Milliseconds 500
     # VAD-ltnq (2026-09-06): write the heartbeat every 4th tick (~2s) instead

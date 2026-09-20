@@ -87,7 +87,7 @@ NOTE ON PATHS IN THIS DOCUMENT
 
 2. WHAT MOVED
 
-  Tier A - runtime (8 files, 216 KB)
+  Tier A - runtime (8 files COPIED from VAD, 216 KB)
     ###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1
     ###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.bat
     ###2.llm_fallback_proxy.py
@@ -96,6 +96,15 @@ NOTE ON PATHS IN THIS DOCUMENT
     Modules\watcher_pane_scripts.ps1
     Modules\watcher_patterns.ps1
     Modules\watcher_teardown.ps1
+
+  Tier A+ - runtime, NEW in this repo (no VAD counterpart, not a copy)
+    Modules\watcher_workspace.ps1
+      Created 2026-09-17 for mcpw-ybs.2. Holds the single canonical
+      workspace-key derivation, dot-sourced by the launcher BEFORE the
+      teardown module so Get-WatchersWorkspaceKey is defined for every
+      consumer. VAD has no copy, so VAD's ###2 consumer falls back to the
+      legacy un-keyed teardown-state.json path. That under-kills, it never
+      over-kills, so the fallback is safe by construction.
 
   Tier B - excluded by decision D2
     ###2.launch_watcher_for_grepai.ps1
@@ -338,11 +347,51 @@ NOTE ON PATHS IN THIS DOCUMENT
   E6  Commit 2 and HEAD      : 6f1ace6e790dfcda6919fda1015d5ea35fd6c291,
                                2026-09-17 05:25:27 +1200, 70 files.
   E7  Working tree           : clean after both commits. No stray artifacts.
-  E8  Pester gate            : BLOCKED. Pester 3.4.0 not installed.
-                               Installed: 6.0.0, 6.0.1, 6.1.0.
+  E8  Pester gate            : CORRECTED. E8 first read "Pester 3.4.0 not
+                               installed". That was WRONG: it searched only
+                               C:\Users\yuni\Documents. Pester 3.4.0 IS at
+                               C:\Program Files\WindowsPowerShell\Modules\
+                               Pester\3.4.0\, and 5.1 auto-load finds it when
+                               a suite pins -RequiredVersion 3.4.0.
   E9  Line endings           : .gitattributes pins '* -text'. Re-normalized
                                38 blobs so the index holds the real CRLF
                                bytes. Working tree unchanged.
+  E10 Gate harness           : temp\_gate.bat runs the four PURE suites by
+                               invoking each *.tests.ps1 directly. Do NOT
+                               drive them through an outer Invoke-Pester:
+                               watcher_patterns.tests.ps1 re-imports Pester
+                               with -Force inside the file, which zeroes
+                               discovery and reports 0 tests.
+  E11 Gate, before mcpw-ybs.2: 54 assertions, 0 failures.
+                               watcher_patterns      12
+                               watcher_log_tail      16
+                               backend_sweep_safety  14
+                               launcher_final_window 12
+  E12 CRLF repair            : tests\launcher_final_window.tests.ps1 was 100%
+                               bare LF in the working tree, so git reported
+                               113/106 changed lines instead of the real
+                               46/39. Normalised to CRLF. The plain diff now
+                               equals the --ignore-cr-at-eol diff exactly.
+  E13 Runner defect          : tests\run_launcher_tests.ps1 forwarded NO
+                               arguments, so -SkipSmoke never reached
+                               launcher_tests.ps1 and the full T20/T21 smoke
+                               ran regardless. Proven with an isolated probe:
+                               OLD runner -> switch dropped, NEW runner ->
+                               switch received. Fixed with @args.
+  E14 mcpw-ybs.2a landed     : workspace key 77442b14 for J:\audio\VAD and
+                               ad90e3fb for J:\audio\MCP-Watchers. Keyed the
+                               teardown state file, the logs dir and the pane
+                               dir. 7 files PARSE OK.
+  E15 Anchor proof           : the T8/T15 pane-dir IndexOf binds at 221865
+                               and the controller-loop anchor at 250158.
+                               New-IsolatedPaneBlock still isolates the pane
+                               dir, the window name and the reset matcher,
+                               and now throws loudly if its regex misses.
+  E16 Concurrency note       : a SECOND session was editing this repo during
+                               the extraction. Uncommitted work by that
+                               session covers the graphiti backends. The
+                               pre-commit hook does NOT auto-stage, so a
+                               selective commit is possible.
 
 ================================================================
 END OF PLAN

@@ -14,10 +14,11 @@
 # --------
 #   Invoke-McpProvisionForRepo -Path <repoRoot> [...]
 #     -> one summary object the launcher can log (never throws):
-#        .Path .StateDir .Started .Finished .Total .Done .Stamped .Skipped
+#        .Path .StateDir .Started .Finished .Total .Done .Stamped .Planned
+#        .Skipped .ReportOnly
 #        .Results[]  where each row is
 #                    .Mcp .Status .Reason .Tool .Stamp .Optional .Phase
-#        .Status is one of exactly three values:
+#        .Status is one of exactly four values:
 #           'done'    the init step ran, exited 0, AND the matching detection
 #                     probe then confirmed the repository is really initialized
 #           'stamped' nothing to do - already initialized (detection), or a
@@ -28,6 +29,8 @@
 #                     to confirm. There is no 'failed' status on purpose - a
 #                     provision problem degrades to a logged skip and the other
 #                     five MCPs still get their chance.
+#           'planned' -ReportOnly ONLY: this step WOULD run. No tool ran and no
+#                      stamp was written, so the whole call is read-only.
 #
 #   Initialize-<Mcp>ForRepo -Path <repoRoot> [-StateDir] [-ToolPath] [-Force]
 #                           [-TimeoutMs] [-FirstScanTimeoutMs]
@@ -1139,6 +1142,15 @@ function Invoke-McpProvisionForRepo {
         Restrict the run to these MCP names. Omitted = all six.
     .PARAMETER Force
         Ignore the stamp and re-run every step.
+    .PARAMETER ReportOnly
+        Answer "what would provisioning do?" without doing it. Runs the six
+        detection probes and returns one row per MCP: 'stamped' when the probe
+        already reports provisioned, 'skipped' when no runnable tool was found,
+        and 'planned' when a step would execute its command. No tool runs and no
+        stamp is written, so it is safe to point at a repository you do not own.
+        Note this reports ground truth from the probes, not the stamp shortcut:
+        a step whose stamp says done but whose artifact is missing is reported
+        'planned', which is exactly the Mode A case the stamp gate hides.
     #>
     param(
         [string]    $Path,
@@ -1146,6 +1158,7 @@ function Invoke-McpProvisionForRepo {
         [hashtable] $ToolPaths,
         [string[]]  $Only,
         [switch]    $Force,
+        [switch]    $ReportOnly,
         [int]       $TimeoutMs = 1800000,
         [int]       $FirstScanTimeoutMs = 300000
     )
@@ -1154,24 +1167,56 @@ function Invoke-McpProvisionForRepo {
     $started = Get-Date
     $rows    = New-Object System.Collections.Generic.List[object]
 
+    # Opt-in config file per OPTIONAL step, mirroring the gate each real
+    # initializer applies. Used by -ReportOnly so the report cannot claim it
+    # plans a step the real run would skip.
+    $optionalConfigGate = @{ 'graphify-rs' = 'graphify-rs.toml' }
+
     foreach ($step in @(Get-McpProvisionPlan)) {
         if ($Only -and ($Only -notcontains $step.Mcp)) { continue }
         $tp = ''
         if ($ToolPaths -and $ToolPaths.ContainsKey($step.Mcp)) { $tp = [string]$ToolPaths[$step.Mcp] }
 
         $row = $null
-        try {
-            switch ($step.Mcp) {
-                'graphenium'  { $row = Initialize-GrapheniumForRepo  -Path $root -StateDir $dir -ToolPath $tp -Force:$Force -TimeoutMs $TimeoutMs }
-                'repowise'    { $row = Initialize-RepowiseForRepo    -Path $root -StateDir $dir -ToolPath $tp -Force:$Force -TimeoutMs $TimeoutMs }
-                'graphify-rs' { $row = Initialize-GraphifyRsForRepo  -Path $root -StateDir $dir -ToolPath $tp -Force:$Force -TimeoutMs $TimeoutMs }
-                'graft'       { $row = Initialize-GraftForRepo       -Path $root -StateDir $dir -ToolPath $tp -Force:$Force -TimeoutMs $TimeoutMs }
-                'memtrace'    { $row = Initialize-MemtraceForRepo    -Path $root -StateDir $dir -ToolPath $tp -Force:$Force -TimeoutMs $TimeoutMs }
-                'grepai'      { $row = Initialize-GrepaiForRepo      -Path $root -StateDir $dir -ToolPath $tp -Force:$Force -FirstScanTimeoutMs $FirstScanTimeoutMs }
+        if ($ReportOnly) {
+            # mcpw-0zo.6: answer "what would this do?" without doing it. The
+            # probes are the ground truth here, deliberately NOT the stamp: a
+            # step whose stamp says done but whose artifact is gone is reported
+            # 'planned', which is exactly the case the stamp gate hides.
+            $tool = Resolve-McpProvisionTool -Name $step.Mcp -ToolPath $tp
+            $gate = $optionalConfigGate[$step.Mcp]
+            if ($step.Optional -and $gate -and -not (Test-Path -LiteralPath (Join-Path $root $gate) -PathType Leaf)) {
+                # Mirror the real initializer's opt-in gate, or the report would
+                # claim it plans a step that would actually be skipped.
+                $row = New-McpProvisionRow -Mcp $step.Mcp -Status 'skipped' `
+                    -Reason "report-only: optional - $gate missing (bead mcpw-01g, P3) - nothing to configure" -Tool $tool -Stamp $dir
+            } elseif (-not $tool) {
+                $row = New-McpProvisionRow -Mcp $step.Mcp -Status 'skipped' `
+                    -Reason "report-only: no runnable tool for $($step.Mcp) - this step would be skipped" -Tool '' -Stamp $dir
+            } else {
+                $already = Get-McpProvisionAlreadyReason -Mcp $step.Mcp -Root $root
+                if ($already.Ok -and -not $Force) {
+                    $row = New-McpProvisionRow -Mcp $step.Mcp -Status 'stamped' `
+                        -Reason ("report-only: already provisioned - " + $already.Reason + " - nothing to run") -Tool $tool -Stamp $dir
+                } else {
+                    $row = New-McpProvisionRow -Mcp $step.Mcp -Status 'planned' `
+                        -Reason ("report-only: would run the $($step.Phase) step for $($step.Mcp)") -Tool $tool -Stamp $dir
+                }
             }
-        } catch {
-            $row = New-McpProvisionRow -Mcp $step.Mcp -Status 'skipped' `
-                -Reason ("initializer threw: " + $_.Exception.Message) -Tool '' -Stamp $dir
+        } else {
+            try {
+                switch ($step.Mcp) {
+                    'graphenium'  { $row = Initialize-GrapheniumForRepo  -Path $root -StateDir $dir -ToolPath $tp -Force:$Force -TimeoutMs $TimeoutMs }
+                    'repowise'    { $row = Initialize-RepowiseForRepo    -Path $root -StateDir $dir -ToolPath $tp -Force:$Force -TimeoutMs $TimeoutMs }
+                    'graphify-rs' { $row = Initialize-GraphifyRsForRepo  -Path $root -StateDir $dir -ToolPath $tp -Force:$Force -TimeoutMs $TimeoutMs }
+                    'graft'       { $row = Initialize-GraftForRepo       -Path $root -StateDir $dir -ToolPath $tp -Force:$Force -TimeoutMs $TimeoutMs }
+                    'memtrace'    { $row = Initialize-MemtraceForRepo    -Path $root -StateDir $dir -ToolPath $tp -Force:$Force -TimeoutMs $TimeoutMs }
+                    'grepai'      { $row = Initialize-GrepaiForRepo      -Path $root -StateDir $dir -ToolPath $tp -Force:$Force -FirstScanTimeoutMs $FirstScanTimeoutMs }
+                }
+            } catch {
+                $row = New-McpProvisionRow -Mcp $step.Mcp -Status 'skipped' `
+                    -Reason ("initializer threw: " + $_.Exception.Message) -Tool '' -Stamp $dir
+            }
         }
         if (-not $row) {
             $row = New-McpProvisionRow -Mcp $step.Mcp -Status 'skipped' `
@@ -1184,6 +1229,7 @@ function Invoke-McpProvisionForRepo {
 
     $done    = @($rows | Where-Object { $_.Status -eq 'done' }).Count
     $stamped = @($rows | Where-Object { $_.Status -eq 'stamped' }).Count
+    $planned = @($rows | Where-Object { $_.Status -eq 'planned' }).Count
     $skipped = @($rows | Where-Object { $_.Status -eq 'skipped' }).Count
 
     # Snapshot the list into a plain object[] BEFORE the [pscustomobject] cast.
@@ -1201,7 +1247,9 @@ function Invoke-McpProvisionForRepo {
         Total    = $rows.Count
         Done     = $done
         Stamped  = $stamped
+        Planned  = $planned
         Skipped  = $skipped
+        ReportOnly = [bool]$ReportOnly
         Results  = $results
     }
 }

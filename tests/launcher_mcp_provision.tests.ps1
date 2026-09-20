@@ -360,6 +360,137 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
         }
     }
 
+    It '-ReportOnly reports what would happen: runs no tool and writes no stamp' {
+        $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+        . (Join-Path $repoRoot 'Modules\watcher_mcp_detect.ps1')
+        . (Join-Path $repoRoot 'Modules\watcher_mcp_provision.ps1')
+
+        $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ('mcpw-boot-' + [guid]::NewGuid().ToString('N'))
+        $repo = Join-Path $sandbox 'repo'
+        $fakeDir = Join-Path $sandbox 'fakes'
+        foreach ($d in @($repo, $fakeDir)) { $null = New-Item -ItemType Directory -Path $d -Force }
+        $log = Join-Path $sandbox 'calls.log'
+        $crlf = "`r`n"
+        $names = @{ graphenium = 'gm'; repowise = 'repowise'; 'graphify-rs' = 'graphify-rs'; graft = 'graft'; memtrace = 'memtrace'; grepai = 'grepai' }
+        # graphify-rs.toml is present, so the optional gate does NOT skip it and
+        # the report has to plan six steps, not five.
+        [System.IO.File]::WriteAllText((Join-Path $repo 'graphify-rs.toml'), "[graph]`n", (New-Object System.Text.UTF8Encoding($false)))
+        # These fakes must be the PROVEN ones: a fake that exits 0 without
+        # creating what its probe looks for is a fake of a FAILED step, not a
+        # successful one (bead mcpw-0zo.1), and it would make the "a real run
+        # still does the work" assertion below fail for the wrong reason.
+        $provision = @{
+            graphenium = @(
+                'type nul > .grapheniumignore',
+                'mkdir graphenium-out 2>nul',
+                'echo {}> graphenium-out\graph.json'
+            )
+            repowise = @(
+                'if "%1"=="doctor" goto doc',
+                'mkdir .repowise 2>nul',
+                'goto :eof',
+                ':doc',
+                'echo Claude Code MCP entry ^| OK ^| registered'
+            )
+            'graphify-rs' = @(
+                'mkdir graphify-out 2>nul',
+                'echo {}> graphify-out\graph.json'
+            )
+            graft = @(
+                'mkdir graft\.graph 2>nul',
+                'echo {}> graft\.graph\wiring.json',
+                'echo # graph> graft\INDEX.md'
+            )
+            memtrace = @(
+                'set P=%~2',
+                'set P=%P:\=/%',
+                'mkdir .memdb 2>nul',
+                'echo {"version":1,"members":[{"repo_id":"t","path":"%P%"}]}> .memdb\.memtrace-store-scope.json'
+            )
+            grepai = @(
+                'if "%1"=="init" goto cfg',
+                'if "%1"=="status" goto st',
+                'goto :eof',
+                ':cfg',
+                'mkdir .grepai 2>nul',
+                'echo embedder: test> .grepai\config.yaml',
+                'goto :eof',
+                ':st',
+                'echo Files indexed: 0',
+                'echo Total chunks: 5'
+            )
+        }
+        $toolPaths = @{}
+        foreach ($mcp in $names.Keys) {
+            $lines = @('@echo off', ('echo ' + $mcp + ' %* >> "' + $log + '"'))
+            $lines += $provision[$mcp]
+            $lines += 'exit /b 0'
+            $file = Join-Path $fakeDir ($names[$mcp] + '.cmd')
+            [System.IO.File]::WriteAllText($file, (($lines -join $crlf) + $crlf), (New-Object System.Text.ASCIIEncoding))
+            $toolPaths[$mcp] = $file
+        }
+
+        $savedPath = $env:Path
+        try {
+            $env:Path = $fakeDir
+
+            # ---- the report itself ----------------------------------------
+            $report = Invoke-McpProvisionForRepo -Path $repo -ToolPaths $toolPaths -ReportOnly -TimeoutMs 30000 -FirstScanTimeoutMs 30000
+            $report.Total | Should -Be 6
+            $report.ReportOnly | Should -BeTrue
+            $report.Done | Should -Be 0 -Because 'a report must not do the work'
+            $report.Stamped | Should -Be 0 -Because 'a fresh repo has no stamps and the report writes none'
+            $report.Planned | Should -Be 6
+            $bad = @($report.Results | Where-Object { $_.Status -ne 'planned' } | ForEach-Object { "$($_.Mcp)=$($_.Status)" })
+            ($bad -join '; ') | Should -Be '' -Because 'every step on a bare repo would run'
+            foreach ($row in @($report.Results)) { $row.Reason | Should -Match 'report-only' }
+
+            # THE two assertions: nothing was spawned, nothing was stamped.
+            Test-Path -LiteralPath $log -PathType Leaf | Should -BeFalse -Because '-ReportOnly must not invoke a single tool'
+            Test-Path -LiteralPath (Join-Path $repo '.mcpw-provision\state.json') -PathType Leaf | Should -BeFalse -Because '-ReportOnly must not write the stamp'
+
+            # ---- the report changed nothing: a real run still does all six --
+            $real = Invoke-McpProvisionForRepo -Path $repo -ToolPaths $toolPaths -TimeoutMs 30000 -FirstScanTimeoutMs 30000
+            # List the offenders rather than assert a bare count: a fake that
+            # failed to provision names itself here instead of hiding behind a
+            # "expected 6, got 3".
+            $badReal = @($real.Results | Where-Object { $_.Status -ne 'done' } | ForEach-Object { "$($_.Mcp)=$($_.Status) ($($_.Reason))" })
+            ($badReal -join '; ') | Should -Be '' -Because 'the report must not have consumed or satisfied anything'
+            $real.Planned | Should -Be 0
+            $real.ReportOnly | Should -BeFalse
+        } finally {
+            $env:Path = $savedPath
+            Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It '-ReportOnly skips the optional step when its config is missing' {
+        $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+        . (Join-Path $repoRoot 'Modules\watcher_mcp_detect.ps1')
+        . (Join-Path $repoRoot 'Modules\watcher_mcp_provision.ps1')
+
+        $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ('mcpw-boot-' + [guid]::NewGuid().ToString('N'))
+        $repo = Join-Path $sandbox 'repo'
+        $fakeDir = Join-Path $sandbox 'fakes'
+        foreach ($d in @($repo, $fakeDir)) { $null = New-Item -ItemType Directory -Path $d -Force }
+        $crlf = "`r`n"
+        # No graphify-rs.toml. The binary IS present, so the skip has to come
+        # from the opt-in gate, not from a missing tool.
+        $fake = Join-Path $fakeDir 'graphify-rs.cmd'
+        [System.IO.File]::WriteAllText($fake, '@echo off' + $crlf + 'exit /b 0' + $crlf, (New-Object System.Text.ASCIIEncoding))
+
+        try {
+            $summary = Invoke-McpProvisionForRepo -Path $repo -Only @('graphify-rs') -ToolPaths @{ 'graphify-rs' = $fake } -ReportOnly
+            $summary.Total | Should -Be 1
+            $summary.Planned | Should -Be 0
+            @($summary.Results)[0].Status | Should -Be 'skipped'
+            @($summary.Results)[0].Reason | Should -Match 'graphify-rs\.toml'
+            @($summary.Results)[0].Optional | Should -BeTrue
+        } finally {
+            Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     It 'degrades: a tool that exits non-zero is skipped while the other five run' {
         $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
         . (Join-Path $repoRoot 'Modules\watcher_mcp_detect.ps1')

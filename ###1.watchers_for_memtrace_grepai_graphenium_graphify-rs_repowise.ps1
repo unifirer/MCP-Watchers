@@ -1433,10 +1433,21 @@ if (-not $grepaiOk) {
         $errText = ""
         if (Test-Path $grepaiLaunchErr) { $errText = (Get-Content $grepaiLaunchErr -Raw -ErrorAction SilentlyContinue) }
         if ($errText -match 'already running' -or $errText -match 'timeout waiting for process to become ready') {
-            Write-Warning "Stale grepai lock detected - recovering (kill orphan + clear lock, then retry once)..."
-            if ($errText -match 'already running' -and $errText -match 'PID (\d+)') {
-                $op = Get-Process -Id $Matches[1] -ErrorAction SilentlyContinue
-                if ($op) { try { $op.Kill() } catch { Write-Warning "Failed to kill stale grepai PID $($op.Id): $($_.Exception.Message)" } }
+            Write-Warning "Stale grepai lock detected - recovering (clear stale lock, then retry once)..."
+            # mcpw-ozm: do NOT kill the PID grepai named. That PID is the BLOCKER,
+            # not our child - the lock is machine-global (%LOCALAPPDATA%\grepai\logs
+            # is shared by every repo on this box), so the name is usually a LIVE
+            # watcher owned by a DIFFERENT repository (the evidence named 65534
+            # while this supervisor had spawned 6228/86624). Killing it is the
+            # mcpw-eud bug class with a wider blast radius. Ask the gate instead:
+            # adopt only our own live watcher, otherwise back off and leave the
+            # holder alone.
+            $launchDecision = Get-GrepaiSpawnDecision -ProjectRoot $watchersWorkspaceRoot
+            if ($launchDecision.Action -eq 'adopt') {
+                $script:GrepaiPid = [int]$launchDecision.BlockerPid
+                Write-Warning "grepai watcher for this project is already live (PID $($launchDecision.BlockerPid)) - adopting it instead of killing and relaunching."
+            } elseif ($launchDecision.Action -eq 'backoff') {
+                Write-Warning "grepai refused to start: $($launchDecision.Reason). Not killing PID $($launchDecision.BlockerPid) and not relaunching."
             }
             # mcpw-eud: this sweep is machine-global (%LOCALAPPDATA%\grepai\logs is
             # shared by every repo on this box), so a candidate is removed only
@@ -1449,25 +1460,32 @@ if (-not $grepaiOk) {
                 Where-Object { Test-GrepaiLockStale -LockFile $_.FullName -ProjectRoot $watchersWorkspaceRoot } |
                 Remove-Item -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 1
-            try {
-                # mcpw-0on: the retry gets its own redirect pair, so the failed
-                # first launch's log survives for diagnosis and no two children
-                # ever hold the same target.
-                $recoveryLog = Get-GrepaiSpawnLogPair -LogPath $grepaiLaunchLog -ErrPath $grepaiLaunchErr -Attempt 2
-                $gp2 = Start-Process -FilePath (Get-Command "grepai.exe").Source -ArgumentList "watch" `
-                    -WorkingDirectory $watchersWorkspaceRoot -WindowStyle Hidden `
-                    -RedirectStandardOutput $recoveryLog.Log -RedirectStandardError $recoveryLog.Err -PassThru
-                # vad-r0i parent-death: the retried spawn is the tracked watcher
-                # now, so it must be inside the kill-on-close job too.
-                if ($null -ne $script:DeathJob -and $script:DeathJob -ne [IntPtr]::Zero) {
-                    $assigned = Add-ProcessToWatcherDeathJob -Job $script:DeathJob -ProcessId $gp2.Id
-                    if (-not $assigned) { Write-Warning "grepai parent-death assign failed for PID $($gp2.Id) - job Zero or already-in-job; relying on graceful teardown only." }
-                } else {
-                    Write-Warning "grepai parent-death job unavailable - relying on graceful teardown only."
-                }
-                $script:GrepaiPid = $gp2.Id
-                $gp2.WaitForExit(35000) | Out-Null
-            } catch { Write-Warning "grepai relaunch failed: $($_.Exception.Message)" }
+            # mcpw-ozm: a relaunch is only worth attempting when the gate says
+            # 'spawn'. Against a lock a live watcher holds, the retry is what
+            # produced the 92 "exited immediately after restart" events.
+            if ($launchDecision.Action -ne 'spawn') {
+                Write-Warning "grepai recovery relaunch skipped (decision: $($launchDecision.Action)) - a live watcher keeps the lock, so a retry would be refused."
+            } else {
+                try {
+                    # mcpw-0on: the retry gets its own redirect pair, so the failed
+                    # first launch's log survives for diagnosis and no two children
+                    # ever hold the same target.
+                    $recoveryLog = Get-GrepaiSpawnLogPair -LogPath $grepaiLaunchLog -ErrPath $grepaiLaunchErr -Attempt 2
+                    $gp2 = Start-Process -FilePath (Get-Command "grepai.exe").Source -ArgumentList "watch" `
+                        -WorkingDirectory $watchersWorkspaceRoot -WindowStyle Hidden `
+                        -RedirectStandardOutput $recoveryLog.Log -RedirectStandardError $recoveryLog.Err -PassThru
+                    # vad-r0i parent-death: the retried spawn is the tracked watcher
+                    # now, so it must be inside the kill-on-close job too.
+                    if ($null -ne $script:DeathJob -and $script:DeathJob -ne [IntPtr]::Zero) {
+                        $assigned = Add-ProcessToWatcherDeathJob -Job $script:DeathJob -ProcessId $gp2.Id
+                        if (-not $assigned) { Write-Warning "grepai parent-death assign failed for PID $($gp2.Id) - job Zero or already-in-job; relying on graceful teardown only." }
+                    } else {
+                        Write-Warning "grepai parent-death job unavailable - relying on graceful teardown only."
+                    }
+                    $script:GrepaiPid = $gp2.Id
+                    $gp2.WaitForExit(35000) | Out-Null
+                } catch { Write-Warning "grepai relaunch failed: $($_.Exception.Message)" }
+            }
         } else {
             Write-Warning "grepai launch error: $($_.Exception.Message)"
         }
@@ -1673,6 +1691,11 @@ if ($grepaiOk) {
         # every restart this runspace makes takes the next number and therefore
         # its own log pair, so two children never share a redirect target.
         $grepaiSpawnAttempt = 1
+        # mcpw-ozm: consecutive respawns skipped because a LIVE grepai watcher
+        # holds a lock this workspace would consult. Feeds
+        # Get-GrepaiSpawnBackoffSeconds so the wait grows; reset to 0 whenever a
+        # spawn actually happens.
+        $consecutiveBlockedSpawns = 0
         # vad-v02 (2026-09-15): PID-scoped idle reap. The old reap killed every
         # grepai.exe with CommandLine match watch, so a manual watch or a
         # sibling launcher watcher died too. Track only the PID this
@@ -1848,8 +1871,39 @@ if ($grepaiOk) {
                     Write-SupLog 'grepai watch exited - restarting in 1s'
                     Write-WatchersLog 'CRITICAL: grepai watch process lost - initiating restart sequence'
                     Clear-StaleLocks -ProjectRoot $RepoRoot
+                    # mcpw-ozm: Clear-StaleLocks only knows the worktree/stop
+                    # shapes and gates on OWNERSHIP. This one also covers the
+                    # machine-global grepai-watch.pid and gates on IDENTITY,
+                    # which is what catches a PID file naming a RECYCLED PID -
+                    # the one lock grepai can never clear by itself.
+                    $null = Clear-StaleGrepaiSpawnLocks
                     Repair-CorruptGobIndex -ProjectRoot $RepoRoot
                     Start-Sleep 1
+                    # mcpw-ozm: decide BEFORE spawning. grepai refuses with
+                    # "watcher is already running (PID n)" whenever a live
+                    # watcher holds a lock, and retrying cannot clear a lock
+                    # another live process holds - that is the 92-flap churn.
+                    $spawnDecision = Get-GrepaiSpawnDecision -ProjectRoot $RepoRoot -ConsecutiveBlocked $consecutiveBlockedSpawns
+                    if ($spawnDecision.Action -ne 'spawn') {
+                        if ($spawnDecision.Action -eq 'adopt') {
+                            $trackedGrepaiPid = [int]$spawnDecision.BlockerPid
+                            $trackedGrepaiStart = Get-Date
+                            $consecutiveRestarts = 0
+                            $consecutiveBlockedSpawns = 0
+                            Write-SupLog "adopted live grepai watcher PID $($spawnDecision.BlockerPid) instead of respawning - $($spawnDecision.Reason)"
+                            Write-WatchersLog "grepai watcher adopted (PID $($spawnDecision.BlockerPid)) - no respawn needed"
+                        } else {
+                            $consecutiveBlockedSpawns++
+                            Write-SupLog "respawn blocked: $($spawnDecision.Reason) - backing off $($spawnDecision.DelaySeconds)s"
+                            Write-WatchersLog "grepai respawn blocked by a live watcher (PID $($spawnDecision.BlockerPid)) - waiting $($spawnDecision.DelaySeconds)s instead of retrying against a lock we cannot clear"
+                            Start-Sleep -Seconds $spawnDecision.DelaySeconds
+                        }
+                        # `continue` inside the surrounding try/finally still runs
+                        # the finally (heal mutex released) and re-ticks the loop,
+                        # so the lock is re-tested after the wait.
+                        continue
+                    }
+                    $consecutiveBlockedSpawns = 0
                     # mcpw-0on: this restart gets its OWN redirect pair, so it can
                     # never collide with (or clobber) the run it is recovering from.
                     $grepaiSpawnAttempt++
@@ -1883,8 +1937,29 @@ if ($grepaiOk) {
                         Write-WatchersLog "CRITICAL: grepai (PID $($gp.Id)) exited immediately - retry restart"
                         $consecutiveRestarts++
                         Clear-StaleLocks -ProjectRoot $RepoRoot
+                        $null = Clear-StaleGrepaiSpawnLocks
                         Repair-CorruptGobIndex -ProjectRoot $RepoRoot
                         Start-Sleep 1
+                        # mcpw-ozm: the retry is equally doomed against a lock a
+                        # live watcher holds - this is the path that produced the
+                        # 94 "exited immediately after restart" events.
+                        $retryDecision = Get-GrepaiSpawnDecision -ProjectRoot $RepoRoot -ConsecutiveBlocked $consecutiveBlockedSpawns
+                        if ($retryDecision.Action -ne 'spawn') {
+                            if ($retryDecision.Action -eq 'adopt') {
+                                $trackedGrepaiPid = [int]$retryDecision.BlockerPid
+                                $trackedGrepaiStart = Get-Date
+                                $consecutiveBlockedSpawns = 0
+                                Write-SupLog "adopted live grepai watcher PID $($retryDecision.BlockerPid) on the retry path - $($retryDecision.Reason)"
+                                Write-WatchersLog "grepai watcher adopted (PID $($retryDecision.BlockerPid)) - retry skipped"
+                            } else {
+                                $consecutiveBlockedSpawns++
+                                Write-SupLog "retry blocked: $($retryDecision.Reason) - backing off $($retryDecision.DelaySeconds)s"
+                                Write-WatchersLog "grepai retry blocked by a live watcher (PID $($retryDecision.BlockerPid)) - waiting $($retryDecision.DelaySeconds)s"
+                                Start-Sleep -Seconds $retryDecision.DelaySeconds
+                            }
+                            continue
+                        }
+                        $consecutiveBlockedSpawns = 0
                         # mcpw-0on: the retry takes yet another redirect pair, so
                         # neither the failed restart nor the run before it is
                         # overwritten and each log belongs to exactly one PID.

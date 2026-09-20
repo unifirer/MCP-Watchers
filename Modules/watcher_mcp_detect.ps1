@@ -220,27 +220,70 @@ function Test-MemtraceInitialized {
 # ---------------------------------------------------------------------------
 # grepai
 # ---------------------------------------------------------------------------
+function Get-GrepaiIndexSignal {
+    <#
+    .SYNOPSIS
+        Parse `grepai status --no-ui` text into the index counters grepai
+        ACTUALLY computes.
+    .DESCRIPTION
+        grepai never computes a file count. Measured 2026-09-21 in this repo
+        (bead mcpw-4ci): `grepai status --no-ui` exits 0 and prints
+        "Files indexed: 0" while the SAME output prints "Total chunks: 1399".
+        Upstream QdrantStore.GetStats hardcodes TotalFiles: 0 and status.go
+        prints "Files indexed" from that field, so the file counter reads 0 for
+        every qdrant project no matter how much is indexed. The chunk count IS
+        computed, so it is the signal that actually varies.
+
+        Returns @{ Files = <int>; Chunks = <int>; Indexed = <bool> }. Indexed is
+        true when EITHER counter is > 0, so a future grepai that does compute
+        files still satisfies the probe, and this stays honest about both.
+
+        BOTH the detection probe (Test-GrepaiInitialized) and the bootstrap
+        provisioner (Initialize-GrepaiForRepo) call THIS function, so the two can
+        never disagree about what "indexed" means.
+    #>
+    param([string] $Text)
+    $files = 0
+    $chunks = 0
+    if ($Text) {
+        $mf = [regex]::Match($Text, 'Files indexed\s*:\s*(\d+)')
+        if ($mf.Success) { $files = [int]$mf.Groups[1].Value }
+        $mc = [regex]::Match($Text, 'Total chunks\s*:\s*(\d+)')
+        if ($mc.Success) { $chunks = [int]$mc.Groups[1].Value }
+    }
+    return @{
+        Files   = $files
+        Chunks  = $chunks
+        Indexed = (($files -gt 0) -or ($chunks -gt 0))
+    }
+}
+
 function Test-GrepaiInitialized {
     <#
     .SYNOPSIS
-        Does this repository have a grepai index with files in it?
+        Does this repository have a grepai index with content in it?
     .DESCRIPTION
         Signals, in order:
           1. the grepai CLI is on PATH;
           2. <Path>/.grepai/config.yaml exists;
-          3. `grepai status` reports "Files indexed" > 0.
+          3. `grepai status` reports an index that has content - the counters
+             are parsed by Get-GrepaiIndexSignal, where "Total chunks" > 0 is
+             what decides.
 
-        A CORRECT CONFIG IS NOT ENOUGH. Measured 2026-09-20 in this repo: the
-        config was already right (ollama embedder nomic-embed-text at
-        127.0.0.1:12134, qdrant backend localhost:16334) and `grepai status`
-        still reported "Files indexed: 0 / Total chunks: 892". That is NOT
-        initialized - there is nothing to search.
+        A CORRECT CONFIG IS NOT ENOUGH, and neither is the file counter.
+        Measured 2026-09-21 in this repo (bead mcpw-4ci): the config was already
+        right (ollama embedder nomic-embed-text at 127.0.0.1:12134, qdrant
+        backend localhost:16334) and `grepai status` printed "Files indexed: 0"
+        next to "Total chunks: 1399". The file count is never computed by the
+        tool, so keying on it made this probe unsatisfiable forever - which is
+        what kept the bootstrap first scan re-running on every launch. The chunk
+        count is computed, so it is the signal.
 
         The liveness clock is deliberately NOT a signal. `watch.last_index_time`
-        is written at scan/checkpoint boundaries, not per write, so a stale
-        clock is not by itself proof of a dead write path - and the inverse
-        holds too: measured "Last updated: 2026-09-20 14:31:22" (fresh) with
-        "Files indexed: 0". Only the file count decides.
+        is written at scan/checkpoint boundaries, not per write, so a stale clock
+        is not by itself proof of a dead write path - and the inverse holds too:
+        measured "Last updated: 2026-09-20 14:31:22" (fresh) with
+        "Files indexed: 0". Only the index content decides.
     #>
     param(
         [string] $Path,
@@ -265,19 +308,14 @@ function Test-GrepaiInitialized {
     }
     if (-not $text) { Set-McpDetectReason $Reason 'grepai status produced no output'; return $false }
 
-    # DUPLICATED PARSE: the same "Files indexed" regex lives in
-    # Modules/watcher_mcp_bootstrap.ps1 (Initialize-GrepaiForRepo, the first-scan
-    # check). Fix both or the two will disagree about what "indexed" means.
-    $m = [regex]::Match($text, 'Files indexed\s*:\s*(\d+)')
-    if (-not $m.Success) {
-        Set-McpDetectReason $Reason 'grepai status did not report "Files indexed"'; return $false
-    }
-    $n = [int]$m.Groups[1].Value
-    if ($n -le 0) {
-        Set-McpDetectReason $Reason 'grepai status reports Files indexed: 0 (config present, index empty)'
+    # SHARED PARSE: Get-GrepaiIndexSignal is called by the bootstrap provisioner
+    # too (Initialize-GrepaiForRepo), so the two cannot drift.
+    $sig = Get-GrepaiIndexSignal -Text $text
+    if (-not $sig.Indexed) {
+        Set-McpDetectReason $Reason ("grepai status reports an empty index (Files indexed: {0}, Total chunks: {1})" -f $sig.Files, $sig.Chunks)
         return $false
     }
-    Set-McpDetectReason $Reason "grepai status reports Files indexed: $n"
+    Set-McpDetectReason $Reason ("grepai status reports an index with content (Files indexed: {0}, Total chunks: {1})" -f $sig.Files, $sig.Chunks)
     return $true
 }
 

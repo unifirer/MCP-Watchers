@@ -95,7 +95,7 @@ Describe 'watcher_mcp_detect: one initialization probe per MCP' {
             # nothing else. Built under a temp dir so it can never touch a real
             # repository's tool state.
             $utf8 = New-Object System.Text.UTF8Encoding($false)
-            foreach ($d in @('.memdb', '.grepai', '.graphenium', 'graphenium-out', 'graphify-out', '.repowise', 'graft')) {
+            foreach ($d in @('.memdb', '.grepai', 'graphenium-out', 'graphify-out', '.repowise', 'graft')) {
                 $null = New-Item -ItemType Directory -Path (Join-Path $sandbox $d) -Force
             }
             # memtrace: the repo itself must be a scope member. Forward slashes
@@ -103,6 +103,9 @@ Describe 'watcher_mcp_detect: one initialization probe per MCP' {
             $scope = '{"version":1,"members":[{"repo_id":"synthetic","path":"' + ($sandbox -replace '\\', '/') + '"}]}'
             [System.IO.File]::WriteAllText((Join-Path $sandbox '.memdb\.memtrace-store-scope.json'), $scope, $utf8)
             [System.IO.File]::WriteAllText((Join-Path $sandbox '.grepai\config.yaml'), "embedder:`n  provider: ollama`n", $utf8)
+            # graphenium: `gm init` writes .grapheniumignore (a FILE) - the
+            # workspace marker; no gm subcommand creates a .graphenium/ dir.
+            [System.IO.File]::WriteAllText((Join-Path $sandbox '.grapheniumignore'), "target/\n", $utf8)
             [System.IO.File]::WriteAllText((Join-Path $sandbox 'graphenium-out\graph.json'), '{"nodes":[]}', $utf8)
             [System.IO.File]::WriteAllText((Join-Path $sandbox 'graphify-out\graph.json'), '{"nodes":[]}', $utf8)
             # graft: the $0 no-key build writes wiring.json AND INDEX.md (never
@@ -185,37 +188,65 @@ Describe 'watcher_mcp_detect: one initialization probe per MCP' {
         }
     }
 
-    It 'reports FALSE for grepai when the config is right but Files indexed is 0' {
+    It 'reports TRUE for grepai on chunks alone when Files indexed is 0 (the measured qdrant shape)' {
         $module = Join-Path (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path 'Modules\watcher_mcp_detect.ps1'
         . $module
         $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ('mcpw-detect-' + [guid]::NewGuid().ToString('N'))
         $null = New-Item -ItemType Directory -Path (Join-Path $sandbox '.grepai') -Force
         try {
-            # The measured counter-example: a correct config, a FRESH liveness
-            # clock, and still zero indexed files. Must be FALSE.
+            # CONTRACT CHANGE (bead mcpw-4ci). The old contract keyed on
+            # "Files indexed" > 0, which grepai NEVER computes on a qdrant
+            # backend (upstream hardcodes TotalFiles: 0) - so the probe was
+            # unsatisfiable and the bootstrap first scan re-ran every launch.
+            # The measured shape here is a correct config, a fresh clock, 0
+            # files, and 892 chunks: that index HAS content and IS initialized.
             [System.IO.File]::WriteAllText((Join-Path $sandbox '.grepai\config.yaml'),
                 "embedder:`n  provider: ollama`n  model: nomic-embed-text`n", (New-Object System.Text.UTF8Encoding($false)))
             $status = "grepai index status`nFiles indexed: 0`nTotal chunks: 892`nLast updated: 2026-09-20 14:31:22`nWatcher: not running"
 
             $reason = ''
             $ok = [bool](Test-GrepaiInitialized -Path $sandbox -Reason ([ref]$reason) -ProbeOutput $status)
-            $ok | Should -BeFalse
+            $ok | Should -BeTrue
             if (Resolve-McpDetectTool -Name 'grepai') {
-                $reason | Should -Match 'Files indexed: 0'
+                $reason | Should -Match 'Total chunks: 892'
             } else {
                 $reason | Should -Match '^binary not found:'
             }
         } finally { Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
-    It 'reports FALSE for graphenium when the graph exists but .graphenium/ does not' {
+    It 'reports FALSE for grepai when the index is genuinely empty (0 files and 0 chunks)' {
+        $module = Join-Path (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path 'Modules\watcher_mcp_detect.ps1'
+        . $module
+        $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ('mcpw-detect-' + [guid]::NewGuid().ToString('N'))
+        $null = New-Item -ItemType Directory -Path (Join-Path $sandbox '.grepai') -Force
+        try {
+            # Both counters zero is the only genuinely-uninitialized state: no
+            # vectors exist, so there is nothing to search. Must be FALSE.
+            [System.IO.File]::WriteAllText((Join-Path $sandbox '.grepai\config.yaml'),
+                "embedder:`n  provider: ollama`n  model: nomic-embed-text`n", (New-Object System.Text.UTF8Encoding($false)))
+            $status = "grepai index status`nFiles indexed: 0`nTotal chunks: 0`nLast updated: 2026-09-20 14:31:22`nWatcher: not running"
+
+            $reason = ''
+            $ok = [bool](Test-GrepaiInitialized -Path $sandbox -Reason ([ref]$reason) -ProbeOutput $status)
+            $ok | Should -BeFalse
+            if (Resolve-McpDetectTool -Name 'grepai') {
+                $reason | Should -Match 'empty index'
+            } else {
+                $reason | Should -Match '^binary not found:'
+            }
+        } finally { Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'reports FALSE for graphenium when the graph exists but .grapheniumignore does not' {
         $module = Join-Path (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path 'Modules\watcher_mcp_detect.ps1'
         . $module
         $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ('mcpw-detect-' + [guid]::NewGuid().ToString('N'))
         $null = New-Item -ItemType Directory -Path (Join-Path $sandbox 'graphenium-out') -Force
         try {
             # The measured counter-example: a graph from an earlier `gm run`
-            # with no .graphenium/ workspace config. Must be FALSE.
+            # with no workspace marker at all (no .grapheniumignore). Must be
+            # FALSE - the marker is what `gm init` produces, the graph is not.
             [System.IO.File]::WriteAllText((Join-Path $sandbox 'graphenium-out\graph.json'),
                 '{"nodes":[{"id":1}],"edges":[]}', (New-Object System.Text.UTF8Encoding($false)))
 

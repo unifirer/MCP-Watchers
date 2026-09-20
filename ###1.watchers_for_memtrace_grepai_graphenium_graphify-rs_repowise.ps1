@@ -78,6 +78,16 @@ if (Test-Path -LiteralPath $watcherPatternsModule) { . $watcherPatternsModule }
 $watcherPaneScriptsModule = Join-Path $scriptDir 'Modules\watcher_pane_scripts.ps1'
 if (Test-Path -LiteralPath $watcherPaneScriptsModule) { . $watcherPaneScriptsModule }
 
+# MCP bootstrap ("make it so") for the six watched MCPs - beads mcpw-rkg.2/.3.
+# Provides Invoke-McpBootstrapForRepo plus one Initialize-<Mcp>ForRepo per MCP,
+# and is CALLED below before the first watcher spawns. Loaded here, after
+# $watchersWorkspaceRoot above, so the module resolves the caller's repository
+# rather than $scriptDir. Same guarded dot-source as the four loads above: a
+# MISSING module must degrade (the launcher still opens its pane grid) instead
+# of aborting the whole launch.
+$watcherMcpBootstrapModule = Join-Path $scriptDir 'Modules\watcher_mcp_bootstrap.ps1'
+if (Test-Path -LiteralPath $watcherMcpBootstrapModule) { . $watcherMcpBootstrapModule }
+
 # Single-instance guard (FIRST-WINS). Uses BOTH a Windows Named Mutex
 # (Global\VAD_Watchers_Launcher_<workspaceKey>, keyed per repo by mcpw-ybs.4)
 # for kernel-atomic ownership that auto-releases on
@@ -1305,6 +1315,45 @@ $grepaiLaunchErr = Join-Path $logsDir "grepai-launch.log.err"
 # has no such gate, finishes the scan at its own pace, and `grepai status --no-ui`
 # reports it as running. We still give the launch a generous wait to confirm the
 # process stays up (it should NOT exit on its own anymore), then proceed.
+
+# --- MCP bootstrap, BEFORE the first watcher spawns (bead mcpw-rkg.3) ----------
+# The ORDER is the point. A watcher that starts against an uninitialized repo
+# spends its first minutes reporting "no graph" / "no index" / "no agent entry"
+# and the operator cannot tell that from a real failure; initializing first means
+# every pane below starts against a repository that is already "made so".
+#
+# Repo-agnostic: the caller's repository, resolved at the top of this file
+# ($watchersWorkspaceRoot), never $scriptDir and never a literal path - the same
+# rule the panes and the teardown state follow (mcpw-ybs.1/.2).
+#
+# Degrades, and must: the module returns done|stamped|skipped rows and never
+# throws, so a bootstrap problem in a foreign repository is LOGGED here and the
+# launch continues. A missing module (guarded dot-source above) is the same
+# story - the launcher still opens its pane grid.
+if (Get-Command Invoke-McpBootstrapForRepo -ErrorAction SilentlyContinue) {
+    # Say so BEFORE the call: on a repository whose index has never been built
+    # the grepai step runs a real first scan, which is minutes of silence in the
+    # console otherwise (bead mcpw-rkg.4 bounds what happens to that scan once
+    # the watcher owns it).
+    Write-Host "[bootstrap] initializing the six watched MCPs for $watchersWorkspaceRoot before any watcher spawns (this can take minutes on a fresh index)..."
+    try {
+        $mcpBoot = Invoke-McpBootstrapForRepo -Path $watchersWorkspaceRoot
+        $mcpRows = @($mcpBoot.Results)
+        $mcpTally = ($mcpRows | ForEach-Object { "$($_.Mcp)=$($_.Status)" }) -join ' '
+        Write-Host ("[bootstrap] done {0}, stamped {1}, skipped {2} of {3}: {4}" -f `
+            $mcpBoot.Done, $mcpBoot.Stamped, $mcpBoot.Skipped, $mcpBoot.Total, $mcpTally)
+        # Only the SKIPPED rows are printed in full: they are the ones that need
+        # an operator's attention, and the reason names the failing sub-step.
+        foreach ($mcpRow in @($mcpRows | Where-Object { $_.Status -eq 'skipped' })) {
+            Write-Host ("[bootstrap] {0} skipped: {1}" -f $mcpRow.Mcp, $mcpRow.Reason)
+        }
+    } catch {
+        Write-Warning "MCP bootstrap failed: $($_.Exception.Message). Continuing - each watcher below degrades on its own."
+    }
+} else {
+    Write-Host "[bootstrap] Modules\watcher_mcp_bootstrap.ps1 not loaded - skipping MCP init (watchers start uninitialized)."
+}
+
 $grepaiLogsDir = Join-Path $env:LOCALAPPDATA 'grepai\logs'
 if (-not $grepaiOk) {
     Write-Host "Starting grepai watch (foreground, detached + hidden)..."
@@ -1644,6 +1693,57 @@ if ($grepaiOk) {
                 }
             } catch { }
         }
+        # mcpw-rkg.4: a FIRST scan must outlive the idle TTL, so the reap below is
+        # gated on this. The TTL itself is NOT touched: it exists to free the
+        # embedding model (~1.9 GB measured) once the index is genuinely quiet,
+        # and bead mcpw-6re's <lockfile>.idle / <lockfile>.sup semantics depend on
+        # it still firing exactly as it does today.
+        #
+        # WHY THE EXISTING CLOCKS ARE NOT ENOUGH: both of them (watch.
+        # last_index_time in .grepai/config.yaml, and the newest
+        # grepai-worktree-*.log) are written at scan/checkpoint boundaries, NOT
+        # per write. On a first scan of a large repository there is a stretch
+        # longer than the TTL in which neither clock moves while grepai is in
+        # fact busy writing chunks, so the supervisor reaped a LIVE scanning
+        # watcher; the scan restarted from zero and could therefore never finish
+        # (the measured "Files indexed: 0" that never becomes non-zero). A stale
+        # clock is not proof of an idle watcher.
+        #
+        # THE COMPLETION EVENT is grepai's OWN readiness marker, measured on this
+        # box 2026-09-20: <worktree>.ready is written 5 s AFTER the log line
+        # "Initial scan complete: 160 files indexed, 1249 chunks created (took
+        # 4m34.08s)", and it NAMES the watcher - the file reads "ready" and then
+        # that watcher's PID on the next line. So a .ready naming the PID this
+        # supervisor tracks is proof that the watcher running NOW has finished its
+        # first scan; anything else means the first scan is still running and the
+        # TTL must not fire.
+        #
+        # A .ready left by a previous instance names a DIFFERENT PID and so cannot
+        # lift the hold - the same freshness rule mcpw-3si applies to
+        # last_index_time. Matching the PID (not the file mtime, not a derived
+        # worktree id) also means a sibling repository's marker can never lift OUR
+        # hold, and needs no worktree-id derivation.
+        #
+        # DEGRADES: no .ready anywhere (a grepai build that writes none) returns
+        # $false, which leaves the TTL exactly as it was before this bead. NEVER
+        # throws - "unknown" must not silently disable the memory saving.
+        function Test-GrepaiFirstScanInProgress {
+            param([string]$LogDir, [int]$WatcherPid)
+            if ($WatcherPid -le 0) { return $false }
+            if (-not $LogDir) { $LogDir = Join-Path $env:LOCALAPPDATA 'grepai\logs' }
+            try {
+                $markers = @(Get-ChildItem -Path $LogDir -Filter 'grepai-worktree-*.ready' -ErrorAction SilentlyContinue)
+                if ($markers.Count -eq 0) { return $false }
+                foreach ($m in $markers) {
+                    $txt = Get-Content -LiteralPath $m.FullName -Raw -ErrorAction SilentlyContinue
+                    if ([string]::IsNullOrEmpty($txt)) { continue }
+                    # Digit-boundary match, so a marker naming 3546 never answers
+                    # for PID 35460.
+                    if ($txt -match "(?<![0-9])$WatcherPid(?![0-9])") { return $false }
+                }
+                return $true
+            } catch { return $false }
+        }
         # VAD-7qf0: the pane's single-healer gate cannot trust the launcher PID
         # (the idle reap RETURNS this supervisor while the launcher keeps
         # running, so a live launcher PID does not mean a live supervisor).
@@ -1870,7 +1970,23 @@ if ($grepaiOk) {
                                     $watcherAgeMin = [math]::Round(((Get-Date) - $trackedGrepaiStart).TotalMinutes, 1)
                                     if ($watcherAgeMin -lt $idleMin) { $idleMin = $watcherAgeMin }
                                 }
-                                if ($idleMin -ge $idleTtlMin) {
+                                # mcpw-rkg.4: the TTL above measures IDLENESS, and a
+                                # first scan is not idle even when neither clock has
+                                # moved for a TTL's worth of minutes. Deferring here
+                                # writes NO <lockfile>.idle and does NOT return, so
+                                # this supervisor keeps ticking, <lockfile>.sup keeps
+                                # refreshing, and the pane's Test-GrepaiReapPending /
+                                # Test-SupervisorAlive pair (mcpw-6re, VAD-7qf0) sees
+                                # exactly what it sees today: a live supervisor and no
+                                # reap marker. The deliberate reap below is unchanged,
+                                # so a real reap still writes <lockfile>.idle AFTER the
+                                # <lockfile>.sup stamp of the same tick - the relative
+                                # order mcpw-6re discriminates on.
+                                $firstScanRunning = Test-GrepaiFirstScanInProgress -LogDir (Join-Path $env:LOCALAPPDATA 'grepai\logs') -WatcherPid $trackedGrepaiPid
+                                if ($firstScanRunning -and $idleMin -ge $idleTtlMin) {
+                                    Write-SupLog "grepai idle $idleMin min (TTL $idleTtlMin min) but the FIRST scan is still running (no .ready for PID $trackedGrepaiPid) - reap deferred, supervisor staying (mcpw-rkg.4)"
+                                }
+                                if ((-not $firstScanRunning) -and $idleMin -ge $idleTtlMin) {
                                     # mcpw-qfy RC1: all three exits below are
                                     # intentional idle stops (no relaunch), so
                                     # park the grepai pane on IDLE via the

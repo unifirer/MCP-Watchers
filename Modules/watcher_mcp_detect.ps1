@@ -3,8 +3,8 @@
 #
 # WHY THIS EXISTS
 # ---------------
-# The launcher (###1.watchers_....ps1) must bootstrap all six watched MCPs in
-# ANY repository it is started from, and a bootstrap step must never re-run an
+# The launcher (###1.watchers_....ps1) must provision all six watched MCPs in
+# ANY repository it is started from, and a provision step must never re-run an
 # expensive build it does not need: `gm run`, `graphify-rs build`, `graft
 # build` and `repowise update --full` all take minutes. This module is the
 # DETECTION LAYER ONLY - one probe per MCP answering "is this repo already
@@ -15,7 +15,7 @@
 # --------------------------------------------
 #   Test-<Mcp>Initialized -Path <repoRoot> [-Reason ([ref]$s)] [-ProbeOutput <text>]
 #     -> [bool]   $true  = initialized, the caller may skip the build
-#                 $false = not initialized (or cannot tell) -> bootstrap runs
+#                 $false = not initialized (or cannot tell) -> provision runs
 #     -> -Reason  receives a one-line human-readable why, for the log. Pass a
 #                 [ref] to a string:  $r = ''; Test-X -Path $p -Reason ([ref]$r)
 #                 Omitting it entirely is fine and is a silent no-op - a probe
@@ -238,8 +238,8 @@ function Get-GrepaiIndexSignal {
         true when EITHER counter is > 0, so a future grepai that does compute
         files still satisfies the probe, and this stays honest about both.
 
-        BOTH the detection probe (Test-GrepaiInitialized) and the bootstrap
-        provisioner (Initialize-GrepaiForRepo) call THIS function, so the two can
+        BOTH the detection probe (Test-GrepaiInitialized) and the provisioner
+        (Initialize-GrepaiForRepo) call THIS function, so the two can
         never disagree about what "indexed" means.
     #>
     param([string] $Text)
@@ -276,7 +276,7 @@ function Test-GrepaiInitialized {
         backend localhost:16334) and `grepai status` printed "Files indexed: 0"
         next to "Total chunks: 1399". The file count is never computed by the
         tool, so keying on it made this probe unsatisfiable forever - which is
-        what kept the bootstrap first scan re-running on every launch. The chunk
+        what kept the provision first scan re-running on every launch. The chunk
         count is computed, so it is the signal.
 
         The liveness clock is deliberately NOT a signal. `watch.last_index_time`
@@ -308,7 +308,7 @@ function Test-GrepaiInitialized {
     }
     if (-not $text) { Set-McpDetectReason $Reason 'grepai status produced no output'; return $false }
 
-    # SHARED PARSE: Get-GrepaiIndexSignal is called by the bootstrap provisioner
+    # SHARED PARSE: Get-GrepaiIndexSignal is called by the provision layer
     # too (Initialize-GrepaiForRepo), so the two cannot drift.
     $sig = Get-GrepaiIndexSignal -Text $text
     if (-not $sig.Indexed) {
@@ -343,7 +343,7 @@ function Test-GrapheniumInitialized {
 
         Signal 2 therefore keys on `.grapheniumignore`, matching the artifact
         the provisioner's `gm init` actually produces. A probe that demanded
-        `.graphenium/` could never return true and the bootstrap would never
+        `.graphenium/` could never return true and the provision would never
         converge. The graph remains a separate requirement: it is `gm run`,
         which the launcher's own watcher owns.
     #>
@@ -547,7 +547,7 @@ function Get-McpInitializationReport {
     .SYNOPSIS
         Run all six probes against one repository and return one row per MCP.
     .DESCRIPTION
-        The shape the bootstrap layer (mcpw-rkg.2) consumes: a fixed-order list
+        The shape the provision layer (mcpw-rkg.2) consumes: a fixed-order list
         of objects with .Mcp, .Ok and .Reason. Never throws - a probe that
         cannot answer reports Ok=$false with its reason, which is exactly the
         "warn and skip" input the launcher wants for a foreign repo that does

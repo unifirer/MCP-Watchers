@@ -1,5 +1,5 @@
-# Modules/watcher_mcp_bootstrap.ps1
-# MCP initialization ("bootstrap") layer (bead mcpw-rkg.2, epic mcpw-rkg).
+# Modules/watcher_mcp_provision.ps1
+# MCP initialization ("provision") layer (bead mcpw-rkg.2, epic mcpw-rkg).
 #
 # WHY THIS EXISTS
 # ---------------
@@ -7,12 +7,12 @@
 # repository it is started from - a foreign repo has none of the per-repo
 # artifacts the tools need. This module runs the six init steps. It is the
 # WRITE side of the pair whose READ side is Modules/watcher_mcp_detect.ps1
-# (mcpw-rkg.1): detection answers "is this repo already initialized?", bootstrap
+# (mcpw-rkg.1): detection answers "is this repo already initialized?", provision
 # answers "then make it so, or explain why it cannot be".
 #
 # CONTRACT
 # --------
-#   Invoke-McpBootstrapForRepo -Path <repoRoot> [...]
+#   Invoke-McpProvisionForRepo -Path <repoRoot> [...]
 #     -> one summary object the launcher can log (never throws):
 #        .Path .StateDir .Started .Finished .Total .Done .Stamped .Skipped
 #        .Results[]  where each row is
@@ -26,7 +26,7 @@
 #                     absent, optional input missing, launch failure, timeout, a
 #                     non-zero exit, or an exit 0 the post-command probe refused
 #                     to confirm. There is no 'failed' status on purpose - a
-#                     bootstrap problem degrades to a logged skip and the other
+#                     provision problem degrades to a logged skip and the other
 #                     five MCPs still get their chance.
 #
 #   Initialize-<Mcp>ForRepo -Path <repoRoot> [-StateDir] [-ToolPath] [-Force]
@@ -41,10 +41,10 @@
 #     one key inside <repo>/.mcpw-bootstrap/state.json. The stamp is checked
 #     BEFORE anything else, so a second run re-runs no build and spawns no
 #     probe. -Force re-runs everything. The tests assert on the stamp file.
-#   * THE STAMP IS EARNED, NEVER ASSUMED. Set-McpBootstrapStamp is called only
+#   * THE STAMP IS EARNED, NEVER ASSUMED. Set-McpProvisionStamp is called only
 #     after the matching Test-<Mcp>Initialized probe has confirmed the
 #     repository is initialized - either BEFORE the command (already done) or
-#     AFTER it (Get-McpBootstrapPostCommandGate, bead mcpw-0zo.1). An exit code
+#     AFTER it (Get-McpProvisionPostCommandGate, bead mcpw-0zo.1). An exit code
 #     of 0 is never on its own enough: gm init exits 0 without the graph, graft
 #     build exits 0 without --deep, and a stamp on the exit code alone records a
 #     repository as provisioned that never was, after which every launch skips
@@ -57,12 +57,12 @@
 #     `graphify-rs build --no-llm`). No Read-Host, no -Confirm, anywhere.
 #   * DEGRADES. A missing binary, a missing optional input, a launch failure, a
 #     timeout or a non-zero exit all become a 'skipped' row with a one-line
-#     reason. A bootstrap problem can never abort the launcher.
+#     reason. A provision problem can never abort the launcher.
 #   * REPO-AGNOSTIC. Every path is derived from -Path. There is no absolute
 #     reference to any particular repository (the tests assert that).
 #   * ORDERED CHEAP-FIRST: config-only steps (gm init, repowise agents add)
 #     before build steps (graphify-rs, graft) before index steps (memtrace,
-#     grepai). See Get-McpBootstrapPlan.
+#     grepai). See Get-McpProvisionPlan.
 #
 # MEASURED FACTS ENCODED (2026-09-20 - do not re-derive)
 # ------------------------------------------------------
@@ -119,13 +119,13 @@
 # detection module), matching Modules/watcher_teardown.ps1. No launches, no
 # writes, at load time.
 
-$mcpBootstrapDetectModule = Join-Path $PSScriptRoot 'watcher_mcp_detect.ps1'
-if (Test-Path -LiteralPath $mcpBootstrapDetectModule) { . $mcpBootstrapDetectModule }
+$mcpProvisionDetectModule = Join-Path $PSScriptRoot 'watcher_mcp_detect.ps1'
+if (Test-Path -LiteralPath $mcpProvisionDetectModule) { . $mcpProvisionDetectModule }
 
 # ---------------------------------------------------------------------------
 # root + state (stamp) plumbing
 # ---------------------------------------------------------------------------
-function Get-McpBootstrapRoot {
+function Get-McpProvisionRoot {
     # Normalise the caller's -Path. Mirrors Get-McpDetectRoot's trailing-
     # separator rule, and falls back to the detect module's implementation when
     # it is loaded so the two layers cannot disagree about what the root is.
@@ -140,40 +140,40 @@ function Get-McpBootstrapRoot {
     return $loc.TrimEnd('\', '/')
 }
 
-function Get-McpBootstrapStateDir {
+function Get-McpProvisionStateDir {
     <#
     .SYNOPSIS
-        Where the bootstrap stamp for one repository lives.
+        Where the provision stamp for one repository lives.
     .DESCRIPTION
         Resolution order:
           1. the explicit -StateDir argument (tests, and a launcher that wants
              its state elsewhere)
-          2. MCPW_BOOTSTRAP_STATE_DIR
+          2. MCPW_PROVISION_STATE_DIR
           3. <repo>/.mcpw-bootstrap - the default. Rooted at -Path, so the
              stamp travels with the repository it describes and two repos on
              one machine can never share a stamp.
     #>
     param([string]$Path, [string]$StateDir)
     if ($StateDir) { return $StateDir.TrimEnd('\', '/') }
-    if ($env:MCPW_BOOTSTRAP_STATE_DIR) { return $env:MCPW_BOOTSTRAP_STATE_DIR.TrimEnd('\', '/') }
-    $root = Get-McpBootstrapRoot -Path $Path
+    if ($env:MCPW_PROVISION_STATE_DIR) { return $env:MCPW_PROVISION_STATE_DIR.TrimEnd('\', '/') }
+    $root = Get-McpProvisionRoot -Path $Path
     if (-not $root) { return '' }
     return (Join-Path $root '.mcpw-bootstrap')
 }
 
-function Get-McpBootstrapStateFile {
+function Get-McpProvisionStateFile {
     param([string]$StateDir)
     if (-not $StateDir) { return '' }
     return (Join-Path $StateDir 'state.json')
 }
 
-function Read-McpBootstrapState {
+function Read-McpProvisionState {
     # The stamp file as a hashtable keyed by MCP name. A missing, empty or
     # corrupt file reads as an empty hashtable - never throws, so a truncated
-    # stamp can only cause one extra (safe) bootstrap run, never a crash.
+    # stamp can only cause one extra (safe) provision run, never a crash.
     param([string]$StateDir)
     $state = @{}
-    $file = Get-McpBootstrapStateFile -StateDir $StateDir
+    $file = Get-McpProvisionStateFile -StateDir $StateDir
     if (-not $file) { return $state }
     if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return $state }
     $doc = $null
@@ -184,14 +184,14 @@ function Read-McpBootstrapState {
     return $state
 }
 
-function Test-McpBootstrapStamp {
-    # Is there a recorded successful bootstrap for this MCP in this repo? This
+function Test-McpProvisionStamp {
+    # Is there a recorded successful provision for this MCP in this repo? This
     # is the idempotence gate, and it is deliberately the FIRST thing every
     # initializer checks: it costs one file read and spawns nothing.
     param([string]$Path, [string]$Mcp, [string]$StateDir)
     if (-not $Mcp) { return $false }
-    $dir = Get-McpBootstrapStateDir -Path $Path -StateDir $StateDir
-    $state = Read-McpBootstrapState -StateDir $dir
+    $dir = Get-McpProvisionStateDir -Path $Path -StateDir $StateDir
+    $state = Read-McpProvisionState -StateDir $dir
     if (-not $state.ContainsKey($Mcp)) { return $false }
     $entry = $state[$Mcp]
     if (-not $entry) { return $false }
@@ -199,8 +199,8 @@ function Test-McpBootstrapStamp {
     return $true
 }
 
-function Set-McpBootstrapStamp {
-    # Record a successful bootstrap for one MCP. Written temp-then-move so a
+function Set-McpProvisionStamp {
+    # Record a successful provision for one MCP. Written temp-then-move so a
     # crash mid-write cannot leave a half-parsed stamp that would be read as
     # "not initialized" forever. Returns $true when the stamp is on disk.
     param(
@@ -211,7 +211,7 @@ function Set-McpBootstrapStamp {
         [string]$StateDir
     )
     if (-not $Mcp) { return $false }
-    $dir = Get-McpBootstrapStateDir -Path $Path -StateDir $StateDir
+    $dir = Get-McpProvisionStateDir -Path $Path -StateDir $StateDir
     if (-not $dir) { return $false }
     try {
         if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
@@ -219,7 +219,7 @@ function Set-McpBootstrapStamp {
         }
     } catch { return $false }
 
-    $state = Read-McpBootstrapState -StateDir $dir
+    $state = Read-McpProvisionState -StateDir $dir
     $state[$Mcp] = [pscustomobject]@{
         At     = (Get-Date).ToString('o')
         Tool   = [string]$Tool
@@ -245,13 +245,13 @@ function Set-McpBootstrapStamp {
 # ---------------------------------------------------------------------------
 # plan + command surface
 # ---------------------------------------------------------------------------
-function Get-McpBootstrapPlan {
+function Get-McpProvisionPlan {
     <#
     .SYNOPSIS
-        The six bootstrap steps in the order they must run.
+        The six provision steps in the order they must run.
     .DESCRIPTION
         Ordered CHEAP-FIRST, which is the ordering contract the launcher relies
-        on (bootstrap finishes before any watcher spawns - mcpw-rkg.3):
+        on (provision finishes before any watcher spawns - mcpw-rkg.3):
           Phase 'config' - gm init, repowise agents add   (seconds, no index)
           Phase 'build'  - graphify-rs (optional), graft build
           Phase 'index'  - memtrace index, grepai first scan (minutes)
@@ -267,10 +267,10 @@ function Get-McpBootstrapPlan {
     )
 }
 
-function Get-McpBootstrapArgv {
+function Get-McpProvisionArgv {
     <#
     .SYNOPSIS
-        The exact argument vector for one bootstrap step.
+        The exact argument vector for one provision step.
     .DESCRIPTION
         One place for every command line, so the non-interactive flags are
         assertable in a test instead of being buried in six function bodies.
@@ -321,7 +321,7 @@ function Get-McpBootstrapArgv {
     return @()
 }
 
-function Resolve-McpBootstrapTool {
+function Resolve-McpProvisionTool {
     # Resolve a runnable command for a tool. An explicit -ToolPath wins and is
     # used verbatim: that is how repowise is pinned to its absolute uv-tool
     # binary, and how the tests inject a fake tool. A supplied -ToolPath that
@@ -346,7 +346,7 @@ function Resolve-McpBootstrapTool {
 # ---------------------------------------------------------------------------
 # process runner
 # ---------------------------------------------------------------------------
-function ConvertTo-McpBootstrapArgLine {
+function ConvertTo-McpProvisionArgLine {
     # Join an argument vector into one command line, quoting only what needs it.
     param([string[]]$Arguments)
     $parts = @()
@@ -363,10 +363,10 @@ function ConvertTo-McpBootstrapArgLine {
     return ($parts -join ' ')
 }
 
-function Invoke-McpBootstrapCommand {
+function Invoke-McpProvisionCommand {
     <#
     .SYNOPSIS
-        Run one bootstrap command, bounded and non-interactive. Never throws.
+        Run one provision command, bounded and non-interactive. Never throws.
     .DESCRIPTION
         Returns an object:
             .Launched  [bool]   the child actually started
@@ -414,14 +414,14 @@ function Invoke-McpBootstrapCommand {
         if ($ext -eq '.cmd' -or $ext -eq '.bat') {
             $exe = if ($env:ComSpec) { $env:ComSpec } else { 'cmd.exe' }
             $inner = '"' + $FilePath + '"'
-            if ($argv.Count -gt 0) { $inner += ' ' + (ConvertTo-McpBootstrapArgLine -Arguments $argv) }
+            if ($argv.Count -gt 0) { $inner += ' ' + (ConvertTo-McpProvisionArgLine -Arguments $argv) }
             $argLine = '/d /s /c "' + $inner + '"'
         } elseif ($ext -eq '.ps1') {
             $exe = 'powershell.exe'
             $argLine = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $FilePath + '"'
-            if ($argv.Count -gt 0) { $argLine += ' ' + (ConvertTo-McpBootstrapArgLine -Arguments $argv) }
+            if ($argv.Count -gt 0) { $argLine += ' ' + (ConvertTo-McpProvisionArgLine -Arguments $argv) }
         } else {
-            $argLine = ConvertTo-McpBootstrapArgLine -Arguments $argv
+            $argLine = ConvertTo-McpProvisionArgLine -Arguments $argv
         }
 
         $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -473,7 +473,7 @@ function Invoke-McpBootstrapCommand {
     }
 }
 
-function Get-McpBootstrapFailureReason {
+function Get-McpProvisionFailureReason {
     # One-line "why did this step not complete" for the log. Truncated on
     # purpose: a tool that dumps 200 lines of stack trace must not blow up the
     # launcher's log line.
@@ -498,7 +498,7 @@ function Get-McpBootstrapFailureReason {
 # ---------------------------------------------------------------------------
 # shared step prologue
 # ---------------------------------------------------------------------------
-function New-McpBootstrapRow {
+function New-McpProvisionRow {
     param(
         [string]$Mcp,
         [string]$Status,
@@ -515,7 +515,7 @@ function New-McpBootstrapRow {
     }
 }
 
-function Start-McpBootstrapStep {
+function Start-McpProvisionStep {
     <#
     .SYNOPSIS
         The prologue every initializer shares.
@@ -536,41 +536,41 @@ function Start-McpBootstrapStep {
         [string]$ToolPath,
         [switch]$Force
     )
-    $root = Get-McpBootstrapRoot -Path $Path
-    $dir  = Get-McpBootstrapStateDir -Path $root -StateDir $StateDir
+    $root = Get-McpProvisionRoot -Path $Path
+    $dir  = Get-McpProvisionStateDir -Path $root -StateDir $StateDir
     $out  = @{ Root = $root; StateDir = $dir; Tool = ''; Skip = $null }
 
     if (-not $Force) {
-        if (Test-McpBootstrapStamp -Path $root -Mcp $Mcp -StateDir $dir) {
-            $out.Skip = New-McpBootstrapRow -Mcp $Mcp -Status 'stamped' `
-                -Reason 'already bootstrapped (stamp present; use -Force to re-run)' `
+        if (Test-McpProvisionStamp -Path $root -Mcp $Mcp -StateDir $dir) {
+            $out.Skip = New-McpProvisionRow -Mcp $Mcp -Status 'stamped' `
+                -Reason 'already provisioned (stamp present; use -Force to re-run)' `
                 -Tool '' -Stamp $dir
             return $out
         }
     }
     if (-not $root) {
-        $out.Skip = New-McpBootstrapRow -Mcp $Mcp -Status 'skipped' `
+        $out.Skip = New-McpProvisionRow -Mcp $Mcp -Status 'skipped' `
             -Reason 'no repository path supplied' -Tool '' -Stamp $dir
         return $out
     }
     if (-not (Test-Path -LiteralPath $root -PathType Container)) {
-        $out.Skip = New-McpBootstrapRow -Mcp $Mcp -Status 'skipped' `
+        $out.Skip = New-McpProvisionRow -Mcp $Mcp -Status 'skipped' `
             -Reason "path not found: $root" -Tool '' -Stamp $dir
         return $out
     }
 
-    $tool = Resolve-McpBootstrapTool -Name $ToolName -ToolPath $ToolPath
+    $tool = Resolve-McpProvisionTool -Name $ToolName -ToolPath $ToolPath
     $out.Tool = $tool
     if (-not $tool) {
         $reason = if ($ToolPath) { "binary not found: $ToolPath" } else { "binary not found: $ToolName" }
-        $out.Skip = New-McpBootstrapRow -Mcp $Mcp -Status 'skipped' `
+        $out.Skip = New-McpProvisionRow -Mcp $Mcp -Status 'skipped' `
             -Reason $reason -Tool '' -Stamp $dir
         return $out
     }
     return $out
 }
 
-function Get-McpBootstrapAlreadyReason {
+function Get-McpProvisionAlreadyReason {
     # Run the detection module's probe for one MCP. Returns a hashtable
     # @{ Ok = [bool]; Reason = <text> }. Never throws: a probe that cannot
     # answer counts as "not initialized", which is the safe direction.
@@ -599,7 +599,7 @@ function Get-McpBootstrapAlreadyReason {
     return @{ Ok = $ok; Reason = $reason }
 }
 
-function Get-McpBootstrapPostCommandGate {
+function Get-McpProvisionPostCommandGate {
     <#
     .SYNOPSIS
         The post-command gate: did the command that just exited 0 actually
@@ -615,7 +615,7 @@ function Get-McpBootstrapPostCommandGate {
         unprovisioned repo.
 
         So the SAME probe the pre-command gate uses
-        (Get-McpBootstrapAlreadyReason, which dispatches to the matching
+        (Get-McpProvisionAlreadyReason, which dispatches to the matching
         Test-<Mcp>Initialized) is asked a SECOND time, after the command, and
         the caller stamps ONLY on a confirmed Ok. When it is not Ok the returned
         Reason names the probe's own verdict, prefixed with the command that
@@ -632,7 +632,7 @@ function Get-McpBootstrapPostCommandGate {
         [string]$Label,
         [string]$ProbeOutput
     )
-    $d = Get-McpBootstrapAlreadyReason -Mcp $Mcp -Root $Root -ProbeOutput $ProbeOutput
+    $d = Get-McpProvisionAlreadyReason -Mcp $Mcp -Root $Root -ProbeOutput $ProbeOutput
     if ($d.Ok) { return @{ Ok = $true; Reason = [string]$d.Reason } }
     $why = [string]$d.Reason
     if (-not $why) { $why = 'the probe reports the repository is still not initialized' }
@@ -651,7 +651,7 @@ function Initialize-GrapheniumForRepo {
         the only artifact it produces. Measured in a scratch repo, it does NOT
         create the `.graphenium/` directory; gm only ever READS
         `.graphenium/policy.json` from there. The root is always passed
-        explicitly because the command defaults to "." and the bootstrap must
+        explicitly because the command defaults to "." and the provision must
         not depend on the caller's cwd.
 
         Detection wants BOTH `.grapheniumignore` and `graphenium-out/graph.json`
@@ -659,7 +659,7 @@ function Initialize-GrapheniumForRepo {
         agree). This step can only claim the config half - the graph is
         `gm run`, which the launcher's own watcher owns, and running the full
         pipeline here would be an expensive duplicate. So the post-command gate
-        (Get-McpBootstrapPostCommandGate) sees the config but not the graph and
+        (Get-McpProvisionPostCommandGate) sees the config but not the graph and
         reports the step 'skipped' with the probe's verdict rather than stamping
         it; that is the documented division of labour, not a probe/tool
         mismatch. The step still converges: once the watcher has run gm the
@@ -672,19 +672,19 @@ function Initialize-GrapheniumForRepo {
         [switch]$Force,
         [int]$TimeoutMs = 1800000
     )
-    $pre = Start-McpBootstrapStep -Mcp 'graphenium' -ToolName 'gm' -Path $Path `
+    $pre = Start-McpProvisionStep -Mcp 'graphenium' -ToolName 'gm' -Path $Path `
                -StateDir $StateDir -ToolPath $ToolPath -Force:$Force
     if ($pre.Skip) { return $pre.Skip }
 
-    $d = Get-McpBootstrapAlreadyReason -Mcp 'graphenium' -Root $pre.Root
+    $d = Get-McpProvisionAlreadyReason -Mcp 'graphenium' -Root $pre.Root
     if ($d.Ok) {
-        $null = Set-McpBootstrapStamp -Path $pre.Root -Mcp 'graphenium' -Detail $d.Reason -Tool $pre.Tool -StateDir $pre.StateDir
-        return New-McpBootstrapRow -Mcp 'graphenium' -Status 'stamped' `
+        $null = Set-McpProvisionStamp -Path $pre.Root -Mcp 'graphenium' -Detail $d.Reason -Tool $pre.Tool -StateDir $pre.StateDir
+        return New-McpProvisionRow -Mcp 'graphenium' -Status 'stamped' `
             -Reason "already initialized: $($d.Reason)" -Tool $pre.Tool -Stamp $pre.StateDir
     }
 
-    $r = Invoke-McpBootstrapCommand -FilePath $pre.Tool `
-            -Arguments (Get-McpBootstrapArgv -Mcp 'graphenium' -Path $pre.Root) `
+    $r = Invoke-McpProvisionCommand -FilePath $pre.Tool `
+            -Arguments (Get-McpProvisionArgv -Mcp 'graphenium' -Path $pre.Root) `
             -WorkingDirectory $pre.Root -TimeoutMs $TimeoutMs
     if ($r.Launched -and -not $r.TimedOut -and $r.ExitCode -eq 0) {
         # Exit 0 is NOT proof (bead mcpw-0zo.1). gm init writes only
@@ -695,18 +695,18 @@ function Initialize-GrapheniumForRepo {
         # done; the step then re-runs gm init (cheap, idempotent) on the next
         # launch and earns its stamp as soon as the watcher has produced the
         # graph.
-        $g = Get-McpBootstrapPostCommandGate -Mcp 'graphenium' -Root $pre.Root -Label 'gm init'
+        $g = Get-McpProvisionPostCommandGate -Mcp 'graphenium' -Root $pre.Root -Label 'gm init'
         if (-not $g.Ok) {
-            return New-McpBootstrapRow -Mcp 'graphenium' -Status 'skipped' `
+            return New-McpProvisionRow -Mcp 'graphenium' -Status 'skipped' `
                 -Reason $g.Reason -Tool $pre.Tool -Stamp $pre.StateDir
         }
-        $null = Set-McpBootstrapStamp -Path $pre.Root -Mcp 'graphenium' -Detail 'gm init completed (wrote .grapheniumignore)' -Tool $pre.Tool -StateDir $pre.StateDir
-        return New-McpBootstrapRow -Mcp 'graphenium' -Status 'done' `
+        $null = Set-McpProvisionStamp -Path $pre.Root -Mcp 'graphenium' -Detail 'gm init completed (wrote .grapheniumignore)' -Tool $pre.Tool -StateDir $pre.StateDir
+        return New-McpProvisionRow -Mcp 'graphenium' -Status 'done' `
             -Reason 'gm init wrote .grapheniumignore - it does NOT create .graphenium/ (graph is gm run, owned by the launcher watcher)' `
             -Tool $pre.Tool -Stamp $pre.StateDir
     }
-    return New-McpBootstrapRow -Mcp 'graphenium' -Status 'skipped' `
-        -Reason (Get-McpBootstrapFailureReason -Result $r -TimeoutMs $TimeoutMs -Label 'gm init') `
+    return New-McpProvisionRow -Mcp 'graphenium' -Status 'skipped' `
+        -Reason (Get-McpProvisionFailureReason -Result $r -TimeoutMs $TimeoutMs -Label 'gm init') `
         -Tool $pre.Tool -Stamp $pre.StateDir
 }
 
@@ -740,35 +740,35 @@ function Initialize-RepowiseForRepo {
     if (-not $ToolPath -and $env:APPDATA) {
         $ToolPath = Join-Path $env:APPDATA 'uv\tools\repowise\Scripts\repowise.exe'
     }
-    $pre = Start-McpBootstrapStep -Mcp 'repowise' -ToolName 'repowise' -Path $Path `
+    $pre = Start-McpProvisionStep -Mcp 'repowise' -ToolName 'repowise' -Path $Path `
                -StateDir $StateDir -ToolPath $ToolPath -Force:$Force
     if ($pre.Skip) { return $pre.Skip }
 
-    $d = Get-McpBootstrapAlreadyReason -Mcp 'repowise' -Root $pre.Root
+    $d = Get-McpProvisionAlreadyReason -Mcp 'repowise' -Root $pre.Root
     if ($d.Ok) {
-        $null = Set-McpBootstrapStamp -Path $pre.Root -Mcp 'repowise' -Detail $d.Reason -Tool $pre.Tool -StateDir $pre.StateDir
-        return New-McpBootstrapRow -Mcp 'repowise' -Status 'stamped' `
+        $null = Set-McpProvisionStamp -Path $pre.Root -Mcp 'repowise' -Detail $d.Reason -Tool $pre.Tool -StateDir $pre.StateDir
+        return New-McpProvisionRow -Mcp 'repowise' -Status 'stamped' `
             -Reason "already initialized: $($d.Reason)" -Tool $pre.Tool -Stamp $pre.StateDir
     }
 
-    $r = Invoke-McpBootstrapCommand -FilePath $pre.Tool `
-            -Arguments (Get-McpBootstrapArgv -Mcp 'repowise' -Path $pre.Root) `
+    $r = Invoke-McpProvisionCommand -FilePath $pre.Tool `
+            -Arguments (Get-McpProvisionArgv -Mcp 'repowise' -Path $pre.Root) `
             -WorkingDirectory $pre.Root -TimeoutMs $TimeoutMs
     if ($r.Launched -and -not $r.TimedOut -and $r.ExitCode -eq 0) {
         # Exit 0 is NOT proof (bead mcpw-0zo.1): the probe still has to see the
         # Claude Code MCP entry registered.
-        $g = Get-McpBootstrapPostCommandGate -Mcp 'repowise' -Root $pre.Root -Label 'repowise agents add'
+        $g = Get-McpProvisionPostCommandGate -Mcp 'repowise' -Root $pre.Root -Label 'repowise agents add'
         if (-not $g.Ok) {
-            return New-McpBootstrapRow -Mcp 'repowise' -Status 'skipped' `
+            return New-McpProvisionRow -Mcp 'repowise' -Status 'skipped' `
                 -Reason $g.Reason -Tool $pre.Tool -Stamp $pre.StateDir
         }
-        $null = Set-McpBootstrapStamp -Path $pre.Root -Mcp 'repowise' -Detail 'agents add completed' -Tool $pre.Tool -StateDir $pre.StateDir
-        return New-McpBootstrapRow -Mcp 'repowise' -Status 'done' `
+        $null = Set-McpProvisionStamp -Path $pre.Root -Mcp 'repowise' -Detail 'agents add completed' -Tool $pre.Tool -StateDir $pre.StateDir
+        return New-McpProvisionRow -Mcp 'repowise' -Status 'done' `
             -Reason 'repowise agents add --target claude-code --scope project --yes' `
             -Tool $pre.Tool -Stamp $pre.StateDir
     }
-    return New-McpBootstrapRow -Mcp 'repowise' -Status 'skipped' `
-        -Reason (Get-McpBootstrapFailureReason -Result $r -TimeoutMs $TimeoutMs -Label 'repowise agents add') `
+    return New-McpProvisionRow -Mcp 'repowise' -Status 'skipped' `
+        -Reason (Get-McpProvisionFailureReason -Result $r -TimeoutMs $TimeoutMs -Label 'repowise agents add') `
         -Tool $pre.Tool -Stamp $pre.StateDir
 }
 
@@ -789,7 +789,7 @@ function Initialize-GraphifyRsForRepo {
         When the config IS absent the reason is a single clear line naming the
         file, and the summary row carries Optional=$true so the launcher does
         not warn. A genuinely absent BINARY is reported first and honestly as
-        "binary not found: graphify-rs" (Start-McpBootstrapStep resolves the
+        "binary not found: graphify-rs" (Start-McpProvisionStep resolves the
         tool before the config gate).
 
         Rebuild argv comes from the launcher's own Get-GraphifyRebuildArgs, which
@@ -802,41 +802,41 @@ function Initialize-GraphifyRsForRepo {
         [switch]$Force,
         [int]$TimeoutMs = 1800000
     )
-    $pre = Start-McpBootstrapStep -Mcp 'graphify-rs' -ToolName 'graphify-rs' -Path $Path `
+    $pre = Start-McpProvisionStep -Mcp 'graphify-rs' -ToolName 'graphify-rs' -Path $Path `
                -StateDir $StateDir -ToolPath $ToolPath -Force:$Force
     if ($pre.Skip) { return $pre.Skip }
 
     if (-not (Test-Path -LiteralPath (Join-Path $pre.Root 'graphify-rs.toml') -PathType Leaf)) {
-        return New-McpBootstrapRow -Mcp 'graphify-rs' -Status 'skipped' `
+        return New-McpProvisionRow -Mcp 'graphify-rs' -Status 'skipped' `
             -Reason 'optional: graphify-rs.toml missing (bead mcpw-01g, P3) - nothing to configure' `
             -Tool $pre.Tool -Stamp $pre.StateDir
     }
 
-    $d = Get-McpBootstrapAlreadyReason -Mcp 'graphify-rs' -Root $pre.Root
+    $d = Get-McpProvisionAlreadyReason -Mcp 'graphify-rs' -Root $pre.Root
     if ($d.Ok) {
-        $null = Set-McpBootstrapStamp -Path $pre.Root -Mcp 'graphify-rs' -Detail $d.Reason -Tool $pre.Tool -StateDir $pre.StateDir
-        return New-McpBootstrapRow -Mcp 'graphify-rs' -Status 'stamped' `
+        $null = Set-McpProvisionStamp -Path $pre.Root -Mcp 'graphify-rs' -Detail $d.Reason -Tool $pre.Tool -StateDir $pre.StateDir
+        return New-McpProvisionRow -Mcp 'graphify-rs' -Status 'stamped' `
             -Reason "already initialized: $($d.Reason)" -Tool $pre.Tool -Stamp $pre.StateDir
     }
 
     # --path . resolves against the child's cwd, so the cwd must be the root.
-    $r = Invoke-McpBootstrapCommand -FilePath $pre.Tool `
-            -Arguments (Get-McpBootstrapArgv -Mcp 'graphify-rs' -Path $pre.Root) `
+    $r = Invoke-McpProvisionCommand -FilePath $pre.Tool `
+            -Arguments (Get-McpProvisionArgv -Mcp 'graphify-rs' -Path $pre.Root) `
             -WorkingDirectory $pre.Root -TimeoutMs $TimeoutMs
     if ($r.Launched -and -not $r.TimedOut -and $r.ExitCode -eq 0) {
         # Exit 0 is NOT proof (bead mcpw-0zo.1): the probe still has to see the
         # built graphify-out/graph.json.
-        $g = Get-McpBootstrapPostCommandGate -Mcp 'graphify-rs' -Root $pre.Root -Label 'graphify-rs build'
+        $g = Get-McpProvisionPostCommandGate -Mcp 'graphify-rs' -Root $pre.Root -Label 'graphify-rs build'
         if (-not $g.Ok) {
-            return New-McpBootstrapRow -Mcp 'graphify-rs' -Status 'skipped' `
+            return New-McpProvisionRow -Mcp 'graphify-rs' -Status 'skipped' `
                 -Reason $g.Reason -Tool $pre.Tool -Stamp $pre.StateDir
         }
-        $null = Set-McpBootstrapStamp -Path $pre.Root -Mcp 'graphify-rs' -Detail 'build completed' -Tool $pre.Tool -StateDir $pre.StateDir
-        return New-McpBootstrapRow -Mcp 'graphify-rs' -Status 'done' `
+        $null = Set-McpProvisionStamp -Path $pre.Root -Mcp 'graphify-rs' -Detail 'build completed' -Tool $pre.Tool -StateDir $pre.StateDir
+        return New-McpProvisionRow -Mcp 'graphify-rs' -Status 'done' `
             -Reason 'graphify-rs build --path . --update --no-llm' -Tool $pre.Tool -Stamp $pre.StateDir
     }
-    return New-McpBootstrapRow -Mcp 'graphify-rs' -Status 'skipped' `
-        -Reason (Get-McpBootstrapFailureReason -Result $r -TimeoutMs $TimeoutMs -Label 'graphify-rs build') `
+    return New-McpProvisionRow -Mcp 'graphify-rs' -Status 'skipped' `
+        -Reason (Get-McpProvisionFailureReason -Result $r -TimeoutMs $TimeoutMs -Label 'graphify-rs build') `
         -Tool $pre.Tool -Stamp $pre.StateDir
 }
 
@@ -861,35 +861,35 @@ function Initialize-GraftForRepo {
         [switch]$Force,
         [int]$TimeoutMs = 1800000
     )
-    $pre = Start-McpBootstrapStep -Mcp 'graft' -ToolName 'graft' -Path $Path `
+    $pre = Start-McpProvisionStep -Mcp 'graft' -ToolName 'graft' -Path $Path `
                -StateDir $StateDir -ToolPath $ToolPath -Force:$Force
     if ($pre.Skip) { return $pre.Skip }
 
-    $d = Get-McpBootstrapAlreadyReason -Mcp 'graft' -Root $pre.Root
+    $d = Get-McpProvisionAlreadyReason -Mcp 'graft' -Root $pre.Root
     if ($d.Ok) {
-        $null = Set-McpBootstrapStamp -Path $pre.Root -Mcp 'graft' -Detail $d.Reason -Tool $pre.Tool -StateDir $pre.StateDir
-        return New-McpBootstrapRow -Mcp 'graft' -Status 'stamped' `
+        $null = Set-McpProvisionStamp -Path $pre.Root -Mcp 'graft' -Detail $d.Reason -Tool $pre.Tool -StateDir $pre.StateDir
+        return New-McpProvisionRow -Mcp 'graft' -Status 'stamped' `
             -Reason "already initialized: $($d.Reason)" -Tool $pre.Tool -Stamp $pre.StateDir
     }
 
-    $r = Invoke-McpBootstrapCommand -FilePath $pre.Tool `
-            -Arguments (Get-McpBootstrapArgv -Mcp 'graft' -Path $pre.Root) `
+    $r = Invoke-McpProvisionCommand -FilePath $pre.Tool `
+            -Arguments (Get-McpProvisionArgv -Mcp 'graft' -Path $pre.Root) `
             -WorkingDirectory $pre.Root -TimeoutMs $TimeoutMs
     if ($r.Launched -and -not $r.TimedOut -and $r.ExitCode -eq 0) {
         # Exit 0 is NOT proof (bead mcpw-0zo.1): the probe still has to see
         # graft/.graph/wiring.json AND graft/INDEX.md together.
-        $g = Get-McpBootstrapPostCommandGate -Mcp 'graft' -Root $pre.Root -Label 'graft build'
+        $g = Get-McpProvisionPostCommandGate -Mcp 'graft' -Root $pre.Root -Label 'graft build'
         if (-not $g.Ok) {
-            return New-McpBootstrapRow -Mcp 'graft' -Status 'skipped' `
+            return New-McpProvisionRow -Mcp 'graft' -Status 'skipped' `
                 -Reason $g.Reason -Tool $pre.Tool -Stamp $pre.StateDir
         }
-        $null = Set-McpBootstrapStamp -Path $pre.Root -Mcp 'graft' -Detail 'build completed' -Tool $pre.Tool -StateDir $pre.StateDir
-        return New-McpBootstrapRow -Mcp 'graft' -Status 'done' `
+        $null = Set-McpProvisionStamp -Path $pre.Root -Mcp 'graft' -Detail 'build completed' -Tool $pre.Tool -StateDir $pre.StateDir
+        return New-McpProvisionRow -Mcp 'graft' -Status 'done' `
             -Reason 'graft build (wiring graph + per-file cards; $0 no-key tier, no --deep)' `
             -Tool $pre.Tool -Stamp $pre.StateDir
     }
-    return New-McpBootstrapRow -Mcp 'graft' -Status 'skipped' `
-        -Reason (Get-McpBootstrapFailureReason -Result $r -TimeoutMs $TimeoutMs -Label 'graft build') `
+    return New-McpProvisionRow -Mcp 'graft' -Status 'skipped' `
+        -Reason (Get-McpProvisionFailureReason -Result $r -TimeoutMs $TimeoutMs -Label 'graft build') `
         -Tool $pre.Tool -Stamp $pre.StateDir
 }
 
@@ -906,7 +906,7 @@ function Initialize-MemtraceForRepo {
         NOT run:
           * `memtrace start` - from a member cwd it FAILS PERMANENTLY (it derives
             a 1-member scope while the union store declares 8). The launcher owns
-            the daemon and always passes --workspace <manifest>; bootstrap does
+            the daemon and always passes --workspace <manifest>; provision does
             not start it.
           * `memtrace mcp` - kill-on-job-close can take the shared daemon down
             for all 8 workspaces.
@@ -918,35 +918,35 @@ function Initialize-MemtraceForRepo {
         [switch]$Force,
         [int]$TimeoutMs = 1800000
     )
-    $pre = Start-McpBootstrapStep -Mcp 'memtrace' -ToolName 'memtrace' -Path $Path `
+    $pre = Start-McpProvisionStep -Mcp 'memtrace' -ToolName 'memtrace' -Path $Path `
                -StateDir $StateDir -ToolPath $ToolPath -Force:$Force
     if ($pre.Skip) { return $pre.Skip }
 
-    $d = Get-McpBootstrapAlreadyReason -Mcp 'memtrace' -Root $pre.Root
+    $d = Get-McpProvisionAlreadyReason -Mcp 'memtrace' -Root $pre.Root
     if ($d.Ok) {
-        $null = Set-McpBootstrapStamp -Path $pre.Root -Mcp 'memtrace' -Detail $d.Reason -Tool $pre.Tool -StateDir $pre.StateDir
-        return New-McpBootstrapRow -Mcp 'memtrace' -Status 'stamped' `
+        $null = Set-McpProvisionStamp -Path $pre.Root -Mcp 'memtrace' -Detail $d.Reason -Tool $pre.Tool -StateDir $pre.StateDir
+        return New-McpProvisionRow -Mcp 'memtrace' -Status 'stamped' `
             -Reason "already initialized: $($d.Reason)" -Tool $pre.Tool -Stamp $pre.StateDir
     }
 
-    $r = Invoke-McpBootstrapCommand -FilePath $pre.Tool `
-            -Arguments (Get-McpBootstrapArgv -Mcp 'memtrace' -Path $pre.Root) `
+    $r = Invoke-McpProvisionCommand -FilePath $pre.Tool `
+            -Arguments (Get-McpProvisionArgv -Mcp 'memtrace' -Path $pre.Root) `
             -WorkingDirectory $pre.Root -TimeoutMs $TimeoutMs
     if ($r.Launched -and -not $r.TimedOut -and $r.ExitCode -eq 0) {
         # Exit 0 is NOT proof (bead mcpw-0zo.1): the probe still has to see this
         # repo listed in .memdb/.memtrace-store-scope.json.
-        $g = Get-McpBootstrapPostCommandGate -Mcp 'memtrace' -Root $pre.Root -Label 'memtrace index'
+        $g = Get-McpProvisionPostCommandGate -Mcp 'memtrace' -Root $pre.Root -Label 'memtrace index'
         if (-not $g.Ok) {
-            return New-McpBootstrapRow -Mcp 'memtrace' -Status 'skipped' `
+            return New-McpProvisionRow -Mcp 'memtrace' -Status 'skipped' `
                 -Reason $g.Reason -Tool $pre.Tool -Stamp $pre.StateDir
         }
-        $null = Set-McpBootstrapStamp -Path $pre.Root -Mcp 'memtrace' -Detail 'index completed' -Tool $pre.Tool -StateDir $pre.StateDir
-        return New-McpBootstrapRow -Mcp 'memtrace' -Status 'done' `
+        $null = Set-McpProvisionStamp -Path $pre.Root -Mcp 'memtrace' -Detail 'index completed' -Tool $pre.Tool -StateDir $pre.StateDir
+        return New-McpProvisionRow -Mcp 'memtrace' -Status 'done' `
             -Reason 'memtrace index <path> --allow-non-git (no build verb; start/mcp deliberately not run)' `
             -Tool $pre.Tool -Stamp $pre.StateDir
     }
-    return New-McpBootstrapRow -Mcp 'memtrace' -Status 'skipped' `
-        -Reason (Get-McpBootstrapFailureReason -Result $r -TimeoutMs $TimeoutMs -Label 'memtrace index') `
+    return New-McpProvisionRow -Mcp 'memtrace' -Status 'skipped' `
+        -Reason (Get-McpProvisionFailureReason -Result $r -TimeoutMs $TimeoutMs -Label 'memtrace index') `
         -Tool $pre.Tool -Stamp $pre.StateDir
 }
 
@@ -968,7 +968,7 @@ function Initialize-GrepaiForRepo {
              belongs to `grepai watch`. It runs in FOREGROUND (bounded by
              -FirstScanTimeoutMs): if it exits on its own the scan is done;
              otherwise it is stopped at the timeout and the DETECTION PROBE
-             (Test-GrepaiInitialized, via Get-McpBootstrapAlreadyReason) is asked
+             (Test-GrepaiInitialized, via Get-McpProvisionAlreadyReason) is asked
              once whether the index now has content.
 
         The probe decides on the CHUNK count, not "Files indexed" - grepai never
@@ -1001,14 +1001,14 @@ function Initialize-GrepaiForRepo {
         [int]$ConfigTimeoutMs = 120000,
         [int]$FirstScanTimeoutMs = 300000
     )
-    $pre = Start-McpBootstrapStep -Mcp 'grepai' -ToolName 'grepai' -Path $Path `
+    $pre = Start-McpProvisionStep -Mcp 'grepai' -ToolName 'grepai' -Path $Path `
                -StateDir $StateDir -ToolPath $ToolPath -Force:$Force
     if ($pre.Skip) { return $pre.Skip }
 
-    $d = Get-McpBootstrapAlreadyReason -Mcp 'grepai' -Root $pre.Root
+    $d = Get-McpProvisionAlreadyReason -Mcp 'grepai' -Root $pre.Root
     if ($d.Ok) {
-        $null = Set-McpBootstrapStamp -Path $pre.Root -Mcp 'grepai' -Detail $d.Reason -Tool $pre.Tool -StateDir $pre.StateDir
-        return New-McpBootstrapRow -Mcp 'grepai' -Status 'stamped' `
+        $null = Set-McpProvisionStamp -Path $pre.Root -Mcp 'grepai' -Detail $d.Reason -Tool $pre.Tool -StateDir $pre.StateDir
+        return New-McpProvisionRow -Mcp 'grepai' -Status 'stamped' `
             -Reason "already initialized: $($d.Reason)" -Tool $pre.Tool -Stamp $pre.StateDir
     }
 
@@ -1016,12 +1016,12 @@ function Initialize-GrepaiForRepo {
     $configNote = 'config already present (left untouched)'
     $cfg = Join-Path $pre.Root '.grepai\config.yaml'
     if (-not (Test-Path -LiteralPath $cfg -PathType Leaf)) {
-        $r1 = Invoke-McpBootstrapCommand -FilePath $pre.Tool `
-                -Arguments (Get-McpBootstrapArgv -Mcp 'grepai' -Step 'config') `
+        $r1 = Invoke-McpProvisionCommand -FilePath $pre.Tool `
+                -Arguments (Get-McpProvisionArgv -Mcp 'grepai' -Step 'config') `
                 -WorkingDirectory $pre.Root -TimeoutMs $ConfigTimeoutMs
         if (-not ($r1.Launched -and -not $r1.TimedOut -and $r1.ExitCode -eq 0)) {
-            return New-McpBootstrapRow -Mcp 'grepai' -Status 'skipped' `
-                -Reason (Get-McpBootstrapFailureReason -Result $r1 -TimeoutMs $ConfigTimeoutMs -Label 'grepai init --yes') `
+            return New-McpProvisionRow -Mcp 'grepai' -Status 'skipped' `
+                -Reason (Get-McpProvisionFailureReason -Result $r1 -TimeoutMs $ConfigTimeoutMs -Label 'grepai init --yes') `
                 -Tool $pre.Tool -Stamp $pre.StateDir
         }
         $configNote = 'config created by grepai init --yes'
@@ -1029,17 +1029,17 @@ function Initialize-GrepaiForRepo {
 
     # --- 2. first scan -------------------------------------------------------
     $scanNote = ''
-    $r2 = Invoke-McpBootstrapCommand -FilePath $pre.Tool `
-            -Arguments (Get-McpBootstrapArgv -Mcp 'grepai' -Step 'scan') `
+    $r2 = Invoke-McpProvisionCommand -FilePath $pre.Tool `
+            -Arguments (Get-McpProvisionArgv -Mcp 'grepai' -Step 'scan') `
             -WorkingDirectory $pre.Root -TimeoutMs $FirstScanTimeoutMs
     if ($r2.Launched -and -not $r2.TimedOut -and $r2.ExitCode -eq 0) {
         # Exit 0 is NOT proof of an index either (bead mcpw-0zo.1): a watch that
         # comes back immediately having indexed nothing must not be stamped. The
         # same probe the pre-command gate uses decides, and it spawns its own
         # `grepai status --no-ui`.
-        $g = Get-McpBootstrapPostCommandGate -Mcp 'grepai' -Root $pre.Root -Label 'grepai watch'
+        $g = Get-McpProvisionPostCommandGate -Mcp 'grepai' -Root $pre.Root -Label 'grepai watch'
         if (-not $g.Ok) {
-            return New-McpBootstrapRow -Mcp 'grepai' -Status 'skipped' `
+            return New-McpProvisionRow -Mcp 'grepai' -Status 'skipped' `
                 -Reason "$configNote; $($g.Reason)" -Tool $pre.Tool -Stamp $pre.StateDir
         }
         $scanNote = "first scan complete ($($g.Reason))"
@@ -1050,38 +1050,38 @@ function Initialize-GrepaiForRepo {
         # what stops the two layers drifting about what "indexed" means
         # (bead mcpw-4ci): the file counter is never computed by grepai, so the
         # probe now decides on the chunk count.
-        $r3 = Invoke-McpBootstrapCommand -FilePath $pre.Tool `
-                -Arguments (Get-McpBootstrapArgv -Mcp 'grepai' -Step 'status') `
+        $r3 = Invoke-McpProvisionCommand -FilePath $pre.Tool `
+                -Arguments (Get-McpProvisionArgv -Mcp 'grepai' -Step 'status') `
                 -WorkingDirectory $pre.Root -TimeoutMs 30000
         $text = ''
         if ($r3.Launched) { $text = [string]$r3.Output + [string]$r3.Error }
-        $d2 = Get-McpBootstrapAlreadyReason -Mcp 'grepai' -Root $pre.Root -ProbeOutput $text
+        $d2 = Get-McpProvisionAlreadyReason -Mcp 'grepai' -Root $pre.Root -ProbeOutput $text
         if ($d2.Ok) {
             $scanNote = "first scan complete ($($d2.Reason))"
         } else {
-            $why = Get-McpBootstrapFailureReason -Result $r2 -TimeoutMs $FirstScanTimeoutMs -Label 'grepai watch'
-            return New-McpBootstrapRow -Mcp 'grepai' -Status 'skipped' `
+            $why = Get-McpProvisionFailureReason -Result $r2 -TimeoutMs $FirstScanTimeoutMs -Label 'grepai watch'
+            return New-McpProvisionRow -Mcp 'grepai' -Status 'skipped' `
                 -Reason "$configNote; $why; $($d2.Reason)" `
                 -Tool $pre.Tool -Stamp $pre.StateDir
         }
     }
 
-    $null = Set-McpBootstrapStamp -Path $pre.Root -Mcp 'grepai' -Detail "$configNote; $scanNote" -Tool $pre.Tool -StateDir $pre.StateDir
-    return New-McpBootstrapRow -Mcp 'grepai' -Status 'done' `
+    $null = Set-McpProvisionStamp -Path $pre.Root -Mcp 'grepai' -Detail "$configNote; $scanNote" -Tool $pre.Tool -StateDir $pre.StateDir
+    return New-McpProvisionRow -Mcp 'grepai' -Status 'done' `
         -Reason "$configNote; $scanNote" -Tool $pre.Tool -Stamp $pre.StateDir
 }
 
 # ---------------------------------------------------------------------------
 # aggregate
 # ---------------------------------------------------------------------------
-function Invoke-McpBootstrapForRepo {
+function Invoke-McpProvisionForRepo {
     <#
     .SYNOPSIS
-        Bootstrap all six watched MCPs for one repository.
+        Provision all six watched MCPs for one repository.
     .DESCRIPTION
-        Runs Get-McpBootstrapPlan in order and returns a summary object. NEVER
+        Runs Get-McpProvisionPlan in order and returns a summary object. NEVER
         throws: every step is isolated, and a step that throws is recorded as a
-        'skipped' row. That is the whole point - a bootstrap problem in a foreign
+        'skipped' row. That is the whole point - a provision problem in a foreign
         repository must never abort the launcher.
     .PARAMETER Path
         The repository root. Everything is derived from it.
@@ -1105,12 +1105,12 @@ function Invoke-McpBootstrapForRepo {
         [int]       $TimeoutMs = 1800000,
         [int]       $FirstScanTimeoutMs = 300000
     )
-    $root    = Get-McpBootstrapRoot -Path $Path
-    $dir     = Get-McpBootstrapStateDir -Path $root -StateDir $StateDir
+    $root    = Get-McpProvisionRoot -Path $Path
+    $dir     = Get-McpProvisionStateDir -Path $root -StateDir $StateDir
     $started = Get-Date
     $rows    = New-Object System.Collections.Generic.List[object]
 
-    foreach ($step in @(Get-McpBootstrapPlan)) {
+    foreach ($step in @(Get-McpProvisionPlan)) {
         if ($Only -and ($Only -notcontains $step.Mcp)) { continue }
         $tp = ''
         if ($ToolPaths -and $ToolPaths.ContainsKey($step.Mcp)) { $tp = [string]$ToolPaths[$step.Mcp] }
@@ -1126,11 +1126,11 @@ function Invoke-McpBootstrapForRepo {
                 'grepai'      { $row = Initialize-GrepaiForRepo      -Path $root -StateDir $dir -ToolPath $tp -Force:$Force -FirstScanTimeoutMs $FirstScanTimeoutMs }
             }
         } catch {
-            $row = New-McpBootstrapRow -Mcp $step.Mcp -Status 'skipped' `
+            $row = New-McpProvisionRow -Mcp $step.Mcp -Status 'skipped' `
                 -Reason ("initializer threw: " + $_.Exception.Message) -Tool '' -Stamp $dir
         }
         if (-not $row) {
-            $row = New-McpBootstrapRow -Mcp $step.Mcp -Status 'skipped' `
+            $row = New-McpProvisionRow -Mcp $step.Mcp -Status 'skipped' `
                 -Reason 'initializer returned no result' -Tool '' -Stamp $dir
         }
         $row | Add-Member -NotePropertyName Optional -NotePropertyValue ([bool]$step.Optional) -Force

@@ -1,10 +1,10 @@
-# tests/launcher_mcp_bootstrap.tests.ps1
+# tests/launcher_mcp_provision.tests.ps1
 # Pester 6 idiom (Should -Be / Should -Match). Bead mcpw-rkg.2 - the per-MCP
-# bootstrap ("make it so") layer in Modules/watcher_mcp_bootstrap.ps1, the write
+# provision ("make it so") layer in Modules/watcher_mcp_provision.ps1, the write
 # side of the detection contract from mcpw-rkg.1.
 #
 # RUN IT WITH THE SUITE RUNNER:
-#     python dev_tools/run_pester_suite.py tests/launcher_mcp_bootstrap.tests.ps1
+#     python dev_tools/run_pester_suite.py tests/launcher_mcp_provision.tests.ps1
 # Never trust the exit code - count the [-] lines (Pester 6.0.x dies in
 # discovery yet exits 0). Report "N of M tests passed", never a bare pair.
 #
@@ -41,11 +41,11 @@
 # exactly how repowise is pinned in production, so the tests exercise the same
 # seam the launcher uses.
 
-Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
+Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
 
     It 'dot-sources cleanly and exposes the aggregate plus one initializer per MCP' {
         $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
-        $module = Join-Path $repoRoot 'Modules\watcher_mcp_bootstrap.ps1'
+        $module = Join-Path $repoRoot 'Modules\watcher_mcp_provision.ps1'
         Test-Path -LiteralPath $module | Should -BeTrue
         # Dot-sourced directly, NOT inside a Should -Not -Throw scriptblock: that
         # scriptblock runs in a child scope, so the functions would be defined
@@ -55,24 +55,24 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
 
         $bad = @()
         foreach ($fn in @(
-                'Invoke-McpBootstrapForRepo',
+                'Invoke-McpProvisionForRepo',
                 'Initialize-MemtraceForRepo', 'Initialize-GrepaiForRepo',
                 'Initialize-GrapheniumForRepo', 'Initialize-GraphifyRsForRepo',
                 'Initialize-RepowiseForRepo', 'Initialize-GraftForRepo',
-                'Get-McpBootstrapPlan', 'Get-McpBootstrapArgv',
-                'Test-McpBootstrapStamp', 'Set-McpBootstrapStamp',
-                'Get-McpBootstrapStateDir', 'Invoke-McpBootstrapCommand')) {
+                'Get-McpProvisionPlan', 'Get-McpProvisionArgv',
+                'Test-McpProvisionStamp', 'Set-McpProvisionStamp',
+                'Get-McpProvisionStateDir', 'Invoke-McpProvisionCommand')) {
             if (-not (Get-Command $fn -ErrorAction SilentlyContinue)) { $bad += $fn }
         }
-        ($bad -join ', ') | Should -Be '' -Because 'the bootstrap surface must be complete'
+        ($bad -join ', ') | Should -Be '' -Because 'the provision surface must be complete'
     }
 
     It 'plans all six MCPs cheap-first: config, then build, then index' {
         $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
         . (Join-Path $repoRoot 'Modules\watcher_mcp_detect.ps1')
-        . (Join-Path $repoRoot 'Modules\watcher_mcp_bootstrap.ps1')
+        . (Join-Path $repoRoot 'Modules\watcher_mcp_provision.ps1')
 
-        $plan = @(Get-McpBootstrapPlan)
+        $plan = @(Get-McpProvisionPlan)
         $plan.Count | Should -Be 6
         ($plan | ForEach-Object { $_.Mcp }) -join ',' |
             Should -Be 'graphenium,repowise,graphify-rs,graft,memtrace,grepai'
@@ -97,7 +97,7 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
     It 'builds non-interactive command lines and never reads from a prompt' {
         $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
         . (Join-Path $repoRoot 'Modules\watcher_mcp_detect.ps1')
-        . (Join-Path $repoRoot 'Modules\watcher_mcp_bootstrap.ps1')
+        . (Join-Path $repoRoot 'Modules\watcher_mcp_provision.ps1')
 
         $root = 'C:\synthetic\repo'
         $bad = @()
@@ -113,33 +113,33 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
             'graft'       = @('build')
         }
         foreach ($mcp in $expect.Keys) {
-            $argv = @(Get-McpBootstrapArgv -Mcp $mcp -Path $root)
+            $argv = @(Get-McpProvisionArgv -Mcp $mcp -Path $root)
             foreach ($needle in $expect[$mcp]) {
                 if ($argv -notcontains $needle) { $bad += "$mcp argv is missing '$needle' (got: $($argv -join ' '))" }
             }
         }
         # Explicit per-MCP suppressions that must NOT be there.
-        if (@(Get-McpBootstrapArgv -Mcp 'graft' -Path $root) -contains '--deep') { $bad += 'graft must never pass --deep (needs an LLM key)' }
-        if (@(Get-McpBootstrapArgv -Mcp 'memtrace' -Path $root) -contains 'start') { $bad += 'memtrace start must not be bootstrapped' }
-        if (@(Get-McpBootstrapArgv -Mcp 'memtrace' -Path $root) -contains 'mcp') { $bad += 'memtrace mcp must not be bootstrapped' }
-        if (@(Get-McpBootstrapArgv -Mcp 'grepai' -Step 'config' -Path $root) -notcontains '--yes') { $bad += 'grepai init must pass --yes' }
-        if (@(Get-McpBootstrapArgv -Mcp 'grepai' -Step 'status' -Path $root) -notcontains '--no-ui') { $bad += 'grepai status must pass --no-ui' }
+        if (@(Get-McpProvisionArgv -Mcp 'graft' -Path $root) -contains '--deep') { $bad += 'graft must never pass --deep (needs an LLM key)' }
+        if (@(Get-McpProvisionArgv -Mcp 'memtrace' -Path $root) -contains 'start') { $bad += 'memtrace start must not be provisioned' }
+        if (@(Get-McpProvisionArgv -Mcp 'memtrace' -Path $root) -contains 'mcp') { $bad += 'memtrace mcp must not be provisioned' }
+        if (@(Get-McpProvisionArgv -Mcp 'grepai' -Step 'config' -Path $root) -notcontains '--yes') { $bad += 'grepai init must pass --yes' }
+        if (@(Get-McpProvisionArgv -Mcp 'grepai' -Step 'status' -Path $root) -notcontains '--no-ui') { $bad += 'grepai status must pass --no-ui' }
         ($bad -join '; ') | Should -Be ''
 
         # No prompt can be raised by this module at all. Comments are stripped
         # first: this module's header deliberately NAMES the prompt cmdlets it
         # refuses to use, and the rule is about code, not prose.
-        $text = Get-Content -LiteralPath (Join-Path $repoRoot 'Modules\watcher_mcp_bootstrap.ps1') -Raw
+        $text = Get-Content -LiteralPath (Join-Path $repoRoot 'Modules\watcher_mcp_provision.ps1') -Raw
         $code = (($text -split "`r?`n") | ForEach-Object { $_ -replace '#.*$', '' }) -join "`n"
         foreach ($forbidden in @('Read-Host', 'PromptForChoice', '-Confirm', 'Get-Credential')) {
-            $code.Contains($forbidden) | Should -BeFalse -Because "$forbidden would let bootstrap block on input"
+            $code.Contains($forbidden) | Should -BeFalse -Because "$forbidden would let provision block on input"
         }
     }
 
     It 'skips (never fails) every initializer when its binary is absent' {
         $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
         . (Join-Path $repoRoot 'Modules\watcher_mcp_detect.ps1')
-        . (Join-Path $repoRoot 'Modules\watcher_mcp_bootstrap.ps1')
+        . (Join-Path $repoRoot 'Modules\watcher_mcp_provision.ps1')
 
         $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ('mcpw-boot-' + [guid]::NewGuid().ToString('N'))
         $null = New-Item -ItemType Directory -Path $sandbox -Force
@@ -177,7 +177,7 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
     It 'returns a six-row summary that never throws, even for hostile inputs' {
         $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
         . (Join-Path $repoRoot 'Modules\watcher_mcp_detect.ps1')
-        . (Join-Path $repoRoot 'Modules\watcher_mcp_bootstrap.ps1')
+        . (Join-Path $repoRoot 'Modules\watcher_mcp_provision.ps1')
 
         $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ('mcpw-boot-' + [guid]::NewGuid().ToString('N'))
         $null = New-Item -ItemType Directory -Path $sandbox -Force
@@ -203,9 +203,9 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
             $bad = @()
             foreach ($r in $runs) {
                 $summary = $null
-                try { $summary = Invoke-McpBootstrapForRepo -Path $r.Path -ToolPaths $r.ToolPaths }
+                try { $summary = Invoke-McpProvisionForRepo -Path $r.Path -ToolPaths $r.ToolPaths }
                 catch {
-                    $bad += "$($r.Label): Invoke-McpBootstrapForRepo threw: $($_.Exception.Message)"
+                    $bad += "$($r.Label): Invoke-McpProvisionForRepo threw: $($_.Exception.Message)"
                     continue
                 }
                 if (-not $summary) { $bad += "$($r.Label): no summary returned"; continue }
@@ -232,7 +232,7 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
     It 'is idempotent: the second run re-runs no build and reports the stamp' {
         $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
         . (Join-Path $repoRoot 'Modules\watcher_mcp_detect.ps1')
-        . (Join-Path $repoRoot 'Modules\watcher_mcp_bootstrap.ps1')
+        . (Join-Path $repoRoot 'Modules\watcher_mcp_provision.ps1')
 
         $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ('mcpw-boot-' + [guid]::NewGuid().ToString('N'))
         $repo = Join-Path $sandbox 'repo'
@@ -314,7 +314,7 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
             $env:Path = $fakeDir
 
             # ---- run 1: everything really runs --------------------------------
-            $first = Invoke-McpBootstrapForRepo -Path $repo -ToolPaths $toolPaths -TimeoutMs 30000 -FirstScanTimeoutMs 30000
+            $first = Invoke-McpProvisionForRepo -Path $repo -ToolPaths $toolPaths -TimeoutMs 30000 -FirstScanTimeoutMs 30000
             $first.Total | Should -Be 6
             $bad = @($first.Results | Where-Object { $_.Status -ne 'done' } | ForEach-Object { "$($_.Mcp)=$($_.Status) ($($_.Reason))" })
             ($bad -join '; ') | Should -Be '' -Because 'a fake tool that provisions what its probe looks for must complete'
@@ -332,7 +332,7 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
             ($callsAfterFirst -ge 6) | Should -BeTrue -Because 'every step should have invoked its tool at least once'
 
             # ---- run 2: stamp short-circuits everything -----------------------
-            $second = Invoke-McpBootstrapForRepo -Path $repo -ToolPaths $toolPaths -TimeoutMs 30000 -FirstScanTimeoutMs 30000
+            $second = Invoke-McpProvisionForRepo -Path $repo -ToolPaths $toolPaths -TimeoutMs 30000 -FirstScanTimeoutMs 30000
             $second.Total | Should -Be 6
             $second.Stamped | Should -Be 6
             $second.Done | Should -Be 0
@@ -351,7 +351,7 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
             foreach ($d in @('.grapheniumignore', 'graphenium-out', '.repowise', 'graphify-out', 'graft', '.memdb', '.grepai')) {
                 Remove-Item -LiteralPath (Join-Path $repo $d) -Recurse -Force -ErrorAction SilentlyContinue
             }
-            $forced = Invoke-McpBootstrapForRepo -Path $repo -ToolPaths $toolPaths -Force -TimeoutMs 30000 -FirstScanTimeoutMs 30000
+            $forced = Invoke-McpProvisionForRepo -Path $repo -ToolPaths $toolPaths -Force -TimeoutMs 30000 -FirstScanTimeoutMs 30000
             $forced.Done | Should -Be 6
             (@(Get-Content -LiteralPath $log).Count -gt $callsAfterFirst) | Should -BeTrue -Because '-Force must re-run the steps'
         } finally {
@@ -363,7 +363,7 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
     It 'degrades: a tool that exits non-zero is skipped while the other five run' {
         $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
         . (Join-Path $repoRoot 'Modules\watcher_mcp_detect.ps1')
-        . (Join-Path $repoRoot 'Modules\watcher_mcp_bootstrap.ps1')
+        . (Join-Path $repoRoot 'Modules\watcher_mcp_provision.ps1')
 
         $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ('mcpw-boot-' + [guid]::NewGuid().ToString('N'))
         $repo = Join-Path $sandbox 'repo'
@@ -436,7 +436,7 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
         $savedPath = $env:Path
         try {
             $env:Path = $fakeDir
-            $summary = Invoke-McpBootstrapForRepo -Path $repo -ToolPaths $toolPaths -TimeoutMs 30000 -FirstScanTimeoutMs 30000
+            $summary = Invoke-McpProvisionForRepo -Path $repo -ToolPaths $toolPaths -TimeoutMs 30000 -FirstScanTimeoutMs 30000
 
             $summary.Total | Should -Be 6
             $graft = @($summary.Results | Where-Object { $_.Mcp -eq 'graft' })[0]
@@ -447,8 +447,8 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
             $others = @($summary.Results | Where-Object { $_.Mcp -ne 'graft' } | Where-Object { $_.Status -ne 'done' } | ForEach-Object { "$($_.Mcp)=$($_.Status)" })
             ($others -join '; ') | Should -Be '' -Because 'one broken MCP must not stop the other five'
             # A skipped step writes no stamp, so a later run retries it.
-            (Test-McpBootstrapStamp -Path $repo -Mcp 'graft') | Should -BeFalse
-            (Test-McpBootstrapStamp -Path $repo -Mcp 'memtrace') | Should -BeTrue
+            (Test-McpProvisionStamp -Path $repo -Mcp 'graft') | Should -BeFalse
+            (Test-McpProvisionStamp -Path $repo -Mcp 'memtrace') | Should -BeTrue
         } finally {
             $env:Path = $savedPath
             Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
@@ -458,7 +458,7 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
     It 'treats graphify-rs as optional when graphify-rs.toml is missing' {
         $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
         . (Join-Path $repoRoot 'Modules\watcher_mcp_detect.ps1')
-        . (Join-Path $repoRoot 'Modules\watcher_mcp_bootstrap.ps1')
+        . (Join-Path $repoRoot 'Modules\watcher_mcp_provision.ps1')
 
         $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ('mcpw-boot-' + [guid]::NewGuid().ToString('N'))
         $repo = Join-Path $sandbox 'repo'
@@ -478,7 +478,7 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
             $row.Reason | Should -Match 'optional'
             $row.Reason | Should -Match 'graphify-rs\.toml'
             # Optional means optional in the summary too.
-            $summary = Invoke-McpBootstrapForRepo -Path $repo -Only @('graphify-rs') -ToolPaths @{ 'graphify-rs' = $fake }
+            $summary = Invoke-McpProvisionForRepo -Path $repo -Only @('graphify-rs') -ToolPaths @{ 'graphify-rs' = $fake }
             $summary.Total | Should -Be 1
             @($summary.Results)[0].Optional | Should -BeTrue
         } finally {
@@ -489,7 +489,7 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
     It 'keys the stamp per repository, under the repo .mcpw-bootstrap dir by default' {
         $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
         . (Join-Path $repoRoot 'Modules\watcher_mcp_detect.ps1')
-        . (Join-Path $repoRoot 'Modules\watcher_mcp_bootstrap.ps1')
+        . (Join-Path $repoRoot 'Modules\watcher_mcp_provision.ps1')
 
         $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ('mcpw-boot-' + [guid]::NewGuid().ToString('N'))
         $repoA = Join-Path $sandbox 'repo-a'
@@ -557,17 +557,17 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
             # real installs on this box out of the lookup.
             $env:Path = $fakeDir
             # Default state dir roots at -Path, not at the machine or the module.
-            (Get-McpBootstrapStateDir -Path $repoA) | Should -Be (Join-Path $repoA '.mcpw-bootstrap')
+            (Get-McpProvisionStateDir -Path $repoA) | Should -Be (Join-Path $repoA '.mcpw-bootstrap')
             # An explicit -StateDir wins.
             $alt = Join-Path $sandbox 'alt-state'
-            (Get-McpBootstrapStateDir -Path $repoA -StateDir $alt) | Should -Be $alt
+            (Get-McpProvisionStateDir -Path $repoA -StateDir $alt) | Should -Be $alt
 
-            $a = Invoke-McpBootstrapForRepo -Path $repoA -ToolPaths $toolPaths -TimeoutMs 30000 -FirstScanTimeoutMs 30000
+            $a = Invoke-McpProvisionForRepo -Path $repoA -ToolPaths $toolPaths -TimeoutMs 30000 -FirstScanTimeoutMs 30000
             $a.Stamped | Should -Be 0
-            (Test-McpBootstrapStamp -Path $repoA -Mcp 'graft') | Should -BeTrue
+            (Test-McpProvisionStamp -Path $repoA -Mcp 'graft') | Should -BeTrue
             # A stamp belongs to ONE repository: repo B is untouched by it.
-            (Test-McpBootstrapStamp -Path $repoB -Mcp 'graft') | Should -BeFalse
-            $b = Invoke-McpBootstrapForRepo -Path $repoB -ToolPaths $toolPaths -TimeoutMs 30000 -FirstScanTimeoutMs 30000
+            (Test-McpProvisionStamp -Path $repoB -Mcp 'graft') | Should -BeFalse
+            $b = Invoke-McpProvisionForRepo -Path $repoB -ToolPaths $toolPaths -TimeoutMs 30000 -FirstScanTimeoutMs 30000
             $b.Stamped | Should -Be 0
             ($b.Done -gt 0) | Should -BeTrue
         } finally {
@@ -578,7 +578,7 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
 
     It 'roots every path at -Path: no absolute reference to any repository' {
         $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
-        $text = Get-Content -LiteralPath (Join-Path $repoRoot 'Modules\watcher_mcp_bootstrap.ps1') -Raw
+        $text = Get-Content -LiteralPath (Join-Path $repoRoot 'Modules\watcher_mcp_provision.ps1') -Raw
         # Built from parts so this assertion cannot itself be the absolute path
         # it is forbidding.
         $drive = [char]74   # 'J'
@@ -592,24 +592,24 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
     It 'writes a readable stamp file and tolerates a corrupt one' {
         $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
         . (Join-Path $repoRoot 'Modules\watcher_mcp_detect.ps1')
-        . (Join-Path $repoRoot 'Modules\watcher_mcp_bootstrap.ps1')
+        . (Join-Path $repoRoot 'Modules\watcher_mcp_provision.ps1')
 
         $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ('mcpw-boot-' + [guid]::NewGuid().ToString('N'))
         $null = New-Item -ItemType Directory -Path $sandbox -Force
         try {
-            (Test-McpBootstrapStamp -Path $sandbox -Mcp 'graft') | Should -BeFalse
-            (Set-McpBootstrapStamp -Path $sandbox -Mcp 'graft' -Detail 'unit' -Tool 'graft.exe') | Should -BeTrue
-            (Test-McpBootstrapStamp -Path $sandbox -Mcp 'graft') | Should -BeTrue
-            (Test-McpBootstrapStamp -Path $sandbox -Mcp 'memtrace') | Should -BeFalse
+            (Test-McpProvisionStamp -Path $sandbox -Mcp 'graft') | Should -BeFalse
+            (Set-McpProvisionStamp -Path $sandbox -Mcp 'graft' -Detail 'unit' -Tool 'graft.exe') | Should -BeTrue
+            (Test-McpProvisionStamp -Path $sandbox -Mcp 'graft') | Should -BeTrue
+            (Test-McpProvisionStamp -Path $sandbox -Mcp 'memtrace') | Should -BeFalse
             $doc = Get-Content -LiteralPath (Join-Path $sandbox '.mcpw-bootstrap\state.json') -Raw -Encoding UTF8 | ConvertFrom-Json
             $doc.graft.Detail | Should -Be 'unit'
 
             # A truncated stamp must read as "not initialized" (so the step runs
             # again) and must never throw.
             [System.IO.File]::WriteAllText((Join-Path $sandbox '.mcpw-bootstrap\state.json'), '{ not json', (New-Object System.Text.UTF8Encoding($false)))
-            (Test-McpBootstrapStamp -Path $sandbox -Mcp 'graft') | Should -BeFalse
-            (Set-McpBootstrapStamp -Path $sandbox -Mcp 'graft' -Detail 'repaired' -Tool 'graft.exe') | Should -BeTrue
-            (Test-McpBootstrapStamp -Path $sandbox -Mcp 'graft') | Should -BeTrue
+            (Test-McpProvisionStamp -Path $sandbox -Mcp 'graft') | Should -BeFalse
+            (Set-McpProvisionStamp -Path $sandbox -Mcp 'graft' -Detail 'repaired' -Tool 'graft.exe') | Should -BeTrue
+            (Test-McpProvisionStamp -Path $sandbox -Mcp 'graft') | Should -BeTrue
         } finally {
             Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
         }
@@ -618,7 +618,7 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
     It 'closes stdin, so a tool that would prompt sees EOF instead of blocking' {
         $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
         . (Join-Path $repoRoot 'Modules\watcher_mcp_detect.ps1')
-        . (Join-Path $repoRoot 'Modules\watcher_mcp_bootstrap.ps1')
+        . (Join-Path $repoRoot 'Modules\watcher_mcp_provision.ps1')
 
         $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ('mcpw-boot-' + [guid]::NewGuid().ToString('N'))
         $null = New-Item -ItemType Directory -Path $sandbox -Force
@@ -634,7 +634,7 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
                 'exit /b 0' + $crlf
         [System.IO.File]::WriteAllText($prompter, $body, (New-Object System.Text.ASCIIEncoding))
         try {
-            $r = Invoke-McpBootstrapCommand -FilePath $prompter -WorkingDirectory $sandbox -TimeoutMs 15000
+            $r = Invoke-McpProvisionCommand -FilePath $prompter -WorkingDirectory $sandbox -TimeoutMs 15000
             $r.Launched | Should -BeTrue
             $r.TimedOut | Should -BeFalse -Because 'a closed stdin must not hang the child'
             $r.ExitCode | Should -Be 0
@@ -647,7 +647,7 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
     It 'kills a command that overruns its timeout instead of hanging the launcher' {
         $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
         . (Join-Path $repoRoot 'Modules\watcher_mcp_detect.ps1')
-        . (Join-Path $repoRoot 'Modules\watcher_mcp_bootstrap.ps1')
+        . (Join-Path $repoRoot 'Modules\watcher_mcp_provision.ps1')
 
         $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ('mcpw-boot-' + [guid]::NewGuid().ToString('N'))
         $null = New-Item -ItemType Directory -Path $sandbox -Force
@@ -658,7 +658,7 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
         [System.IO.File]::WriteAllText($sleeper, $body, (New-Object System.Text.ASCIIEncoding))
         try {
             $sw = [System.Diagnostics.Stopwatch]::StartNew()
-            $r = Invoke-McpBootstrapCommand -FilePath $sleeper -WorkingDirectory $sandbox -TimeoutMs 2500
+            $r = Invoke-McpProvisionCommand -FilePath $sleeper -WorkingDirectory $sandbox -TimeoutMs 2500
             $sw.Stop()
             $r.Launched | Should -BeTrue
             $r.TimedOut | Should -BeTrue
@@ -677,7 +677,7 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
         # recorded as provisioned forever and every later launch skipped it.
         $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
         . (Join-Path $repoRoot 'Modules\watcher_mcp_detect.ps1')
-        . (Join-Path $repoRoot 'Modules\watcher_mcp_bootstrap.ps1')
+        . (Join-Path $repoRoot 'Modules\watcher_mcp_provision.ps1')
 
         $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ('mcpw-boot-' + [guid]::NewGuid().ToString('N'))
         $repo = Join-Path $sandbox 'repo'
@@ -703,7 +703,7 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
             # the verdict is decided by the ARTIFACTS alone.
             $env:Path = $fakeDir
 
-            $summary = Invoke-McpBootstrapForRepo -Path $repo -ToolPaths $toolPaths -TimeoutMs 30000 -FirstScanTimeoutMs 30000
+            $summary = Invoke-McpProvisionForRepo -Path $repo -ToolPaths $toolPaths -TimeoutMs 30000 -FirstScanTimeoutMs 30000
             $summary.Total | Should -Be 6
             $summary.Done | Should -Be 0 -Because 'exit 0 is not proof of provisioning'
             $summary.Stamped | Should -Be 0
@@ -719,8 +719,8 @@ Describe 'watcher_mcp_bootstrap: idempotent, non-interactive, degrading init' {
             # A refused stamp is a refusal to RECORD: nothing on disk...
             Test-Path -LiteralPath (Join-Path $repo '.mcpw-bootstrap\state.json') -PathType Leaf | Should -BeFalse
             # ...so a later run retries the step instead of skipping it forever.
-            (Test-McpBootstrapStamp -Path $repo -Mcp 'graft') | Should -BeFalse
-            (Test-McpBootstrapStamp -Path $repo -Mcp 'memtrace') | Should -BeFalse
+            (Test-McpProvisionStamp -Path $repo -Mcp 'graft') | Should -BeFalse
+            (Test-McpProvisionStamp -Path $repo -Mcp 'memtrace') | Should -BeFalse
         } finally {
             $env:Path = $savedPath
             Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue

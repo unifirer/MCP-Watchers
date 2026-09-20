@@ -78,15 +78,15 @@ if (Test-Path -LiteralPath $watcherPatternsModule) { . $watcherPatternsModule }
 $watcherPaneScriptsModule = Join-Path $scriptDir 'Modules\watcher_pane_scripts.ps1'
 if (Test-Path -LiteralPath $watcherPaneScriptsModule) { . $watcherPaneScriptsModule }
 
-# MCP bootstrap ("make it so") for the six watched MCPs - beads mcpw-rkg.2/.3.
-# Provides Invoke-McpBootstrapForRepo plus one Initialize-<Mcp>ForRepo per MCP,
+# MCP provision ("make it so") for the six watched MCPs - beads mcpw-rkg.2/.3.
+# Provides Invoke-McpProvisionForRepo plus one Initialize-<Mcp>ForRepo per MCP,
 # and is CALLED below before the first watcher spawns. Loaded here, after
 # $watchersWorkspaceRoot above, so the module resolves the caller's repository
 # rather than $scriptDir. Same guarded dot-source as the four loads above: a
 # MISSING module must degrade (the launcher still opens its pane grid) instead
 # of aborting the whole launch.
-$watcherMcpBootstrapModule = Join-Path $scriptDir 'Modules\watcher_mcp_bootstrap.ps1'
-if (Test-Path -LiteralPath $watcherMcpBootstrapModule) { . $watcherMcpBootstrapModule }
+$watcherMcpProvisionModule = Join-Path $scriptDir 'Modules\watcher_mcp_provision.ps1'
+if (Test-Path -LiteralPath $watcherMcpProvisionModule) { . $watcherMcpProvisionModule }
 
 # Single-instance guard (FIRST-WINS). Uses BOTH a Windows Named Mutex
 # (Global\VAD_Watchers_Launcher_<workspaceKey>, keyed per repo by mcpw-ybs.4)
@@ -1316,7 +1316,7 @@ $grepaiLaunchErr = Join-Path $logsDir "grepai-launch.log.err"
 # reports it as running. We still give the launch a generous wait to confirm the
 # process stays up (it should NOT exit on its own anymore), then proceed.
 
-# --- MCP bootstrap, BEFORE the first watcher spawns (bead mcpw-rkg.3) ----------
+# --- MCP provision, BEFORE the first watcher spawns (bead mcpw-rkg.3) ----------
 # The ORDER is the point. A watcher that starts against an uninitialized repo
 # spends its first minutes reporting "no graph" / "no index" / "no agent entry"
 # and the operator cannot tell that from a real failure; initializing first means
@@ -1327,24 +1327,24 @@ $grepaiLaunchErr = Join-Path $logsDir "grepai-launch.log.err"
 # rule the panes and the teardown state follow (mcpw-ybs.1/.2).
 #
 # Degrades, and must: the module returns done|stamped|skipped rows and never
-# throws, so a bootstrap problem in a foreign repository is LOGGED here and the
+# throws, so a provision problem in a foreign repository is LOGGED here and the
 # launch continues. A missing module (guarded dot-source above) is the same
 # story - the launcher still opens its pane grid.
-if (Get-Command Invoke-McpBootstrapForRepo -ErrorAction SilentlyContinue) {
+if (Get-Command Invoke-McpProvisionForRepo -ErrorAction SilentlyContinue) {
     # PRE-FLIGHT (bead mcpw-0zo.3): ASK before we act.
     #
-    # Invoke-McpBootstrapForRepo is stamp-gated, so on a repository that is
+    # Invoke-McpProvisionForRepo is stamp-gated, so on a repository that is
     # already provisioned it is a cheap no-op. The operator could not tell that
     # from the console, though: the preamble that used to sit here named all
     # six MCPs unconditionally, so every launch LOOKED like it re-initialized
     # everything and warned about minutes of work. It did not - and the fix is
     # to run the read-only detection pass first (Get-McpInitializationReport,
-    # Modules\watcher_mcp_detect.ps1, loaded as a sibling by the bootstrap
+    # Modules\watcher_mcp_detect.ps1, loaded as a sibling by the provision
     # module) and phrase the log in terms of what it actually found.
     #
     # Guarded like every other optional module in this file: detection is
     # observability, so a missing or failing detect module degrades to a
-    # warning and the stamp-gated bootstrap still runs.
+    # warning and the stamp-gated provision still runs.
     $mcpPreflight = @()
     if (Get-Command Get-McpInitializationReport -ErrorAction SilentlyContinue) {
         try {
@@ -1352,13 +1352,13 @@ if (Get-Command Invoke-McpBootstrapForRepo -ErrorAction SilentlyContinue) {
             foreach ($mcpPre in $mcpPreflight) {
                 $mcpPreState = 'needs provisioning'
                 if ($mcpPre.Ok) { $mcpPreState = 'already initialized' }
-                Write-Host ("[bootstrap] pre-flight {0}: {1} - {2}" -f $mcpPre.Mcp, $mcpPreState, $mcpPre.Reason)
+                Write-Host ("[provision] pre-flight {0}: {1} - {2}" -f $mcpPre.Mcp, $mcpPreState, $mcpPre.Reason)
             }
         } catch {
-            Write-Warning "MCP pre-flight detection failed: $($_.Exception.Message). Continuing with the stamp-gated bootstrap."
+            Write-Warning "MCP pre-flight detection failed: $($_.Exception.Message). Continuing with the stamp-gated provision."
         }
     } else {
-        Write-Host "[bootstrap] Modules\watcher_mcp_detect.ps1 not loaded - no pre-flight report available."
+        Write-Host "[provision] Modules\watcher_mcp_detect.ps1 not loaded - no pre-flight report available."
     }
 
     # Now say what is about to happen, and only claim work that is really
@@ -1367,30 +1367,30 @@ if (Get-Command Invoke-McpBootstrapForRepo -ErrorAction SilentlyContinue) {
     # what happens to that scan once the watcher owns it).
     $mcpPending = @($mcpPreflight | Where-Object { -not $_.Ok })
     if ($mcpPreflight.Count -gt 0 -and $mcpPending.Count -eq 0) {
-        Write-Host "[bootstrap] all six watched MCPs already report initialized for $watchersWorkspaceRoot - provisioning is unnecessary (running the stamp-gated bootstrap anyway)."
+        Write-Host "[provision] all six watched MCPs already report initialized for $watchersWorkspaceRoot - provisioning is unnecessary (running the stamp-gated provision anyway)."
     } elseif ($mcpPending.Count -gt 0) {
-        Write-Host ("[bootstrap] {0} of {1} watched MCPs need provisioning for {2}: {3} (this can take minutes on a fresh index)..." -f `
+        Write-Host ("[provision] {0} of {1} watched MCPs need provisioning for {2}: {3} (this can take minutes on a fresh index)..." -f `
             $mcpPending.Count, $mcpPreflight.Count, $watchersWorkspaceRoot, (($mcpPending | ForEach-Object { $_.Mcp }) -join ' '))
     } else {
-        Write-Host "[bootstrap] pre-flight report unavailable - running the stamp-gated bootstrap for $watchersWorkspaceRoot anyway..."
+        Write-Host "[provision] pre-flight report unavailable - running the stamp-gated provision for $watchersWorkspaceRoot anyway..."
     }
 
     try {
-        $mcpBoot = Invoke-McpBootstrapForRepo -Path $watchersWorkspaceRoot
+        $mcpBoot = Invoke-McpProvisionForRepo -Path $watchersWorkspaceRoot
         $mcpRows = @($mcpBoot.Results)
         $mcpTally = ($mcpRows | ForEach-Object { "$($_.Mcp)=$($_.Status)" }) -join ' '
-        Write-Host ("[bootstrap] done {0}, stamped {1}, skipped {2} of {3}: {4}" -f `
+        Write-Host ("[provision] done {0}, stamped {1}, skipped {2} of {3}: {4}" -f `
             $mcpBoot.Done, $mcpBoot.Stamped, $mcpBoot.Skipped, $mcpBoot.Total, $mcpTally)
         # Only the SKIPPED rows are printed in full: they are the ones that need
         # an operator's attention, and the reason names the failing sub-step.
         foreach ($mcpRow in @($mcpRows | Where-Object { $_.Status -eq 'skipped' })) {
-            Write-Host ("[bootstrap] {0} skipped: {1}" -f $mcpRow.Mcp, $mcpRow.Reason)
+            Write-Host ("[provision] {0} skipped: {1}" -f $mcpRow.Mcp, $mcpRow.Reason)
         }
     } catch {
-        Write-Warning "MCP bootstrap failed: $($_.Exception.Message). Continuing - each watcher below degrades on its own."
+        Write-Warning "MCP provision failed: $($_.Exception.Message). Continuing - each watcher below degrades on its own."
     }
 } else {
-    Write-Host "[bootstrap] Modules\watcher_mcp_bootstrap.ps1 not loaded - skipping MCP init (watchers start uninitialized)."
+    Write-Host "[provision] Modules\watcher_mcp_provision.ps1 not loaded - skipping MCP init (watchers start uninitialized)."
 }
 
 $grepaiLogsDir = Join-Path $env:LOCALAPPDATA 'grepai\logs'

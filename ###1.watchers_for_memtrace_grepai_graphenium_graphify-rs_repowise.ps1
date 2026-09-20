@@ -3757,7 +3757,7 @@ if ($repowiseExe -and (Test-Path -LiteralPath $repowiseExe)) {
 # <USERPROFILE>\.config\memtrace\workspace.toml (8 repos; this repo is member
 # #1). So the daemon is started with --workspace <manifest> AND its CWD set to
 # the manifest's directory - the same pattern as
-# C:\Users\yuni\.local\bin\memtrace_mcp_cwd_proxy.py v1.4.0 start_daemon().
+# <USERPROFILE>\.local\bin\memtrace_mcp_cwd_proxy.py v1.4.0 start_daemon().
 # It still dedups against an already-healthy daemon on :50051 (e.g. one the
 # gateway/proxy already started) so we never launch a second conflicting
 # instance on the same store.
@@ -3785,7 +3785,7 @@ if (-not $script:memtraceGitRoot) { $script:memtraceGitRoot = $watchersWorkspace
 # mcpw-aez / mcpw-uqh (2026-09-20) - WHY THIS STILL POINTS AT THE REPO-ROOT
 # .memdb EVEN THOUGH THE DAEMON NOW SERVES THE UNION STORE.
 # The authoritative daemon state file is the union store's, i.e.
-# <USERPROFILE>\.config\memtrace\.memdb\daemon-state.json (C:\Users\yuni\.memdb
+# <USERPROFILE>\.config\memtrace\.memdb\daemon-state.json (<USERPROFILE>\.memdb
 # is a junction to that same directory - identical file, verified by inode).
 # This variable deliberately does NOT point there. It is consumed by
 # teardown-state.json MemtraceStatePath -> Stop-AllWatchers step 4, which

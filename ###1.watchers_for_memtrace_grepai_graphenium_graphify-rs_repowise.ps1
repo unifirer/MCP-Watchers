@@ -5124,6 +5124,15 @@ try {
 # listener). An unidentified owner means SKIP, never guess. Two heal loops
 # re-daemonising one singleton is what killed memtrace (~85s flap); do not add a
 # second launcher for any of these ports.
+# mcpw-anb: this invariant is WHY the logon trigger went to the LAUNCHER and not
+# to :8787. Nothing used to start the launcher after a reboot (parent
+# explorer.exe, launched by hand), so nothing started :8787 either. A standalone
+# autostart entry for the proxy (option B) is forbidden: it is a second starter
+# for a port this launcher already supervises. So the LAUNCHER is autostarted:
+#   HKCU\Software\Microsoft\Windows\CurrentVersion\Run  MCP-Watchers-Launcher
+#   -> ###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.autostart.cmd
+# which cd's into the repo root (this launcher watches the cwd, README "Workspace
+# root") and calls the .bat. Do not add a second :8787 starter - disable it.
 $backendSupervisorScript = {
     param($BackendName, $Port, $HealthUrl, $SupervisorLog, $LockFile, $JobHelpersModule, $ScriptDir)
     $ErrorActionPreference = 'Continue'

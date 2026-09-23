@@ -75,6 +75,32 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File "###1.watchers_for_memtrace_grepai
 The launcher is a single-instance program. A second launch exits silently while
 the first one holds the lock.
 
+## Autostart, and who owns :8787
+
+The launcher is started at Windows logon by an HKCU Run entry:
+
+```
+HKCU\Software\Microsoft\Windows\CurrentVersion\Run
+  MCP-Watchers-Launcher = J:\audio\MCP-Watchers\###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.autostart.cmd
+```
+
+That `.cmd` is repo code: it `cd /d "%~dp0"` into the repo root (the launcher
+watches the current working directory, see below) and then calls the normal
+`.bat`. A Run entry inherits an unpredictable working directory, so the `cd` is
+what makes a logon start watch *this* repository.
+
+**Why the launcher is autostarted rather than the proxy itself.** `:8787`
+(headroom proxy) has exactly ONE supervised starter: the launcher's
+backend supervisor, registered as
+`Start-BackendSupervisor -Name 'headroom-proxy' -Port 8787`. Giving the proxy
+its own autostart entry would put two starters on one singleton — the shape
+that produced the memtrace flap and `mcpw-ymo`. The same rule already holds for
+the other launcher-owned ports: the `\MCPAgentMail8765`, `\ClaudeMCPServer8080`
+and `\GraphitiProxy8004` logon tasks are all **Disabled**.
+
+So: after a reboot the Run entry starts the launcher, and the launcher starts
+and heals `:8787`. Do not add a second `:8787` starter — disable or delete it.
+
 ## Workspace root
 
 The launcher watches the **current working directory**. The Windows Terminal

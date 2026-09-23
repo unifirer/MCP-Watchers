@@ -577,6 +577,92 @@ function Test-HttpPortAnswering {
     }
 }
 
+function Test-Neo4jReady {
+    <#
+    .SYNOPSIS
+        Is the Neo4j backend behind atlas-mcp-server actually SERVING?
+
+    .DESCRIPTION
+        mcpw-cnc.3. Two ports, and BOTH are required, because they answer
+        different questions:
+          7474 HTTP - reuses Test-HttpPortAnswering, the house probe. A real
+                      HTTP response, not just an accepted socket.
+          7687 Bolt - a raw LISTEN/TCP check. This is the port atlas connects
+                      through and the one that failed.
+
+        Requiring both is the entire point. The container publishes 7687 and
+        reports Running well before Bolt serves traffic: atlas logged 165
+        'Failed to initialize Neo4j driver' / ServiceUnavailable /
+        'read ECONNRESET' events between 2026-09-11 and 2026-09-22, and the last
+        one landed 9 seconds AFTER the container had started. An open port is not
+        readiness - that is exactly the defect this probe exists to catch.
+
+        Deliberately does NOT talk to Neo4j over Bolt itself: a real driver
+        handshake would need the password, and this probe must be safe to call
+        from anywhere, including before the credentials are read.
+
+    .EXAMPLE
+        if (Test-Neo4jReady) { Write-Host 'neo4j is serving' }
+    #>
+    param(
+        [int]$TimeoutMs = 3000,
+        [string]$Address = '127.0.0.1',
+        [int]$HttpPort = 7474,
+        [int]$BoltPort = 7687
+    )
+    if (-not (Test-HttpPortAnswering -Address $Address -Port $HttpPort -TimeoutMs $TimeoutMs)) { return $false }
+    $sock = $null
+    try {
+        $sock = New-Object System.Net.Sockets.TcpClient
+        $iar = $sock.BeginConnect($Address, $BoltPort, $null, $null)
+        if (-not $iar.AsyncWaitHandle.WaitOne($TimeoutMs)) { return $false }
+        if (-not $sock.Connected) { return $false }
+        [void]$sock.EndConnect($iar)
+        return $true
+    } catch {
+        return $false
+    } finally {
+        if ($sock) { try { $sock.Close() } catch { } }
+    }
+}
+
+function Wait-Neo4jReady {
+    <#
+    .SYNOPSIS
+        Block until Neo4j is serving, or the deadline passes.
+
+    .DESCRIPTION
+        mcpw-cnc.3. The bounded wait that closes the boot race: atlas starts with
+        Toolport at login while Docker Desktop is still bringing the container up,
+        so anything that needs the database must WAIT for it instead of assuming
+        it. Returns $true only if Test-Neo4jReady succeeded before the deadline.
+
+        On timeout it returns $false and emits a diagnostic - it never reports a
+        half-started backend as usable, and it never throws, so a caller can log
+        and continue rather than lose the whole launch.
+    #>
+    param(
+        [int]$TimeoutSec = 120,
+        [int]$PollSec = 3,
+        # Pass-through so a regression test can aim the wait at a DEAD port
+        # without touching the live database (bead mcpw-cnc.5). Without these the
+        # timeout path is untestable, and an untested timeout path is how a
+        # "bounded wait" quietly becomes an unbounded one.
+        [int]$HttpPort = 7474,
+        [int]$BoltPort = 7687
+    )
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-Neo4jReady -HttpPort $HttpPort -BoltPort $BoltPort) { return $true }
+        Start-Sleep -Seconds $PollSec
+    }
+    Write-Warning ("Neo4j not ready after ${TimeoutSec}s - atlas will not connect. " +
+        "Check: docker ps --filter name=neo4j-atlas-mcp-server ; " +
+        "docker logs --tail 50 neo4j-atlas-mcp-server ; " +
+        "browser console http://localhost:7474 (user 'neo4j').")
+    return $false
+}
+
 function Exit-IfPortHeldByLauncherDaemon {
     param(
         [int]$Port,
@@ -1366,7 +1452,11 @@ if (Get-Command Invoke-McpProvisionForRepo -ErrorAction SilentlyContinue) {
     # what happens to that scan once the watcher owns it).
     $mcpPending = @($mcpPreflight | Where-Object { -not $_.Ok })
     if ($mcpPreflight.Count -gt 0 -and $mcpPending.Count -eq 0) {
-        Write-Host "[provision] all six watched MCPs already report initialized for $watchersWorkspaceRoot - provisioning is unnecessary (running the stamp-gated provision anyway)."
+        # Count comes from the report, not a literal: this line said "all six"
+        # and went stale the moment atlas became the seventh step (mcpw-cnc.7).
+        # Deriving it means the next MCP added cannot make the log lie.
+        Write-Host ("[provision] all {0} watched MCPs already report initialized for {1} - provisioning is unnecessary (running the stamp-gated provision anyway)." -f `
+            $mcpPreflight.Count, $watchersWorkspaceRoot)
     } elseif ($mcpPending.Count -gt 0) {
         Write-Host ("[provision] {0} of {1} watched MCPs need provisioning for {2}: {3} (this can take minutes on a fresh index)..." -f `
             $mcpPending.Count, $mcpPreflight.Count, $watchersWorkspaceRoot, (($mcpPending | ForEach-Object { $_.Mcp }) -join ' '))
@@ -2736,6 +2826,44 @@ function Test-LlmProxyReady {
     }
 }
 
+# --- Graphenium semantic mode: LIVE toggle (bead mcpw-b81.1) ----------------
+# Decides whether the gm rebuild asks for LLM semantic enrichment. This is a
+# SWITCH, not a constant: the value is read from a per-repo state file that can
+# be flipped while the launcher is running, so no restart is needed.
+#
+# FILE: <repo>\.mcpw-provision\gm-semantic.mode, containing "on" or "off".
+# Why that path:
+#   - graphenium-out\ is UNSAFE: gm cleans that directory on every run (see the
+#     "Two builds race on the graphenium-out/ cleanup" note on the build mutex
+#     below), so a control file there can be deleted out from under the daemon.
+#   - .mcpw-provision\ is launcher-owned, already carries per-repo state
+#     (state.json), and is gitignored ("Launcher provisioning stamp").
+#   - Its dot-directory segment is skipped by BOTH the live rebuild's FSW filter
+#     and the pane's Add-RecentChange exclusions, so flipping the switch never
+#     triggers a rebuild storm.
+# ABSENT FILE (and anything unparseable) means OFF, so an operator who never
+# touches the switch keeps today's zero-token AST-only behaviour byte-for-byte.
+# Env MCPW_GM_SEMANTIC supplies the launch default when the file is absent.
+# This function NEVER throws: a missing, locked or garbage file is a normal OFF.
+# Standalone (like Test-LlmProxyReady) so tests can stub it.
+function Test-GmSemanticEnabled {
+    param([string]$RepoRoot = "")
+    $raw = $null
+    if ($RepoRoot) {
+        $modeFile = Join-Path $RepoRoot ".mcpw-provision\gm-semantic.mode"
+        try {
+            if (Test-Path -LiteralPath $modeFile) {
+                $raw = Get-Content -LiteralPath $modeFile -TotalCount 1 -ErrorAction Stop
+            }
+        } catch { $raw = $null }
+    }
+    if (($null -eq $raw) -or ([string]::IsNullOrWhiteSpace([string]$raw))) {
+        # No file (or unreadable): fall back to the env launch default.
+        return ($env:MCPW_GM_SEMANTIC -match '^(?i)(1|true|yes|on|enabled)$')
+    }
+    return (([string]$raw).Trim() -match '^(?i)(1|true|yes|on|enabled)$')
+}
+
 # --- Codegraph launch resolution ------------------------------------------
 # Returns @{ Exe = <absolute image>; Prefix = @(<arg>, ...) } or $null.
 #
@@ -2907,12 +3035,23 @@ function Invoke-GmSemanticBuild {
         [int]   $BuildKey = 0,
         [object]$State = $global:gmSemState
     )
+    # mcpw-b81.1: the semantic mode is re-read on EVERY build, so flipping the
+    # switch while the launcher runs takes effect from the next rebuild onward,
+    # with no restart. Default (no mode file) is OFF = AST-only, unchanged.
+    $semanticOn = Test-GmSemanticEnabled -RepoRoot $BuildDir
     # Degrade gracefully when there is nothing to do. The semantic build uses
     # ONLY the local LLM fallback proxy (11436); NOUS_API_KEY is no longer
     # consulted - the proxy owns all key rotation. An unreachable proxy must
     # NEVER hang or crash the watcher lifecycle; instead it skips the build and
     # (once per session) pops a notice.
-    if (-not (Test-LlmProxyReady)) {
+    #
+    # mcpw-b81.1: this gate is now CONDITIONAL on $semanticOn. Semantic
+    # enrichment is the only part of the pipeline that needs an LLM, so with
+    # semantic OFF the rebuild is pure AST extraction and needs no proxy at all.
+    # Gating it on the proxy anyway (the pre-b81 behaviour) meant a downed proxy
+    # silently cost the operator the structural graph too, which is the bug this
+    # change fixes: AST-only rebuilds now keep running with the proxy down.
+    if ($semanticOn -and -not (Test-LlmProxyReady)) {
         Write-Host "[gm-semantic] fallback proxy not reachable - skipping semantic build (graphenium stays AST-only)."
         if ($State -and -not $State.PopupShown) {
             $State.PopupShown = $true
@@ -2920,9 +3059,9 @@ function Invoke-GmSemanticBuild {
                 $popupPort = if ($env:LLM_PROXY_PORT) { $env:LLM_PROXY_PORT } else { "11436" }
                 $wshell = New-Object -ComObject WScript.Shell
                 $null = $wshell.Popup(
-                    "Graphenium semantic graph build is unavailable." +
-                    "`n`nThe LLM fallback proxy (port $popupPort) is not reachable, so the semantic graph stays AST-only. The structural AST graph still works." +
-                    "`n`nStart the fallback proxy (###2.llm_fallback_proxy.py) to enable semantic nodes.",
+                    "Graphenium semantic rebuild is unavailable." +
+                    "`n`nSemantic mode is ON, but the LLM fallback proxy (port $popupPort) is not reachable, so no rebuild ran. The structural AST graph is unaffected." +
+                    "`n`nStart the fallback proxy (###2.llm_fallback_proxy.py), or switch semantic off to resume AST-only rebuilds.",
                     0,
                     "VAD - Graphenium Semantic Build Unavailable",
                     48
@@ -2972,7 +3111,10 @@ function Invoke-GmSemanticBuild {
         # base + model).
         # LiteLLM handles real key rotation. Set LLM_PROXY_API_KEY to supply a key.
         $proxyKey = $env:LLM_PROXY_API_KEY
-        Write-Host "[gm-semantic] running FULL non-destructive gm rebuild via fallback proxy $proxyBase (model $proxyModel)..."
+        # Mode is logged so gm.log and the graphenium pane self-describe which
+        # path ran. The key is never logged: $proxyBase carries host:port only.
+        $modeLabel = if ($semanticOn) { "ON (LLM enrichment via $proxyBase, model $proxyModel)" } else { "OFF (AST-only)" }
+        Write-Host "[gm-semantic] running FULL non-destructive gm rebuild - semantic mode $modeLabel..."
         $runArgs = @(
             "run", "."
             "--provider", "openai-compatible",
@@ -2985,10 +3127,12 @@ function Invoke-GmSemanticBuild {
         # graph.json, replacing the whole graph (one touched file collapsed a
         # 5423-node graph to 15 nodes, live-reproduced 2026-09-16). A full run
         # rewrites every node, which is the only safe way to refresh the file.
-        # --no-semantic keeps that per-change rebuild free: the provider flags
-        # above stay wired for the day this returns to LLM enrichment, but no
-        # tokens/cloud calls are issued while the flag is set.
-        $runArgs += "--no-semantic"
+        # mcpw-b81.1: --no-semantic is now CONDITIONAL on the live semantic
+        # switch instead of hardcoded. Semantic OFF keeps the per-change rebuild
+        # free (AST-only, no tokens, no cloud calls) exactly as before; semantic
+        # ON lets the provider flags above do the LLM enrichment, which is the
+        # only part of the pipeline that costs tokens and wall-clock.
+        if (-not $semanticOn) { $runArgs += "--no-semantic" }
         $runArgs += "--no-report"
         $hadGmKey = Test-Path env:GRAPHENIUM_API_KEY
         $prevGmKey = $env:GRAPHENIUM_API_KEY
@@ -3503,6 +3647,15 @@ $global:gmSemState = @{
     Changed    = $false
     LastBuild  = [datetime]::UtcNow
     PopupShown = $false
+    # mcpw-b81.2: the LIVE semantic switch. The thread-job re-reads the mode file
+    # every iteration and compares it against SemanticModeSeen; a difference sets
+    # ModeChanged, which makes the rebuild fire promptly instead of waiting for
+    # the next unrelated edit or the 600 s stale timer. This is REQUIRED for the
+    # toggle to be live at all: the control file sits in a dot-directory that both
+    # watchers deliberately skip, so flipping it generates no FileSystemWatcher
+    # event and nothing else would ever notice.
+    SemanticModeSeen = (Test-GmSemanticEnabled -RepoRoot $watchersWorkspaceRoot)
+    ModeChanged      = $false
     # VAD-zfb6 (2026-09-06): FSW event actions only ENQUEUE the raw path here
     # (O(1), no per-event canonicalization) and the thread-job drains it each
     # iteration. The old per-event Action did GetFullPath + segment splitting on
@@ -3581,9 +3734,13 @@ try {
 # VAD-k9fix (2026-09-07): define the scriptblock once and reuse it for both
 # Start-ThreadJob and Start-Job (fallback when ThreadJob module unavailable).
 $gmSemScriptBlock = {
-    param($State, $BuildSrc, $ProbeSrc, $BuildDir, $RunLog)
+    param($State, $BuildSrc, $ProbeSrc, $BuildDir, $RunLog, $ModeSrc)
     Set-Item -Path function:Test-LlmProxyReady     -Value ([scriptblock]::Create($ProbeSrc))
     Set-Item -Path function:Invoke-GmSemanticBuild -Value ([scriptblock]::Create($BuildSrc))
+    # mcpw-b81.2: the mode reader is rebuilt inside this runspace too. A thread
+    # job inherits NO functions, so Invoke-GmSemanticBuild could not resolve
+    # Test-GmSemanticEnabled otherwise and every single build would throw.
+    Set-Item -Path function:Test-GmSemanticEnabled -Value ([scriptblock]::Create($ModeSrc))
     $debounceSec  = 10          # wait this long after the last edit before building
     $maxStaleSec  = 600         # safety: rebuild at least every 10 min even if idle
     $consecFails  = 0
@@ -3609,11 +3766,29 @@ $gmSemScriptBlock = {
             } catch { }
         }
         if ($sawChange) { $State.Changed = $true }
+        # mcpw-b81.2: re-read the LIVE semantic switch every iteration. The control
+        # file lives in a dot-directory BOTH watchers skip, so flipping it fires no
+        # FSW event - polling here is the only thing that makes the toggle take
+        # effect without a restart. A read failure means "unchanged", never fatal.
+        try {
+            $modeNow = Test-GmSemanticEnabled -RepoRoot $BuildDir
+            if ($modeNow -ne $State.SemanticModeSeen) {
+                $wasLabel = if ($State.SemanticModeSeen) { 'on' } else { 'off' }
+                $nowLabel = if ($modeNow) { 'on' } else { 'off' }
+                Write-Host "[gm-semantic] semantic mode changed $wasLabel -> $nowLabel; rebuilding."
+                $State.SemanticModeSeen = $modeNow
+                $State.ModeChanged = $true
+            }
+        } catch { }
         $now = [datetime]::UtcNow
         $quiet = ($now - $State.LastBuild).TotalSeconds
         $stale = ($now - $State.LastBuild).TotalSeconds -ge $maxStaleSec
-        if (($State.Changed -and $quiet -ge $debounceSec) -or $stale) {
+        # mcpw-b81.2: -or $State.ModeChanged bypasses BOTH the debounce and the
+        # stale timer, so a flip is honoured within one 2 s poll rather than on
+        # the next unrelated edit or up to 10 minutes later.
+        if (($State.Changed -and $quiet -ge $debounceSec) -or $stale -or $State.ModeChanged) {
             $State.Changed = $false
+            $State.ModeChanged = $false
             $State.LastBuild = [datetime]::UtcNow
             try {
                 # NOTE: paths ride in as plain string arguments - $using: inside
@@ -3633,9 +3808,9 @@ $gmSemScriptBlock = {
     }
 }
 if (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue) {
-    $gmSemJob = Start-ThreadJob -ArgumentList $global:gmSemState, (${function:Invoke-GmSemanticBuild}.ToString()), (${function:Test-LlmProxyReady}.ToString()), $watchersWorkspaceRoot, $gmRunLog -ScriptBlock $gmSemScriptBlock -ErrorAction SilentlyContinue
+    $gmSemJob = Start-ThreadJob -ArgumentList $global:gmSemState, (${function:Invoke-GmSemanticBuild}.ToString()), (${function:Test-LlmProxyReady}.ToString()), $watchersWorkspaceRoot, $gmRunLog, (${function:Test-GmSemanticEnabled}.ToString()) -ScriptBlock $gmSemScriptBlock -ErrorAction SilentlyContinue
 } else {
-    $gmSemJob = Start-Job -ArgumentList $global:gmSemState, (${function:Invoke-GmSemanticBuild}.ToString()), (${function:Test-LlmProxyReady}.ToString()), $watchersWorkspaceRoot, $gmRunLog -ScriptBlock $gmSemScriptBlock -ErrorAction SilentlyContinue
+    $gmSemJob = Start-Job -ArgumentList $global:gmSemState, (${function:Invoke-GmSemanticBuild}.ToString()), (${function:Test-LlmProxyReady}.ToString()), $watchersWorkspaceRoot, $gmRunLog, (${function:Test-GmSemanticEnabled}.ToString()) -ScriptBlock $gmSemScriptBlock -ErrorAction SilentlyContinue
 }
 if (-not $gmSemJob) { Write-Warning "[gm-semantic] could not start incremental loop (Start-ThreadJob unavailable). Semantic graph will refresh only on next launcher start." }
 elseif ($gmSemJob.State -eq 'Failed') { Write-Warning ("[gm-semantic] incremental loop job failed at start: " + (($gmSemJob | Receive-Job -Keep -ErrorAction SilentlyContinue) | Out-String)) }
@@ -4176,8 +4351,11 @@ function Get-OrphanedMemtraceHostPids {
     param([string]$ShimPattern = 'memtrace\.ps1')
     $found = @()
     try {
+        # mcpw-xeu.4: shell hosts behind $script:WatcherShellHostNames (defined
+        # in Modules/watcher_patterns.ps1); fallback preserves legacy behavior.
+        $__shellHosts = if ($script:WatcherShellHostNames) { $script:WatcherShellHostNames } else { @('powershell.exe', 'pwsh.exe') }
         $hosts = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -eq 'powershell.exe' -or $_.Name -eq 'pwsh.exe' })
+            Where-Object { $__shellHosts -contains $_.Name })
         foreach ($h in $hosts) {
             if ([string]$h.CommandLine -notmatch $ShimPattern) { continue }
             $id = [uint32]$h.ProcessId
@@ -4899,7 +5077,8 @@ try {
 
 # --- Backend auto-heal supervisors (vad-10m.2, Option A) -----
 # One supervisor per persistent singleton (mail :8765,
-# claude-mcp :8080, graphiti-embed :8003), modelled
+# claude-mcp :8080, graphiti-embed :8003, lean-ctx :4444,
+# headroom-proxy :8787), modelled
 # on the litellm/memtrace supervisors. The graphiti-mcp DOCKER container
 # (:8002) is Docker-owned and intentionally NOT supervised here. Its former
 # host-side :8004 session adapter was retired on 2026-09-20 (Toolport now
@@ -4915,6 +5094,18 @@ try {
 # the literal path bound in -ArgumentList. Backoff reuses
 # Get-LitellmBackoffDelay (generic math, 15s base, 300s cap). Logs are bounded
 # via Limit-LogSize. PS 5.1 compatible, ASCII-only.
+# SINGLE-OWNER INVARIANT (mcpw-ymo.2): exactly ONE supervised starter owns each
+# port below - Start-BackendSupervisor -Name 'mail' owns :8765, 'claude-mcp'
+# owns :8080, 'graphiti-embed' owns :8003, 'headroom-proxy' owns :8787. The
+# headroom proxy must NOT also be registered as a headroom persistent deployment
+# (`headroom install apply`): two managers for one daemon is the memtrace flap
+# class. Its Toolport stdio registration is a DIFFERENT process (`headroom mcp
+# serve`) and stays untouched (mcpw-a5q). The periodic duplicate reaper is a
+# last-resort safety net, NOT a second starter: it must never terminate a
+# process it cannot PROVE is redundant (one that is not the confirmed :Port
+# listener). An unidentified owner means SKIP, never guess. Two heal loops
+# re-daemonising one singleton is what killed memtrace (~85s flap); do not add a
+# second launcher for any of these ports.
 $backendSupervisorScript = {
     param($BackendName, $Port, $HealthUrl, $SupervisorLog, $LockFile, $JobHelpersModule, $ScriptDir)
     $ErrorActionPreference = 'Continue'
@@ -4941,6 +5132,17 @@ $backendSupervisorScript = {
             return $false
         } catch { return $false } finally { if ($s) { try { $s.Close() } catch {} } }
     }
+    # mcpw-ymo.3: Start-Process -RedirectStandardOutput TRUNCATES its target on
+    # every call, so a fast death after a relaunch left serve.log/serve.log.err
+    # at 0 bytes and every post-mortem was blind. Each relaunch now writes its
+    # OWN file and the path is logged next to the PID, so no attempt's output is
+    # overwritten by the next one.
+    function New-BackendAttemptLog {
+        param([string]$Dir, [string]$Stem)
+        try { if ($Dir -and -not (Test-Path -LiteralPath $Dir)) { New-Item -ItemType Directory -Path $Dir -Force | Out-Null } } catch {}
+        $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+        return (Join-Path $Dir ($Stem + '.' + $stamp + '.log'))
+    }
     function Start-MailBackend {
         $cmd = $null
         foreach ($cand in @((Join-Path $env:USERPROFILE ".local\mcp-agent-mail\run_server.cmd"), (Join-Path $env:LOCALAPPDATA "mcp-agent-mail\run_server.cmd"))) {
@@ -4950,13 +5152,18 @@ $backendSupervisorScript = {
             $r = Get-Command "run_server.cmd" -ErrorAction SilentlyContinue
             if ($r) { $cmd = $r.Source }
         }
-        if (-not $cmd -or -not (Test-Path -LiteralPath $cmd)) { Write-BackendSupLog "run_server.cmd not found - skipping relaunch"; return }
-        $log = Join-Path $env:LOCALAPPDATA "mcp-agent-mail\serve.log"
+        if (-not $cmd -or -not (Test-Path -LiteralPath $cmd)) { Write-BackendSupLog "run_server.cmd not found - skipping relaunch"; return 0 }
+        $logDir = Join-Path $env:LOCALAPPDATA "mcp-agent-mail"
+        $log = New-BackendAttemptLog -Dir $logDir -Stem 'serve'
         try {
             $p = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$cmd`"" `
                 -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError "$log.err" -PassThru
-            if ($p) { Write-BackendSupLog "relaunched mail backend (PID $($p.Id))" }
+            if ($p) {
+                Write-BackendSupLog "relaunched mail backend (PID $($p.Id)) log=$log"
+                return [int]$p.Id
+            }
         } catch { Write-BackendSupLog "mail relaunch failed: $($_.Exception.Message)" }
+        return 0
     }
     function Start-ClaudeBackend {
         $cands = @()
@@ -4971,15 +5178,20 @@ $backendSupervisorScript = {
         $cands += (Join-Path $env:APPDATA "npm\node_modules\claude-mcp-server\dist\cli.js")
         if ($ScriptDir) { $cands += (Join-Path $ScriptDir "..\npm-global\node_modules\claude-mcp-server\dist\cli.js") }
         $cli = $cands | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-        if (-not $cli) { Write-BackendSupLog "claude-mcp-server CLI not found - skipping relaunch"; return }
+        if (-not $cli) { Write-BackendSupLog "claude-mcp-server CLI not found - skipping relaunch"; return 0 }
         $nodeExe = (Get-Command node.exe -ErrorAction SilentlyContinue).Source
         if (-not $nodeExe) { $nodeExe = "node" }
-        $log = Join-Path $env:LOCALAPPDATA "claude-mcp-server\claude-mcp-server.log"
+        $logDir = Join-Path $env:LOCALAPPDATA "claude-mcp-server"
+        $log = New-BackendAttemptLog -Dir $logDir -Stem 'claude-mcp-server'
         try {
             $p = Start-Process -FilePath $nodeExe -ArgumentList "`"$cli`"" `
                 -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError "$log.err" -PassThru
-            if ($p) { Write-BackendSupLog "relaunched claude-mcp backend (PID $($p.Id)) on :8080" }
+            if ($p) {
+                Write-BackendSupLog "relaunched claude-mcp backend (PID $($p.Id)) on :8080 log=$log"
+                return [int]$p.Id
+            }
         } catch { Write-BackendSupLog "claude-mcp relaunch failed: $($_.Exception.Message)" }
+        return 0
     }
     function Start-GraphitiEmbedBackend {
         $embedPy = Join-Path $env:LOCALAPPDATA "Programs\graphiti-mcp\mcp_server\.venv\Scripts\python.exe"
@@ -4996,14 +5208,19 @@ $backendSupervisorScript = {
             $pyCmd = Get-Command "python.exe" -ErrorAction SilentlyContinue
             if ($pyCmd) { $embedPy = $pyCmd.Source }
         }
-        if (-not (Test-Path -LiteralPath $embedPy)) { Write-BackendSupLog "graphiti embed python not found - skipping relaunch"; return }
-        if (-not $embedScript) { Write-BackendSupLog "embed_server.py not found - skipping relaunch"; return }
-        $log = Join-Path $env:LOCALAPPDATA "graphiti-embed\embed-8003.log"
+        if (-not (Test-Path -LiteralPath $embedPy)) { Write-BackendSupLog "graphiti embed python not found - skipping relaunch"; return 0 }
+        if (-not $embedScript) { Write-BackendSupLog "embed_server.py not found - skipping relaunch"; return 0 }
+        $logDir = Join-Path $env:LOCALAPPDATA "graphiti-embed"
+        $log = New-BackendAttemptLog -Dir $logDir -Stem 'embed-8003'
         try {
             $p = Start-Process -FilePath $embedPy -ArgumentList "`"$embedScript`"", "8003" `
                 -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError "$log.err" -PassThru
-            if ($p) { Write-BackendSupLog "relaunched graphiti-embed backend (PID $($p.Id)) on :8003" }
+            if ($p) {
+                Write-BackendSupLog "relaunched graphiti-embed backend (PID $($p.Id)) on :8003 log=$log"
+                return [int]$p.Id
+            }
         } catch { Write-BackendSupLog "graphiti-embed relaunch failed: $($_.Exception.Message)" }
+        return 0
     }
     function Start-LeanCtxBackend {
         $exe = $null
@@ -5011,21 +5228,104 @@ $backendSupervisorScript = {
             $c = Get-Command $cand -ErrorAction SilentlyContinue
             if ($c) { $exe = $c.Source; break }
         }
-        if (-not $exe) { Write-BackendSupLog "lean-ctx not found on PATH - skipping relaunch"; return }
+        if (-not $exe) { Write-BackendSupLog "lean-ctx not found on PATH - skipping relaunch"; return 0 }
         $logDir = Join-Path $env:LOCALAPPDATA "lean-ctx"
-        $log = Join-Path $logDir "proxy-4444.log"
-        try { New-Item -ItemType Directory -Path $logDir -Force | Out-Null } catch {}
+        $log = New-BackendAttemptLog -Dir $logDir -Stem 'proxy-4444'
         try {
             $p = Start-Process -FilePath $exe -ArgumentList "proxy", "start", "--port=4444" `
                 -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError "$log.err" -PassThru
-            if ($p) { Write-BackendSupLog "relaunched lean-ctx proxy (PID $($p.Id)) on :4444" }
+            if ($p) {
+                Write-BackendSupLog "relaunched lean-ctx proxy (PID $($p.Id)) on :4444 log=$log"
+                return [int]$p.Id
+            }
         } catch { Write-BackendSupLog "lean-ctx relaunch failed: $($_.Exception.Message)" }
+        return 0
+    }
+    # mcpw-a5q: headroom proxy (:8787). Runs from its OWN venv, not from the
+    # shared Python310 site-packages: that interpreter lost files to interrupted
+    # pip runs (mcpw-llj), so the consumer is isolated instead of repaired in
+    # place. The venv path is overridable for a relocated install; a missing exe
+    # is a logged skip, never a throw. Health probe is the proxy's own /livez
+    # (a bare TCP connect is not enough - it is the process liveness endpoint).
+    function Start-HeadroomProxyBackend {
+        $exe = $env:HEADROOM_PROXY_EXE
+        if (-not $exe) { $exe = Join-Path $env:USERPROFILE '.headroom\proxy-venv\Scripts\headroom.exe' }
+        if (-not (Test-Path -LiteralPath $exe)) { Write-BackendSupLog "headroom proxy exe not found at $exe - skipping relaunch"; return 0 }
+        $logDir = Join-Path $env:LOCALAPPDATA "headroom"
+        $log = New-BackendAttemptLog -Dir $logDir -Stem 'proxy-8787'
+        try {
+            $p = Start-Process -FilePath $exe -ArgumentList "proxy" `
+                -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError "$log.err" -PassThru
+            if ($p) {
+                Write-BackendSupLog "relaunched headroom proxy (PID $($p.Id)) on :8787 log=$log"
+                return [int]$p.Id
+            }
+        } catch { Write-BackendSupLog "headroom proxy relaunch failed: $($_.Exception.Message)" }
+        return 0
+    }
+    # mcpw-cnc.2: the Neo4j container behind atlas-mcp-server. Docker Desktop
+    # already autostarts it (container restart policy 'unless-stopped' plus
+    # Docker Desktop AutoStart), so this is a GUARD, not the primary starter. It
+    # covers the case where Docker came up late after login, or the container was
+    # stopped by hand. 'docker start' is idempotent.
+    #
+    # A container that is already RUNNING but not yet ready is deliberately LEFT
+    # ALONE: restarting it would discard its startup progress and make the very
+    # race this guard exists to close worse. Readiness is not this function's job
+    # - see Test-Neo4jReady / Wait-Neo4jReady near Test-HttpPortAnswering.
+    #
+    # A MISSING container is a logged skip, never a throw: recreating it needs the
+    # compose file plus a volume migration (docker/neo4j-atlas/README.md), which
+    # is not something a supervisor loop may do silently.
+    #
+    # Returns 0 in every case. It intentionally does NOT return a PID: there is no
+    # host process to track, and a fake PID would corrupt the relaunch bookkeeping
+    # that the other backends rely on. The 15s probe loop re-checks instead.
+    function Start-Neo4jBackend {
+        $container = $env:NEO4J_ATLAS_CONTAINER
+        if (-not $container) { $container = 'neo4j-atlas-mcp-server' }
+        $docker = $null
+        $found = Get-Command docker -ErrorAction SilentlyContinue
+        if ($found) { $docker = $found.Source }
+        if (-not $docker) {
+            $cand = Join-Path $env:ProgramFiles 'Docker\Docker\resources\bin\docker.exe'
+            if (Test-Path -LiteralPath $cand) { $docker = $cand }
+        }
+        if (-not $docker) { Write-BackendSupLog "docker CLI not found - cannot check the neo4j container '$container'"; return 0 }
+        $logDir = Join-Path $env:LOCALAPPDATA 'neo4j-atlas'
+        $log = New-BackendAttemptLog -Dir $logDir -Stem 'docker-start'
+        $state = ''
+        try {
+            $raw = [string](& $docker inspect -f '{{.State.Running}}' $container 2>&1)
+            $state = ($raw -split "`n")[0].Trim()
+        } catch { $state = '' }
+        if ($state -eq 'true') {
+            Write-BackendSupLog "neo4j container '$container' is running but not ready yet - leaving it alone to finish starting"
+            return 0
+        }
+        if ($state -ne 'false') {
+            Write-BackendSupLog "neo4j container '$container' not found or docker unreachable ('$state') - skipping; recreate it from docker/neo4j-atlas/ (see its README: needs a volume migration)"
+            return 0
+        }
+        try {
+            $out = ([string](& $docker start $container 2>&1)).Trim()
+            Write-BackendSupLog "started neo4j container '$container' -> $out (attempt log=$log)"
+        } catch { Write-BackendSupLog "neo4j container start failed: $($_.Exception.Message)" }
+        return 0
     }
     Write-BackendSupLog "$BackendName supervisor started (port $Port, Option A: exits with launcher, backend persists)"
     Start-Sleep -Seconds 30
     $fails = 0
     $throttled = $false
     $supLoop = 0
+    # mcpw-ymo.3: startup grace window. A relaunch that has not bound $Port yet
+    # is NOT the port owner, so it used to be instantly eligible for reaping.
+    # Any matching process younger than this window is exempt, and the PID we
+    # just started is exempt outright. Observed bind time is 18-33s; 90s is
+    # comfortably longer. Plain constant - no new timing math.
+    $startupGraceSec = 90
+    $relaunchPid = 0
+    $relaunchAt = [datetime]::MinValue
     while ($true) {
         $sleepSec = 15
         try {
@@ -5067,18 +5367,65 @@ $backendSupervisorScript = {
                     $fails = 0
                     $throttled = $false
                 } else {
-                    if (-not $throttled) { Write-BackendSupLog "$BackendName port $Port dead - relaunching (failure $fails)" }
-                    elseif (($fails % 10) -eq 0) { Write-BackendSupLog "$BackendName still dead (failure $fails) - throttled, next probe in ${sleepSec}s" }
-                    if ($BackendName -eq 'mail') { Start-MailBackend }
-                    elseif ($BackendName -eq 'claude-mcp') { Start-ClaudeBackend }
-                    elseif ($BackendName -eq 'graphiti-embed') { Start-GraphitiEmbedBackend }
-                    elseif ($BackendName -eq 'lean-ctx') { Start-LeanCtxBackend }
-                    Start-Sleep 2
+                    # mcpw-ymo.3: do not start a SECOND instance while a previous
+                    # relaunch is still inside its startup window - that race is
+                    # what made two python.exe -m mcp_agent_mail.cli coexist and
+                    # gave the reaper something to kill. Time-based only: the
+                    # launched PID may be a cmd.exe wrapper that exits while the
+                    # real python child keeps starting, so process liveness is
+                    # not a reliable proxy for "still binding".
+                    $inStartupWindow = $false
+                    $rlAge = -1
+                    if ($relaunchPid -gt 0) {
+                        $rlAge = [int]((Get-Date) - $relaunchAt).TotalSeconds
+                        if ($rlAge -lt $startupGraceSec) { $inStartupWindow = $true }
+                    }
+                    if ($inStartupWindow) {
+                        Write-BackendSupLog "$BackendName relaunch PID $relaunchPid still in startup window (${rlAge}s of ${startupGraceSec}s) - not starting a second instance"
+                    } else {
+                        if (-not $throttled) { Write-BackendSupLog "$BackendName port $Port dead - relaunching (failure $fails)" }
+                        elseif (($fails % 10) -eq 0) { Write-BackendSupLog "$BackendName still dead (failure $fails) - throttled, next probe in ${sleepSec}s" }
+                        $newPid = 0
+                        if ($BackendName -eq 'mail') { $newPid = Start-MailBackend }
+                        elseif ($BackendName -eq 'claude-mcp') { $newPid = Start-ClaudeBackend }
+                        elseif ($BackendName -eq 'graphiti-embed') { $newPid = Start-GraphitiEmbedBackend }
+                        elseif ($BackendName -eq 'lean-ctx') { $newPid = Start-LeanCtxBackend }
+                        elseif ($BackendName -eq 'headroom-proxy') { $newPid = Start-HeadroomProxyBackend }
+                        elseif ($BackendName -eq 'neo4j') { $newPid = Start-Neo4jBackend }
+                        if ($newPid -gt 0) {
+                            $relaunchPid = $newPid
+                            $relaunchAt = Get-Date
+                            # Poll for the bind instead of sleeping 2s and moving
+                            # on: the old 2s sleep declared failure ~19s later
+                            # while the first process was still starting. Wait out
+                            # the observed bind time before counting it failed.
+                            $bindDeadline = (Get-Date).AddSeconds($startupGraceSec)
+                            $bound = $false
+                            while ((Get-Date) -lt $bindDeadline) {
+                                if (Test-BackendAlive) { $bound = $true; break }
+                                Start-Sleep -Seconds 3
+                            }
+                            if ($bound) {
+                                Write-BackendSupLog "$BackendName relaunch PID $newPid bound :$Port within ${startupGraceSec}s - failure counter reset"
+                                $fails = 0
+                                $throttled = $false
+                            } else {
+                                Write-BackendSupLog "$BackendName relaunch PID $newPid did NOT bind :$Port within ${startupGraceSec}s - will re-probe before any further relaunch"
+                            }
+                        } else {
+                            Start-Sleep 2
+                        }
+                    }
                 }
             }
-            # vad-10m.3: periodic duplicate reap, every 4th loop. Token AND
-            # duplication scoped: only own image+token matches, keep the port
-            # owner (oldest on ties), reap extras, log to supervisor log.
+            # vad-10m.3 / mcpw-ymo.2 / mcpw-ymo.3: periodic duplicate reap, every
+            # 4th loop. Token AND duplication scoped: only own image+token
+            # matches. The keeper MUST be the confirmed :Port listener - if no
+            # match owns the port, redundancy is UNPROVEN and we SKIP (the old
+            # "oldest wins" fallback terminated the live server). A process
+            # younger than the startup grace window, or the PID we just
+            # relaunched, is never reaped. Every decision is logged with both
+            # PIDs, their ages and whether the owner was identified.
             if (($supLoop % 4) -eq 0) {
                 try {
                     $dupImage = ''
@@ -5086,21 +5433,83 @@ $backendSupervisorScript = {
                     if ($BackendName -eq 'mail') { $dupImage = 'python.exe'; $dupToken = 'mcp_agent_mail' }
                     elseif ($BackendName -eq 'claude-mcp') { $dupImage = 'node.exe'; $dupToken = 'claude-mcp-server' }
                     elseif ($BackendName -eq 'graphiti-embed') { $dupImage = 'python.exe'; $dupToken = 'embed_server' }
+                    elseif ($BackendName -eq 'headroom-proxy') { $dupImage = 'python.exe'; $dupToken = 'proxy-venv' }
                     if ($dupImage -ne '') {
                         $dups = @(Get-CimInstance Win32_Process -Filter "Name='$dupImage'" -ErrorAction SilentlyContinue |
                             Where-Object { $_.CommandLine -and ($_.CommandLine -like ('*' + $dupToken + '*')) })
                         if ($dups.Count -gt 1) {
+                            $now = Get-Date
                             $owners = @{}
                             foreach ($oc in @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)) { $owners[[uint32]$oc.OwningProcess] = $true }
                             $keep = $null
                             foreach ($dd in $dups) { if ($owners.ContainsKey([uint32]$dd.ProcessId)) { $keep = $dd; break } }
-                            if ($null -eq $keep) { $keep = $dups | Sort-Object CreationDate | Select-Object -First 1 }
-                            foreach ($dd in $dups) {
-                                if ($dd.ProcessId -eq $keep.ProcessId) { continue }
+                            if ($null -eq $keep) {
+                                $candDesc = ($dups | ForEach-Object {
+                                    $a = 'unknown'
+                                    try { $a = [string][int]($now - $_.CreationDate).TotalSeconds } catch {}
+                                    'PID ' + $_.ProcessId + ' age ' + $a + 's'
+                                }) -join '; '
+                                Write-BackendSupLog "$BackendName reap SKIPPED - owner identified: no (no match owns :$Port); candidates: $candDesc"
+                            } else {
+                                $keepAge = 'unknown'
+                                try { $keepAge = [string][int]($now - $keep.CreationDate).TotalSeconds } catch {}
+                                # mcpw-46c: never reap the keep-PID's own ancestry.
+                                # headroom-proxy is a 3-deep chain (headroom.exe ->
+                                # venv python -> shared python owning :8787); both
+                                # python.exe members match 'proxy-venv', so the
+                                # unfiltered set always counts 2 for one healthy
+                                # proxy and the parent gets reaped. Walk up from
+                                # $keep and skip any match in that ancestor set;
+                                # also skip any match that is a descendant of
+                                # $keep (keep-is-parent case). Same grace pattern
+                                # as mcpw-ymo.3: kinship is never proof of
+                                # redundancy.
+                                $keepKin = @{}
                                 try {
-                                    Invoke-CimMethod -InputObject $dd -MethodName Terminate -ErrorAction SilentlyContinue | Out-Null
-                                    Write-BackendSupLog "reaped duplicate $BackendName PID $($dd.ProcessId) - keeping PID $($keep.ProcessId) on :$Port"
+                                    $byPid = @{}
+                                    foreach ($ap in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)) { $byPid[[uint32]$ap.ProcessId] = $ap }
+                                    $cur = $keep
+                                    $guard = 0
+                                    while ($cur -and $guard -lt 20) {
+                                        $ppid = 0
+                                        try { $ppid = [uint32]$cur.ParentProcessId } catch { $ppid = 0 }
+                                        if ($ppid -le 0) { break }
+                                        $keepKin[[uint32]$ppid] = $true
+                                        if (-not $byPid.ContainsKey([uint32]$ppid)) { break }
+                                        $cur = $byPid[[uint32]$ppid]
+                                        $guard++
+                                    }
+                                    $keepId = [uint32]$keep.ProcessId
+                                    foreach ($ap in $byPid.Values) {
+                                        try { if ([uint32]$ap.ParentProcessId -eq $keepId) { $keepKin[[uint32]$ap.ProcessId] = $true } } catch {}
+                                    }
                                 } catch {}
+                                foreach ($dd in $dups) {
+                                    if ($dd.ProcessId -eq $keep.ProcessId) { continue }
+                                    if ($keepKin.ContainsKey([uint32]$dd.ProcessId)) {
+                                        Write-BackendSupLog "$BackendName reap skipped PID $($dd.ProcessId) (kin of keep PID $($keep.ProcessId) - same chain, not a duplicate)"
+                                        continue
+                                    }
+                                    $age = -1
+                                    $ageTxt = 'unknown'
+                                    try { $age = [int]($now - $dd.CreationDate).TotalSeconds; $ageTxt = [string]$age } catch {}
+                                    if ($age -ge 0 -and $age -lt $startupGraceSec) {
+                                        Write-BackendSupLog "$BackendName reap skipped PID $($dd.ProcessId) (age ${ageTxt}s < ${startupGraceSec}s grace) - keeping PID $($keep.ProcessId) (age ${keepAge}s, owner of :$Port)"
+                                        continue
+                                    }
+                                    if ($relaunchPid -gt 0 -and $dd.ProcessId -eq $relaunchPid -and ((Get-Date) - $relaunchAt).TotalSeconds -lt $startupGraceSec) {
+                                        Write-BackendSupLog "$BackendName reap skipped PID $($dd.ProcessId) (our relaunch, still in grace) - keeping PID $($keep.ProcessId) (owner of :$Port)"
+                                        continue
+                                    }
+                                    if ($age -lt 0) {
+                                        Write-BackendSupLog "$BackendName reap skipped PID $($dd.ProcessId) (age unknown - cannot prove redundant) - keeping PID $($keep.ProcessId) (owner of :$Port)"
+                                        continue
+                                    }
+                                    try {
+                                        Invoke-CimMethod -InputObject $dd -MethodName Terminate -ErrorAction SilentlyContinue | Out-Null
+                                        Write-BackendSupLog "$BackendName reaped duplicate PID $($dd.ProcessId) (age ${ageTxt}s) - keeping PID $($keep.ProcessId) (age ${keepAge}s, owner of :$Port; owner identified: yes)"
+                                    } catch {}
+                                }
                             }
                         }
                     }
@@ -5117,6 +5526,8 @@ $supMailLog = Join-Path $env:LOCALAPPDATA 'mcp-agent-mail\supervisor.log'
 $supClaudeLog = Join-Path $env:LOCALAPPDATA 'claude-mcp-server\supervisor.log'
 $supGraphitiEmbedLog = Join-Path $env:LOCALAPPDATA 'graphiti-embed\supervisor.log'
 $supLeanCtxLog = Join-Path $env:LOCALAPPDATA 'lean-ctx\supervisor.log'
+$supHeadroomLog = Join-Path $env:LOCALAPPDATA 'headroom\supervisor.log'
+$supNeo4jLog = Join-Path $env:LOCALAPPDATA 'neo4j-atlas\supervisor.log'
 function Start-BackendSupervisor {
     param($Name, $Port, $Health, $Log)
     if (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue) {
@@ -5131,6 +5542,24 @@ $script:mailSupJob = Start-BackendSupervisor -Name 'mail' -Port 8765 -Health '' 
 $script:claudeSupJob = Start-BackendSupervisor -Name 'claude-mcp' -Port 8080 -Health '' -Log $supClaudeLog
 $script:graphitiEmbedSupJob = Start-BackendSupervisor -Name 'graphiti-embed' -Port 8003 -Health 'http://127.0.0.1:8003/health' -Log $supGraphitiEmbedLog
 $script:leanCtxSupJob = Start-BackendSupervisor -Name 'lean-ctx' -Port 4444 -Health '' -Log $supLeanCtxLog
+$script:headroomSupJob = Start-BackendSupervisor -Name 'headroom-proxy' -Port 8787 -Health 'http://127.0.0.1:8787/livez' -Log $supHeadroomLog
+# mcpw-cnc.2/.3: Neo4j behind atlas-mcp-server. Port 7687 is Bolt - the port
+# atlas actually connects through, and the one that produced 165 'read
+# ECONNRESET' driver failures. The health probe is the 7474 HTTP endpoint rather
+# than a bare TCP connect to 7687: 7474 is a DIFFERENT port that only answers
+# once the server is actually serving, so an open socket on 7687 can no longer
+# pass as ready. (Confirmed 2026-09-23: one atlas failure landed 9 seconds AFTER
+# the container reported Running.)
+#
+# The strict both-ports gate consumers should call is Test-Neo4jReady; the
+# supervisor only needs enough signal to decide whether to relaunch.
+#
+# SINGLE-OWNER INVARIANT: this supervisor owns the CONTAINER's lifecycle and
+# nothing else. The container is owned by Docker (restart policy unless-stopped),
+# so this never recreates it, and 'neo4j' deliberately has no duplicate-reaper
+# entry - reaping host processes is meaningless for a container, and the
+# container is already a singleton by name.
+$script:neo4jSupJob = Start-BackendSupervisor -Name 'neo4j' -Port 7687 -Health 'http://127.0.0.1:7474' -Log $supNeo4jLog
 
 # (graphify-rs ignore-aware wrapper is launched detached + logged above, replacing graphify-rs watch)
 
@@ -5388,7 +5817,10 @@ if (Get-Command "wt" -ErrorAction SilentlyContinue) {
     # adds zero latency.
     function Get-WatcherPaneTailers {
         param([switch]$ThisWorkspaceOnly)
-        $all = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+        # mcpw-xeu.4: pane host behind $script:WatcherPaneHostName; fallback keeps
+        # pre-grid reset behavior identical when patterns module is absent.
+        $__paneHost = if ($script:WatcherPaneHostName) { $script:WatcherPaneHostName } else { 'powershell.exe' }
+        $all = @(Get-CimInstance Win32_Process -Filter "Name='$__paneHost'" -ErrorAction SilentlyContinue |
             Where-Object { $_.CommandLine -and $_.CommandLine -match [regex]::Escape('panes\tail_') })
         if (-not $ThisWorkspaceOnly) { return $all }
         return @($all | Where-Object { Test-WatcherPaneTailerIsOurs -Proc $_ })
@@ -5734,10 +6166,11 @@ Write-Host "Press Ctrl+C to stop all watchers and close everything."
 # (incl. $script:litellmProc); GrepaiPid carries $script:GrepaiPid;
 # MemtraceStatePath carries the memtrace daemon PID via .memdb/daemon-state.json
 # ($script:memtraceStartJob); claude-mcp-server / mail /
-# graphiti-embed are
+# graphiti-embed / lean-ctx / headroom-proxy are
 # intentionally persistent singletons (see blocks above,
 # $script:claudeMcpStartJob /
-# $script:mailMcpStartJob / $script:graphitiEmbedStartJob)
+# $script:mailMcpStartJob / $script:graphitiEmbedStartJob /
+# $script:leanCtxSupJob / $script:headroomSupJob)
 # and are excluded from RootPids by design. The graphiti-mcp CONTAINER (:8002)
 # is Docker-owned, also excluded by design; its host-side :8004 session adapter
 # was retired on 2026-09-20 (Toolport connects to :8002 directly).

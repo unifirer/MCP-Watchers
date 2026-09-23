@@ -215,7 +215,10 @@ function Test-GrapheniumWatcherAlive {
 }
 function Test-GraphifyRsWatcherAlive {
     try {
-        $w = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+        # mcpw-xeu.4: host name behind $script:WatcherPaneHostName; fallback keeps
+        # standalone dot-source behavior identical.
+        $__paneHost = if ($script:WatcherPaneHostName) { $script:WatcherPaneHostName } else { 'powershell.exe' }
+        $w = @(Get-CimInstance Win32_Process -Filter "Name='$__paneHost'" -ErrorAction SilentlyContinue |
             Where-Object { $_.CommandLine -and $_.CommandLine -match 'graphify-watch-wrapper' -and $_.CommandLine -match 'WatchMode' })
         return ($w.Count -gt 0)
     } catch { return $false }
@@ -242,13 +245,64 @@ function Test-RepowiseWatcherAlive {
 # detect -> heal -> re-flag loop self-limiting.
 $script:lastGmAutoFixTicks = 0
 $script:gmHealUntilTick = 0
+
+# --- graphenium semantic mode in the PANE (bead mcpw-b81.4) ------------------
+# Reads the SAME per-repo switch the ###1 launcher's live rebuild daemon polls:
+#     <repo>\.mcpw-provision\gm-semantic.mode        ("on" | "off")
+# This is a SECOND, independent build site. Before b81.4 it hardcoded
+# --no-semantic, which silently downgraded a semantic graph back to AST-only the
+# next time gm flagged the graph stale: the operator turned the switch on and the
+# very next heal quietly turned it off again, with the only evidence buried in
+# the pane log. Both sites must obey one switch.
+# NEVER throws: a missing, locked or garbage file is a normal OFF.
+function Test-GmSemanticMode {
+    param([string]$RepoRoot)
+    $f = Join-Path $RepoRoot '.mcpw-provision\gm-semantic.mode'
+    $t = $null
+    try {
+        if (Test-Path -LiteralPath $f) { $t = Get-Content -LiteralPath $f -TotalCount 1 -ErrorAction Stop }
+    } catch { return $false }
+    if ([string]::IsNullOrWhiteSpace([string]$t)) {
+        # No file: fall back to the env launch default, same as the launcher.
+        return ($env:MCPW_GM_SEMANTIC -match '^(?i)(1|true|yes|on|enabled)$')
+    }
+    return (([string]$t).Trim() -match '^(?i)(1|true|yes|on|enabled)$')
+}
+# Bounded (<=1 s) readiness probe for the LLM fallback proxy. Only consulted when
+# semantic is ON, because that is the only mode that needs an LLM. Deliberately
+# NOT the launcher's Test-LlmProxyReady: this is a separate powershell.exe with
+# no launcher functions, and an unbounded probe here would stall the pane's poll
+# loop and trip its heartbeat contract.
+function Test-GmPaneLlmProxyReady {
+    $port = 11436
+    if ($env:LLM_PROXY_PORT) { $port = [int]$env:LLM_PROXY_PORT }
+    try {
+        $sock = New-Object System.Net.Sockets.TcpClient
+        try {
+            $iar = $sock.BeginConnect('127.0.0.1', $port, $null, $null)
+            if ($iar.AsyncWaitHandle.WaitOne(1000) -and $sock.Connected) { $sock.EndConnect($iar); return $true }
+            return $false
+        } finally { try { $sock.Close() } catch {} }
+    } catch { return $false }
+}
+
 function Invoke-GrapheniumAutoFix {
     try {
         $nowTicks = [datetime]::UtcNow.Ticks
         $cooldownTicks = ([TimeSpan]::FromMinutes(10)).Ticks
         if ($script:lastGmAutoFixTicks -and ($nowTicks - $script:lastGmAutoFixTicks) -lt $cooldownTicks) { return }
         $script:lastGmAutoFixTicks = $nowTicks
-        Write-Host "[graphenium AUTO-FIX] stale-graph flag detected - running a full gm rebuild..."
+        # mcpw-b81.4: obey the live semantic switch BEFORE touching anything, so a
+        # skipped heal leaves the needs_update marker in place for a later retry
+        # instead of losing the flag.
+        $gmSemOn = Test-GmSemanticMode -RepoRoot $repo
+        if ($gmSemOn -and -not (Test-GmPaneLlmProxyReady)) {
+            # Deliberately NOT silently downgrading to AST-only: that silent
+            # downgrade is exactly the bug this bead fixes. Say why and stop.
+            Write-Host "[graphenium AUTO-FIX] semantic mode is ON but the LLM fallback proxy is not reachable - skipping the heal; the needs_update marker is left in place for a later retry. Start the proxy, or switch semantic off."
+            return
+        }
+        Write-Host ("[graphenium AUTO-FIX] stale-graph flag detected - running a full gm rebuild (semantic " + $(if ($gmSemOn) { 'ON' } else { 'OFF' }) + ")...")
         # Reap a lingering PRE-FIX `gm watch`: it was the incremental (0.19.3)
         # watcher that overwrote graph.json with only the changed files' nodes,
         # so any copy still alive would immediately undo this heal.
@@ -278,7 +332,13 @@ function Invoke-GrapheniumAutoFix {
         # tailer keep tailing the same $log/$err paths it opened at startup.
         # FULL build (never --update): gm's incremental mode REPLACES graph.json
         # with only the re-extracted files' nodes.
-        $cmdLine = '/c ""' + $gmCmd.Source + '" run . --no-semantic --no-viz --no-report >> "' + $log + '" 2>> "' + $err + '""'
+        # mcpw-b81.4: --no-semantic is CONDITIONAL on the live switch. With
+        # semantic OFF the string stays byte-identical to the pre-b81 command
+        # line; with it ON the heal runs LLM enrichment like the daemon does.
+        $gmArgs = ' run .'
+        if (-not $gmSemOn) { $gmArgs += ' --no-semantic' }
+        $gmArgs += ' --no-viz --no-report >> "'
+        $cmdLine = '/c ""' + $gmCmd.Source + '"' + $gmArgs + $log + '" 2>> "' + $err + '""'
         # mcpw-9lf: -WorkingDirectory with an empty operand is dropped by
         # Windows PowerShell 5.1, so the rebuild would run in the wrong
         # directory instead of failing. Refuse instead.

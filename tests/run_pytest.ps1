@@ -3,13 +3,21 @@
 Runs the MCP-Watchers pytest suite with an interpreter that actually has pytest.
 
 .DESCRIPTION
-mcpw-3nq: pytest 8.4.2 is installed in exactly ONE interpreter on this machine.
-`python`, `python3` and `py` all resolve to interpreters without pytest, so the
-suite looks unrunnable and the failure wastes a whole cycle. This runner probes
-candidate interpreters for `import pytest`, uses the first one that answers, and
-runs pytest from this script's own directory with the bare `-c pytest.ini` that
-tests/pytest.ini requires (a path like tests/pytest.ini double-resolves to
-tests/tests/pytest.ini and fails with FileNotFoundError).
+mcpw-xeu.1: the repo venv at .venv\Scripts\python.exe is the PINNED interpreter
+and is always tried first. It travels with the checkout, it carries the suite's
+dependencies at known versions, and its absolute path contains the workspace
+root - which is what makes process attribution exact rather than heuristic.
+Create it with `uv venv --python 3.14 .venv` and install into it with
+`uv pip install --python .venv\Scripts\python.exe <packages>`.
+
+mcpw-3nq: on a checkout without that venv, pytest may be installed in exactly
+ONE interpreter on the machine, while `python`, `python3` and `py` all resolve
+to interpreters without it, so the suite looks unrunnable and the failure wastes
+a whole cycle. This runner therefore probes the remaining candidate interpreters
+for `import pytest` and uses the first one that answers, and runs pytest from
+this script's own directory with the bare `-c pytest.ini` that tests/pytest.ini
+requires (a path like tests/pytest.ini double-resolves to tests/tests/pytest.ini
+and fails with FileNotFoundError).
 
 Any extra arguments are forwarded to pytest:
     .\run_pytest.ps1 -q test_git_slash_branch_ref.py
@@ -30,6 +38,14 @@ $testsDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 function Get-PythonCandidate {
     $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $paths = [System.Collections.Generic.List[string]]::new()
+
+    # mcpw-xeu.1: the repo venv is the pinned interpreter and wins outright.
+    # It is resolved from this script's own location, so it travels with the
+    # checkout instead of depending on what happens to be installed machine-wide.
+    # A checkout that has no venv simply falls through to the probes below.
+    $repoRoot = Split-Path -Parent $testsDir
+    $venvPython = Join-Path $repoRoot '.venv\Scripts\python.exe'
+    if (Test-Path -LiteralPath $venvPython) { $paths.Add($venvPython) }
 
     foreach ($p in @(
         (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python310\python.exe'),
@@ -90,15 +106,30 @@ if (-not $chosen) {
     Write-Host "No interpreter with pytest found. Probed $($tried.Count):" -ForegroundColor Red
     foreach ($t in $tried) { Write-Host "  - $t" }
     Write-Host ""
-    Write-Host "Install pytest into one of them, e.g.  <python> -m pip install pytest" -ForegroundColor Yellow
+    Write-Host "Preferred fix - create the repo venv (mcpw-xeu.1):" -ForegroundColor Yellow
+    Write-Host "  uv venv --python 3.14 .venv" -ForegroundColor Yellow
+    Write-Host "  uv pip install --python .venv\Scripts\python.exe psutil pywin32 pytest filelock pyyaml" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Or install pytest into one of the interpreters above:" -ForegroundColor Yellow
+    Write-Host "  <python> -m pip install pytest" -ForegroundColor Yellow
     exit 2
 }
 
 Write-Host "pytest $chosenVersion via $chosen" -ForegroundColor DarkGray
 Push-Location -LiteralPath $testsDir
 try {
-    & $chosen -m pytest -c pytest.ini @PytestArgs
-    $code = $LASTEXITCODE
+    # mcpw-a1d: WorkBuddy shells export PYTHONPATH to a shim dir whose
+    # sitecustomize fails CLOSED on deletes and corrupts pip/test envs.
+    # Clear it for the pytest child (and clear it yourself before any pip
+    # install: $env:PYTHONPATH = $null). 5.1-compatible: no ?? operator.
+    $savedPythonPath = $env:PYTHONPATH
+    $env:PYTHONPATH = $null
+    try {
+        & $chosen -m pytest -c pytest.ini @PytestArgs
+        $code = $LASTEXITCODE
+    } finally {
+        if ($savedPythonPath) { $env:PYTHONPATH = $savedPythonPath }
+    }
 } finally {
     Pop-Location
 }

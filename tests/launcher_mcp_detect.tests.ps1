@@ -353,8 +353,8 @@ Describe 'watcher_mcp_detect: one initialization probe per MCP' {
         $null = New-Item -ItemType Directory -Path $sandbox -Force
         try {
             $rows = @(Get-McpInitializationReport -Path $sandbox)
-            $rows.Count | Should -Be 6
-            ($rows | ForEach-Object { $_.Mcp }) -join ',' | Should -Be 'memtrace,grepai,graphenium,graphify-rs,repowise,graft'
+            $rows.Count | Should -Be 7
+            ($rows | ForEach-Object { $_.Mcp }) -join ',' | Should -Be 'memtrace,grepai,graphenium,graphify-rs,repowise,graft,atlas'
             $bad = @()
             foreach ($row in $rows) {
                 if ($row.Ok) { $bad += "$($row.Mcp): expected FALSE on an empty directory" }

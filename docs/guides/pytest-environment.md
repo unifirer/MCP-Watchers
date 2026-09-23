@@ -5,15 +5,17 @@ is broken. None of the failures below is a launcher defect. They are all
 environment gaps, and each one now has a deterministic behaviour: SKIP, not
 FAIL, when the environment cannot support the check.
 
-Run the suite from the tests directory with the bare ini name:
+Run the suite from the tests directory with the bare ini name, using the repo
+venv (see section 8):
 
 ```bash
 cd J:\audio\MCP-Watchers\tests
-python -m pytest -c pytest.ini -q
+..\.venv\Scripts\python.exe -m pytest -c pytest.ini -q
 ```
 
 `-c tests/pytest.ini` double-resolves to `tests/tests/pytest.ini` and fails
-with `FileNotFoundError`.
+with `FileNotFoundError`. `.\run_pytest.ps1` applies both rules for you and
+picks the interpreter: venv first, then machine-wide candidates.
 
 ## 1. Nested PowerShell host: `CommandNotFoundException`
 
@@ -173,6 +175,98 @@ first so a genuine code regression is no longer masked by the config assertion.
 Tracked as bead **mcpw-1lr**. This one is expected to stay red until someone
 approves adding `litellm.base_url: http://127.0.0.1:11436/v1`.
 
+## 8. Bare `python` is the wrong interpreter: no psutil, no pywin32, no pytest
+
+**Symptom.** Collection aborts with `ModuleNotFoundError`, or the suite looks
+unrunnable, on a box where the packages are demonstrably installed somewhere.
+
+**Root cause.** `python` on `PATH` resolves to the WorkBuddy sandboxed
+interpreter. Measured 2026-09-23:
+
+```
+python -c "import sys; print(sys.executable)"
+  C:\Users\yuni\.workbuddy-ai\binaries\python\versions\3.13.12\python.exe   (3.13.14)
+python -c "import psutil"      -> ModuleNotFoundError: No module named 'psutil'
+python -c "import win32event"  -> ModuleNotFoundError: No module named 'win32event'
+python -c "import pytest"      -> ModuleNotFoundError: No module named 'pytest'
+```
+
+The packages live in a different interpreter (`C:\Python314\python.exe`, 3.14.0:
+psutil 7.2.2, pywin32 312, pytest 9.0.1, PyYAML 6.0.3). Anything that hardcodes
+bare `python` therefore fails at import, not at logic.
+
+**Fix in repo (mcpw-xeu.1).** The repo pins its own venv at
+`.venv\Scripts\python.exe`, built on 3.14 and gitignored (`.gitignore` line 31),
+so it never dirties `git status`. `tests\run_pytest.ps1` tries it first and
+falls back to probing machine-wide candidates, so a checkout without a venv
+still works.
+
+```bash
+uv venv --python 3.14 .venv
+uv pip install --python .venv\Scripts\python.exe psutil pywin32 pytest filelock pyyaml
+```
+
+`filelock` and `pyyaml` are not port dependencies - they are what the existing
+suite imports, so the venv can run it at all. `psutil` and `pywin32` are the
+port's own gate dependencies.
+
+Check capability rather than presence - a venv that imports psutil but cannot
+take an exclusive lock passes an import check and still breaks the
+single-instance guard:
+
+```bash
+.venv\Scripts\python.exe dev_tools\check_venv.py
+```
+
+It runs the three primitives the port gates on: a named mutex including
+`WAIT_ABANDONED` = 128, an exclusive lock file with `FILE_SHARE_READ` (second
+writer refused, reader allowed), and a job object with `KILL_ON_JOB_CLOSE`
+(child dies on handle close), plus the psutil children/cmdline calls that
+replace the CIM queries. 17 of 17 checks passed 2026-09-23.
+
+Measured from the venv the same day: `--collect-only` succeeds over 27 files and
+196 tests, and `test_launcher_worktree_quoting.py` runs 5 passed. The full suite
+was deliberately not run here - several suites terminate real shell hosts and
+T20/T21 spawn the real launcher, so a full run belongs to a maintenance window,
+not to a venv check.
+
+**Why a venv and not just `py -3.14`.** Beyond reproducibility, the venv's
+absolute path contains the workspace root, so it appears verbatim in every pane
+host's command line. That turns `Test-WatchersProcessAttribution`
+(`Modules/watcher_workspace.ps1:75`) into an exact match instead of a substring
+heuristic over an 8-character key, which retires the `mcpw-ybs` cross-workspace
+attribution problem rather than continuing to survive it.
+
+## 9. WorkBuddy PYTHONPATH shim corrupts pip installs (mcpw-a1d, root cause of mcpw-llj)
+
+**Symptom.** `pip install` aborts mid-replacement with
+`[safe-delete][SAFE_DELETE_FAIL_CLOSED]` / `SHFileOperationW failed: 0x2`,
+leaving rename orphans (`~` prefix), emptied package dirs, and METADATA-less
+dist-infos (measured: 30 orphan dirs, 18 metadata-less dists, 8 empty dirs).
+
+**Root cause.** Every WorkBuddy shell sets `PYTHONPATH` to its shim dir
+(`...\cli\vendor\shim`), whose 48 KB `sitecustomize.py` auto-imports into EVERY
+Python process including pip. It routes deletion through a broker/Recycle Bin
+and fails CLOSED (re-raises when trash fails). pip deletes files routinely, so
+the shim raises partway and pip aborts half-updated.
+
+**Workaround (enforced).** Clear `PYTHONPATH` for the pip process; then
+`sitecustomize` is not found and installs complete normally. Never edit
+site-packages by hand to repair this; reinstall with a clean env instead.
+
+```powershell
+$env:PYTHONPATH = $null
+py -3.14 -m pip install <packages>
+```
+
+```bash
+PYTHONPATH= python -m pip install <packages>
+```
+
+`tests\run_pytest.ps1` clears `PYTHONPATH` for its pytest child for the same
+reason, and `tests\pytest.ini` carries the rule as a comment. No future session
+runs bare `pip` under a WorkBuddy shim: always clear first.
+
 ## Reporting a new failure
 
 Before filing a bead, check which layer failed:
@@ -245,6 +339,8 @@ failures. Older single-suite runners (`run_pester.py`, `run_pester6.py`,
 `run_launcher_suite.py`, `ps_query.py`) were left in `temp/`, which is
 gitignored and wiped — recreate from `run_pester_suite.py` if needed.
 
-Current baseline: 35 suites, 234 passed, 2 failed. Both failures are the
+Baseline (2026-09-19 sweep): 35 suites, 234 passed, 2 failed. The repo now
+ships **48 Pester suites** (and 26 pytest files) — re-run
+`dev_tools/sweep_pester.py` for the current pass/fail. Both failures are the
 `mcpw-lqy` teardown suites, which are red by design pending a decision — see
 `docs/changelogs/2026-09-19-pester-sweep.md`.

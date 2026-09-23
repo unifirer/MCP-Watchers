@@ -81,10 +81,22 @@ def test_launcher_runs_semantic_build_inline_live():
     # launcher_gm_semantic_build.tests.ps1 now forbids that exact string.
     # The first live file change drives the first (full-cache-warming)
     # incremental build, so no startup warm-up is required.
-    assert 'param($State, $BuildSrc, $ProbeSrc, $BuildDir, $RunLog)' in src, \
-        "Thread job must take build source text + paths via param($State, $BuildSrc, ...)."
+    # mcpw-b81.2: $ModeSrc joins the contract. The semantic-mode reader must be
+    # rebuilt inside the job runspace too - a thread job inherits NO launcher
+    # functions, so without it Invoke-GmSemanticBuild cannot resolve
+    # Test-GmSemanticEnabled and every build throws.
+    assert 'param($State, $BuildSrc, $ProbeSrc, $BuildDir, $RunLog, $ModeSrc)' in src, \
+        "Thread job must take build/probe/mode source text + paths via param($State, $BuildSrc, ..., $ModeSrc)."
     assert 'Set-Item -Path function:Invoke-GmSemanticBuild -Value ([scriptblock]::Create($BuildSrc))' in src, \
         "Thread job must rebuild Invoke-GmSemanticBuild from $BuildSrc inside the job runspace."
+    assert 'Set-Item -Path function:Test-GmSemanticEnabled -Value ([scriptblock]::Create($ModeSrc))' in src, \
+        "Thread job must rebuild Test-GmSemanticEnabled from $ModeSrc inside the job runspace."
+    # The live switch is only live if the loop re-reads it: the control file sits
+    # in a dot-directory BOTH watchers skip, so no FSW event ever fires for it.
+    assert 'Test-GmSemanticEnabled -RepoRoot $BuildDir' in src, \
+        "Thread job must poll the semantic mode file each iteration (no FSW event fires for it)."
+    assert '-or $State.ModeChanged' in src, \
+        "A mode flip must bypass the debounce and the stale timer instead of waiting up to 10 min."
     assert 'Invoke-GmSemanticBuild -BuildDir $BuildDir -RunLog $RunLog -BuildKey' in src, \
         "Live incremental build must call Invoke-GmSemanticBuild with -BuildDir/-RunLog/-BuildKey."
     assert '& $BuildFn -Mode "incremental"' not in src, \

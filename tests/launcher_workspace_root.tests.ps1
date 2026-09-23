@@ -24,13 +24,21 @@ Describe 'mcpw-ybs.1: panes follow the workspace, modules follow the launcher' {
         $c | Should Match '\$watchersWorkspaceRoot = \(Get-Location\)\.ProviderPath'
     }
 
-    It 'all four grid steps open panes at the workspace root' {
+    It 'all grid pane steps open panes at the workspace root' {
         $c = Get-Content -LiteralPath $launcher -Raw
-        ([regex]::Matches($c, "'-d', \`$watchersWorkspaceRoot")).Count | Should Be 4
+        # Derived from the grid builder itself (bead mcpw-i15): every
+        # Build-GridStep that opens a pane hands wt a '-File' tailer script,
+        # so the expected count follows the builder instead of a literal.
+        # Anchor-only steps (move-focus) carry no pane and no -d by design,
+        # so they are excluded here. A step that regresses to any other -d
+        # breaks the equality below.
+        $paneSteps = @($c -split "`n" | Where-Object { $_ -match 'Build-GridStep @\(' -and $_ -match "'-File'" })
+        ($paneSteps.Count -gt 0) | Should Be $true
+        ([regex]::Matches($c, [regex]::Escape("'-d', `$watchersWorkspaceRoot"))).Count | Should Be $paneSteps.Count
         ([regex]::Matches($c, "'-d', '\.'")).Count | Should Be 0
     }
 
-    It 'all four pane tailers work at the workspace root (grepai heals at its index dir)' {
+    It 'all pane tailers work at the workspace root (grepai heals at its index dir)' {
         $c = Get-Content -LiteralPath $launcher -Raw
         # mcpw-ybs.1 originally sent only the THREE non-grepai tailers to the
         # workspace and pinned grepai's to $scriptDir. Grepai's heal was then
@@ -42,7 +50,12 @@ Describe 'mcpw-ybs.1: panes follow the workspace, modules follow the launcher' {
         $paneLines = @($c -split "`n" | Where-Object {
             $_ -match 'New-WatcherPaneScript' -and $_ -match '-RepoRoot \$watchersWorkspaceRoot'
         })
-        $paneLines.Count | Should Be 4
+        # Same builder-derived count as the grid-step test above: one
+        # workspace-rooted tailer script per pane step. The next added pane
+        # moves both sides together.
+        $paneSteps = @($c -split "`n" | Where-Object { $_ -match 'Build-GridStep @\(' -and $_ -match "'-File'" })
+        ($paneSteps.Count -gt 0) | Should Be $true
+        $paneLines.Count | Should Be $paneSteps.Count
         ([regex]::Matches($c, '-RepoRoot \$scriptDir')).Count | Should Be 0
     }
 

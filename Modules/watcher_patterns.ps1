@@ -13,6 +13,13 @@
 # The 'graphify-watch-wrapper' pattern must stay DEDICATED: never glue it onto
 # another pattern with '|' (see changelogs/2026-08-18-...-orphaned-graphify-watchers.md).
 
+# mcpw-xeu.4: single source of truth for the shell host name. Every sweep site
+# that keys on the pane host (teardown wrapper hosts, pane-scripts liveness,
+# launcher shim-host + pane-tailer sweeps) consumes these instead of
+# hardcoding 'powershell.exe' / 'pwsh.exe', so a host change is one line.
+$script:WatcherPaneHostName = 'powershell.exe'
+$script:WatcherShellHostNames = @('powershell.exe', 'pwsh.exe')
+
 $script:WatcherSweepPatterns = @(
     @{ Name = 'gm.exe';          Pattern = 'watch' },
     @{ Name = 'repowise.exe';    Pattern = 'watch' },

@@ -266,12 +266,23 @@ Describe 'parent-death propagation (vad-r0i)' {
         New-Item -ItemType Directory -Path $work -Force | Out-Null
         $parentScript = Join-Path $work 'dummy_parent.ps1'
         $marker = Join-Path $work 'child.txt'
+        # ping is addressed by ABSOLUTE PATH on purpose, not by bare name. The
+        # child here is a cmd.exe GRANDCHILD of this process, and in a hosted
+        # sandbox that grandchild does not resolve a bare `ping` even though its
+        # PATH is byte-identical to the parent's and does contain System32
+        # (measured: 79 entries, both System32 forms present, yet the batch
+        # printed "'ping' is not recognized as an internal or external command"
+        # and exited in ~2 s). The mechanism is not established here and is not
+        # needed: the observable effect is that the payload never runs, so the
+        # cmd.exe child is gone before this test can even observe it, and the
+        # failure is unrelated to the parent-death kill the test exists to prove.
+        $ping = Join-Path $env:SystemRoot 'System32\ping.exe'
         $parentSrc = @"
 param([string]`$Module, [string]`$Marker)
 . `$Module
 `$job = New-WatcherParentDeathJob
 if (`$job -eq [IntPtr]::Zero) { 'NOJOB' | Set-Content -LiteralPath `$Marker; exit 1 }
-`$child = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','ping -n 300 127.0.0.1' -PassThru -WindowStyle Hidden
+`$child = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','"$ping" -n 300 127.0.0.1' -PassThru -WindowStyle Hidden
 `$ok = Add-ProcessToWatcherDeathJob -Job `$job -ProcessId `$child.Id
 "`$(`$child.Id)|`$ok" | Set-Content -LiteralPath `$Marker
 Start-Sleep -Seconds 300

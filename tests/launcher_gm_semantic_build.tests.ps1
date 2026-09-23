@@ -77,6 +77,19 @@ function Get-Command { param(`$Name) if (`$Name -eq 'gm.exe') { return [pscustom
 # Stub the fallback-proxy readiness probe to a constant `$false: with no key
 # AND no proxy the build must skip without throwing.
 function Test-LlmProxyReady { return `$false }
+# mcpw-b81.1: the build ALSO reads the live semantic switch. Stub it to `$false
+# (semantic OFF). With semantic OFF the proxy gate no longer short-circuits the
+# build - that IS the bug b81.1 fixes (an AST-only rebuild needs no LLM) - so the
+# build now proceeds all the way to spawning gm. Stub the spawn too, so this case
+# still measures graceful degradation rather than a missing-binary failure.
+function Test-GmSemanticEnabled { return `$false }
+function Start-Process {
+    [CmdletBinding()]
+    param(`$FilePath, `$ArgumentList, `$WorkingDirectory, `$WindowStyle,
+        `$RedirectStandardOutput, `$RedirectStandardError,
+        [switch]`$PassThru, [switch]`$Wait)
+    return [pscustomobject]@{ ExitCode = 0 }
+}
 # Ensure no inherited key.
 `$env:NOUS_API_KEY = `$null
 $fn

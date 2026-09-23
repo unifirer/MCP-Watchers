@@ -67,15 +67,15 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
         ($bad -join ', ') | Should -Be '' -Because 'the provision surface must be complete'
     }
 
-    It 'plans all six MCPs cheap-first: config, then build, then index' {
+    It 'plans all seven MCPs cheap-first: config, then build, then index' {
         $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
         . (Join-Path $repoRoot 'Modules\watcher_mcp_detect.ps1')
         . (Join-Path $repoRoot 'Modules\watcher_mcp_provision.ps1')
 
         $plan = @(Get-McpProvisionPlan)
-        $plan.Count | Should -Be 6
+        $plan.Count | Should -Be 7
         ($plan | ForEach-Object { $_.Mcp }) -join ',' |
-            Should -Be 'graphenium,repowise,graphify-rs,graft,memtrace,grepai'
+            Should -Be 'atlas,graphenium,repowise,graphify-rs,graft,memtrace,grepai'
 
         # Phase must be non-decreasing across the plan: no expensive index step
         # may run before a cheap config step.
@@ -124,6 +124,9 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
         if (@(Get-McpProvisionArgv -Mcp 'memtrace' -Path $root) -contains 'mcp') { $bad += 'memtrace mcp must not be provisioned' }
         if (@(Get-McpProvisionArgv -Mcp 'grepai' -Step 'config' -Path $root) -notcontains '--yes') { $bad += 'grepai init must pass --yes' }
         if (@(Get-McpProvisionArgv -Mcp 'grepai' -Step 'status' -Path $root) -notcontains '--no-ui') { $bad += 'grepai status must pass --no-ui' }
+        # atlas is the FileOnly step: no command exists, so the documented
+        # contract is an explicitly empty vector (not the unknown-MCP default).
+        if (@(Get-McpProvisionArgv -Mcp 'atlas' -Path $root).Count -ne 0) { $bad += 'atlas must have an empty argv (it writes .env itself, nothing to spawn)' }
         ($bad -join '; ') | Should -Be ''
 
         # No prompt can be raised by this module at all. Comments are stripped
@@ -214,7 +217,7 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
         }
     }
 
-    It 'returns a six-row summary that never throws, even for hostile inputs' {
+    It 'returns a seven-row summary that never throws, even for hostile inputs' {
         $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
         . (Join-Path $repoRoot 'Modules\watcher_mcp_detect.ps1')
         . (Join-Path $repoRoot 'Modules\watcher_mcp_provision.ps1')
@@ -249,12 +252,18 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
                     continue
                 }
                 if (-not $summary) { $bad += "$($r.Label): no summary returned"; continue }
-                if ($summary.Total -ne 6) { $bad += "$($r.Label): expected 6 rows, got $($summary.Total)" }
-                if (@($summary.Results).Count -ne 6) { $bad += "$($r.Label): Results has $((@($summary.Results)).Count) rows" }
-                if ($summary.Done -ne 0) { $bad += "$($r.Label): nothing can be 'done' with no tools" }
-                if ($summary.Stamped -ne 0) { $bad += "$($r.Label): nothing can be 'stamped' on a fresh repo" }
+                if ($summary.Total -ne 7) { $bad += "$($r.Label): expected 7 rows, got $($summary.Total)" }
+                if (@($summary.Results).Count -ne 7) { $bad += "$($r.Label): Results has $((@($summary.Results)).Count) rows" }
+                # atlas is the FileOnly step: it needs no tool, so on a usable
+                # path it legitimately reports 'done' (first run) or 'stamped'
+                # (later runs, once its .env exists). Only a NON-atlas row may
+                # never be done/stamped here.
+                $doneOther = @($summary.Results | Where-Object { $_.Status -eq 'done' -and $_.Mcp -ne 'atlas' })
+                if ($doneOther.Count -ne 0) { $bad += "$($r.Label): nothing but atlas can be 'done' with no tools ($($doneOther -join ','))" }
+                $stampedOther = @($summary.Results | Where-Object { $_.Status -eq 'stamped' -and $_.Mcp -ne 'atlas' })
+                if ($stampedOther.Count -ne 0) { $bad += "$($r.Label): nothing but atlas can be 'stamped' on a fresh repo ($($stampedOther -join ','))" }
                 $order = @($summary.Results | ForEach-Object { $_.Mcp }) -join ','
-                if ($order -ne 'graphenium,repowise,graphify-rs,graft,memtrace,grepai') {
+                if ($order -ne 'atlas,graphenium,repowise,graphify-rs,graft,memtrace,grepai') {
                     $bad += "$($r.Label): results out of plan order ($order)"
                 }
                 foreach ($row in @($summary.Results)) {
@@ -280,7 +289,7 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
         $null = New-Item -ItemType Directory -Path $repo -Force
         $null = New-Item -ItemType Directory -Path $fakeDir -Force
         # graphify-rs is optional and skips without its config file; give it one
-        # so all six steps really execute in run 1.
+        # so all seven steps really execute in run 1.
         [System.IO.File]::WriteAllText((Join-Path $repo 'graphify-rs.toml'), "[graph]`n", (New-Object System.Text.UTF8Encoding($false)))
 
         $log = Join-Path $sandbox 'calls.log'
@@ -355,10 +364,10 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
 
             # ---- run 1: everything really runs --------------------------------
             $first = Invoke-McpProvisionForRepo -Path $repo -ToolPaths $toolPaths -TimeoutMs 30000 -FirstScanTimeoutMs 30000
-            $first.Total | Should -Be 6
+            $first.Total | Should -Be 7
             $bad = @($first.Results | Where-Object { $_.Status -ne 'done' } | ForEach-Object { "$($_.Mcp)=$($_.Status) ($($_.Reason))" })
             ($bad -join '; ') | Should -Be '' -Because 'a fake tool that provisions what its probe looks for must complete'
-            $first.Done | Should -Be 6
+            $first.Done | Should -Be 7
             $first.Stamped | Should -Be 0
 
             # The stamp is the idempotence mechanism, so assert on the FILE.
@@ -366,7 +375,7 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
             Test-Path -LiteralPath $stampFile -PathType Leaf | Should -BeTrue
             $stampDoc = Get-Content -LiteralPath $stampFile -Raw -Encoding UTF8 | ConvertFrom-Json
             $stampedKeys = @($stampDoc.PSObject.Properties | ForEach-Object { $_.Name })
-            ($stampedKeys | Sort-Object) -join ',' | Should -Be 'graft,graphenium,graphify-rs,grepai,memtrace,repowise'
+            ($stampedKeys | Sort-Object) -join ',' | Should -Be 'atlas,graft,graphenium,graphify-rs,grepai,memtrace,repowise'
             Test-Path -LiteralPath $log -PathType Leaf | Should -BeTrue
             # mcpw-0zo.5: two probes do not read a file, they ASK the tool -
             # grepai runs `status --no-ui` and repowise runs `doctor`. Validating
@@ -379,8 +388,8 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
 
             # ---- run 2: stamp short-circuits everything -----------------------
             $second = Invoke-McpProvisionForRepo -Path $repo -ToolPaths $toolPaths -TimeoutMs 30000 -FirstScanTimeoutMs 30000
-            $second.Total | Should -Be 6
-            $second.Stamped | Should -Be 6
+            $second.Total | Should -Be 7
+            $second.Stamped | Should -Be 7
             $second.Done | Should -Be 0
             $bad2 = @($second.Results | Where-Object { $_.Status -ne 'stamped' } | ForEach-Object { "$($_.Mcp)=$($_.Status)" })
             ($bad2 -join '; ') | Should -Be '' -Because 'a stamped repo must not re-run any step'
@@ -398,11 +407,11 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
             # The artifacts have to go first. -Force bypasses the STAMP, not the
             # pre-command probe, so with the artifacts still in place every step
             # would report 'stamped' and no tool would be spawned.
-            foreach ($d in @('.grapheniumignore', 'graphenium-out', '.repowise', 'graphify-out', 'graft', '.memdb', '.grepai')) {
+            foreach ($d in @('.grapheniumignore', 'graphenium-out', '.repowise', 'graphify-out', 'graft', '.memdb', '.grepai', '.env')) {
                 Remove-Item -LiteralPath (Join-Path $repo $d) -Recurse -Force -ErrorAction SilentlyContinue
             }
             $forced = Invoke-McpProvisionForRepo -Path $repo -ToolPaths $toolPaths -Force -TimeoutMs 30000 -FirstScanTimeoutMs 30000
-            $forced.Done | Should -Be 6
+            $forced.Done | Should -Be 7
             (@(Get-Content -LiteralPath $log).Count -gt $callsAfterFirst) | Should -BeTrue -Because '-Force must re-run the steps'
         } finally {
             $env:Path = $savedPath
@@ -423,7 +432,7 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
         $crlf = "`r`n"
         $names = @{ graphenium = 'gm'; repowise = 'repowise'; 'graphify-rs' = 'graphify-rs'; graft = 'graft'; memtrace = 'memtrace'; grepai = 'grepai' }
         # graphify-rs.toml is present, so the optional gate does NOT skip it and
-        # the report has to plan six steps, not five.
+        # the report has to plan seven steps, not six.
         [System.IO.File]::WriteAllText((Join-Path $repo 'graphify-rs.toml'), "[graph]`n", (New-Object System.Text.UTF8Encoding($false)))
         # These fakes must be the PROVEN ones: a fake that exits 0 without
         # creating what its probe looks for is a fake of a FAILED step, not a
@@ -486,11 +495,11 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
 
             # ---- the report itself ----------------------------------------
             $report = Invoke-McpProvisionForRepo -Path $repo -ToolPaths $toolPaths -ReportOnly -TimeoutMs 30000 -FirstScanTimeoutMs 30000
-            $report.Total | Should -Be 6
+            $report.Total | Should -Be 7
             $report.ReportOnly | Should -BeTrue
             $report.Done | Should -Be 0 -Because 'a report must not do the work'
             $report.Stamped | Should -Be 0 -Because 'a fresh repo has no stamps and the report writes none'
-            $report.Planned | Should -Be 6
+            $report.Planned | Should -Be 7
             $bad = @($report.Results | Where-Object { $_.Status -ne 'planned' } | ForEach-Object { "$($_.Mcp)=$($_.Status)" })
             ($bad -join '; ') | Should -Be '' -Because 'every step on a bare repo would run'
             foreach ($row in @($report.Results)) { $row.Reason | Should -Match 'report-only' }
@@ -499,7 +508,7 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
             Test-Path -LiteralPath $log -PathType Leaf | Should -BeFalse -Because '-ReportOnly must not invoke a single tool'
             Test-Path -LiteralPath (Join-Path $repo '.mcpw-provision\state.json') -PathType Leaf | Should -BeFalse -Because '-ReportOnly must not write the stamp'
 
-            # ---- the report changed nothing: a real run still does all six --
+            # ---- the report changed nothing: a real run still does all seven --
             $real = Invoke-McpProvisionForRepo -Path $repo -ToolPaths $toolPaths -TimeoutMs 30000 -FirstScanTimeoutMs 30000
             # List the offenders rather than assert a bare count: a fake that
             # failed to provision names itself here instead of hiding behind a
@@ -541,7 +550,7 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
         }
     }
 
-    It 'degrades: a tool that exits non-zero is skipped while the other five run' {
+    It 'degrades: a tool that exits non-zero is skipped while the other six run' {
         $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
         . (Join-Path $repoRoot 'Modules\watcher_mcp_detect.ps1')
         . (Join-Path $repoRoot 'Modules\watcher_mcp_provision.ps1')
@@ -556,7 +565,7 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
         $log = Join-Path $sandbox 'calls.log'
         $crlf = "`r`n"
         $names = @{ graphenium = 'gm'; repowise = 'repowise'; 'graphify-rs' = 'graphify-rs'; graft = 'graft'; memtrace = 'memtrace'; grepai = 'grepai' }
-        # The five non-saboteurs provision what their probes look for (bead
+        # The six non-saboteurs provision what their probes look for (bead
         # mcpw-0zo.1: a stamp now needs a confirmed probe, not just exit 0).
         $provision = @{
             graphenium = @(
@@ -619,14 +628,14 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
             $env:Path = $fakeDir
             $summary = Invoke-McpProvisionForRepo -Path $repo -ToolPaths $toolPaths -TimeoutMs 30000 -FirstScanTimeoutMs 30000
 
-            $summary.Total | Should -Be 6
+            $summary.Total | Should -Be 7
             $graft = @($summary.Results | Where-Object { $_.Mcp -eq 'graft' })[0]
             $graft.Status | Should -Be 'skipped'
             $graft.Reason | Should -Match 'exited 7'
             $graft.Reason | Should -Match 'refused to build'
             $summary.Skipped | Should -Be 1
             $others = @($summary.Results | Where-Object { $_.Mcp -ne 'graft' } | Where-Object { $_.Status -ne 'done' } | ForEach-Object { "$($_.Mcp)=$($_.Status)" })
-            ($others -join '; ') | Should -Be '' -Because 'one broken MCP must not stop the other five'
+            ($others -join '; ') | Should -Be '' -Because 'one broken MCP must not stop the other six'
             # A skipped step writes no stamp, so a later run retries it.
             (Test-McpProvisionStamp -Path $repo -Mcp 'graft') | Should -BeFalse
             (Test-McpProvisionStamp -Path $repo -Mcp 'memtrace') | Should -BeTrue
@@ -868,7 +877,7 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
     It 'refuses to stamp a step whose command exits 0 without provisioning' {
         # Bead mcpw-0zo.1. The historical false-success shape: every child exits
         # 0 and produces NOTHING the matching probe looks for. Before the fix all
-        # six were stamped 'done' on the exit code alone, so the repo was
+        # seven were stamped 'done' on the exit code alone, so the repo was
         # recorded as provisioned forever and every later launch skipped it.
         $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
         . (Join-Path $repoRoot 'Modules\watcher_mcp_detect.ps1')
@@ -899,21 +908,31 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
             $env:Path = $fakeDir
 
             $summary = Invoke-McpProvisionForRepo -Path $repo -ToolPaths $toolPaths -TimeoutMs 30000 -FirstScanTimeoutMs 30000
-            $summary.Total | Should -Be 6
-            $summary.Done | Should -Be 0 -Because 'exit 0 is not proof of provisioning'
+            $summary.Total | Should -Be 7
+            # atlas is the honest exception: it spawns nothing and writes a real
+            # .env, so the post-command gate confirms it and it is 'done'. That
+            # is the gate working, not exit-code laundering - and it proves the
+            # FileOnly step earns its stamp through the same probe as the rest.
+            $atlasRow = @($summary.Results | Where-Object { $_.Mcp -eq 'atlas' })[0]
+            $atlasRow.Status | Should -Be 'done'
+            $atlasRow.Reason | Should -Match 'wrote \.env'
+            $summary.Done | Should -Be 1 -Because 'only atlas can complete when every command provisions nothing'
             $summary.Stamped | Should -Be 0
             $summary.Skipped | Should -Be 6
             $bad = @()
-            foreach ($row in @($summary.Results)) {
+            foreach ($row in @($summary.Results | Where-Object { $_.Mcp -ne 'atlas' })) {
                 if ($row.Status -ne 'skipped') { $bad += "$($row.Mcp)=$($row.Status)"; continue }
                 if ($row.Reason -notmatch 'exited 0 but the probe still reports') {
                     $bad += "$($row.Mcp): reason does not carry the probe verdict ('$($row.Reason)')"
                 }
             }
             ($bad -join '; ') | Should -Be ''
-            # A refused stamp is a refusal to RECORD: nothing on disk...
-            Test-Path -LiteralPath (Join-Path $repo '.mcpw-provision\state.json') -PathType Leaf | Should -BeFalse
-            # ...so a later run retries the step instead of skipping it forever.
+            # Atlas earned its stamp honestly, so the file exists - but it must
+            # carry ONLY atlas: every command step was refused.
+            Test-Path -LiteralPath (Join-Path $repo '.mcpw-provision\state.json') -PathType Leaf | Should -BeTrue -Because 'atlas really provisioned'
+            $gateStampDoc = Get-Content -LiteralPath (Join-Path $repo '.mcpw-provision\state.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+            (@($gateStampDoc.PSObject.Properties | ForEach-Object { $_.Name }) -join ',') | Should -Be 'atlas'
+            # ...so a later run retries the refused steps instead of skipping them forever.
             (Test-McpProvisionStamp -Path $repo -Mcp 'graft') | Should -BeFalse
             (Test-McpProvisionStamp -Path $repo -Mcp 'memtrace') | Should -BeFalse
         } finally {
@@ -965,6 +984,70 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
             $silent = Start-McpProvisionStep -Mcp 'nosuchmcp' -ToolName 'nosuchmcp' -Path $repo
             $silent.Skip.Status | Should -Be 'stamped'
             $silent.Skip.Reason | Should -Match 'could not answer'
+        } finally {
+            Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'mcpw-cnc.7: atlas writes a git-ignored .env with the three canonical keys, then stamps' {
+        $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+        . (Join-Path $repoRoot 'Modules\watcher_mcp_detect.ps1')
+        . (Join-Path $repoRoot 'Modules\watcher_mcp_provision.ps1')
+
+        $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ('mcpw-atlas-' + [guid]::NewGuid().ToString('N'))
+        $repo = Join-Path $sandbox 'repo'
+        $null = New-Item -ItemType Directory -Path $repo -Force
+        try {
+            # The canonical values live in docker/neo4j-atlas/.env.example (one
+            # source of truth). Parsed independently here so the test does not
+            # parrot the module's own reader.
+            $example = @{}
+            foreach ($line in @(Get-Content -LiteralPath (Join-Path $repoRoot 'docker\neo4j-atlas\.env.example') -ErrorAction SilentlyContinue)) {
+                $m = [regex]::Match($line, '^\s*(NEO4J_[A-Z]+)\s*=\s*(.+?)\s*$')
+                if ($m.Success) { $example[$m.Groups[1].Value] = $m.Groups[2].Value }
+            }
+            ($example.Keys.Count -ge 3) | Should -BeTrue -Because 'the canonical file must carry all three keys'
+
+            # ---- run 1 on a clean repo: writes .env, earns 'done' ------------
+            $row = Initialize-AtlasForRepo -Path $repo -StateDir (Join-Path $sandbox 'state')
+            $row.Status | Should -Be 'done'
+            $row.Reason | Should -Match 'wrote \.env'
+            $envFile = Join-Path $repo '.env'
+            Test-Path -LiteralPath $envFile -PathType Leaf | Should -BeTrue
+            $got = @{}
+            foreach ($line in @(Get-Content -LiteralPath $envFile)) {
+                $m = [regex]::Match($line, '^\s*(NEO4J_[A-Z]+)\s*=\s*(.+?)\s*$')
+                if ($m.Success) { $got[$m.Groups[1].Value] = $m.Groups[2].Value }
+            }
+            foreach ($k in @('NEO4J_URI', 'NEO4J_USER', 'NEO4J_PASSWORD')) {
+                $got.ContainsKey($k) | Should -BeTrue -Because ".env must define $k"
+                $got[$k] | Should -Be $example[$k] -Because 'every repo gets the same canonical values, never a per-repo password'
+            }
+
+            # ---- run 2: the stamp short-circuits, probe agreeing ---------------
+            $row2 = Initialize-AtlasForRepo -Path $repo -StateDir (Join-Path $sandbox 'state')
+            $row2.Status | Should -Be 'stamped'
+            $row2.Reason | Should -Match 'already provisioned'
+
+            # ---- the gate fails loudly when a key goes missing ----------------
+            Set-Content -LiteralPath $envFile -Value ("NEO4J_URI=" + $example['NEO4J_URI'] + "`r`n") -Encoding UTF8 -NoNewline
+            $reason = ''
+            [bool](Test-AtlasInitialized -Path $repo -Reason ([ref]$reason)) | Should -BeFalse
+            $reason | Should -Match 'NEO4J_USER'
+
+            # ---- the credential can never be committed (real git repo) --------
+            $gitBin = Get-Command 'git' -ErrorAction SilentlyContinue
+            if ($gitBin) {
+                $gitRepo = Join-Path $sandbox 'gitrepo'
+                $null = New-Item -ItemType Directory -Path $gitRepo -Force
+                & $gitBin -C $gitRepo init -q 2>$null
+                $grow = Initialize-AtlasForRepo -Path $gitRepo -StateDir (Join-Path $sandbox 'state2')
+                $grow.Status | Should -Be 'done'
+                $giText = Get-Content -LiteralPath (Join-Path $gitRepo '.gitignore') -Raw -ErrorAction SilentlyContinue
+                (@([string]$giText -split "`r?`n" | Where-Object { $_.Trim() -eq '.env' })).Count | Should -BeGreaterThan 0 -Because '.gitignore must carry the .env rule'
+                & $gitBin -C $gitRepo check-ignore -q -- .env 2>$null
+                $LASTEXITCODE | Should -Be 0 -Because 'git must confirm .env is ignored'
+            }
         } finally {
             Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
         }

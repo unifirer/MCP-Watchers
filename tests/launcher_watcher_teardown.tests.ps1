@@ -15,9 +15,19 @@ Describe 'watcher_teardown module' {
         # Spin a REAL process tree: a powershell parent that spawns a long-lived
         # cmd.exe grandchild (ping -n 60). We record the grandchild PID to a file.
         $gcFile = Join-Path $env:TEMP ('gc_' + [guid]::NewGuid().ToString('N') + '.txt')
+        # ping is addressed by ABSOLUTE PATH, not by bare name. That grandchild is
+        # a cmd.exe two levels down, and in a hosted sandbox a cmd.exe GRANDCHILD
+        # does not resolve a bare `ping` even though its PATH is byte-identical to
+        # the parent's and does contain both System32 forms (measured: 79 entries,
+        # System32 present, yet "'ping' is not recognized as an internal or
+        # external command" and the child exits in ~2 s). The mechanism is not
+        # established here and is not needed: the observable effect is that no
+        # long-lived grandchild ever exists, so there is no PID to kill and this
+        # test fails for a reason unrelated to the tree kill it exists to prove.
+        $pingArg = '"' + (Join-Path $env:SystemRoot 'System32\ping.exe') + '" -n 60 127.0.0.1'
         $parent = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden `
             -ArgumentList @('-NoProfile', '-Command',
-                "& { `$c = Start-Process -FilePath cmd.exe -ArgumentList '/c ping -n 60 127.0.0.1' -PassThru -WindowStyle Hidden; `$c.Id > '$gcFile'; Start-Sleep -Seconds 60 }")
+                "& { `$c = Start-Process -FilePath cmd.exe -ArgumentList '/c','$pingArg' -PassThru -WindowStyle Hidden; `$c.Id > '$gcFile'; Start-Sleep -Seconds 60 }")
         try {
             # Wait for the grandchild to appear.
             $gchildPid = $null
@@ -177,9 +187,13 @@ Describe 'Stop-AllWatchers tree-kills a sweep-found wrapper host AND its rebuild
         # kills nothing and the assertion could never hold. The host is now
         # handed in as a root, which is how the launcher really calls it.
         $gcFile = Join-Path $env:TEMP ('gf_tree_' + [guid]::NewGuid().ToString('N') + '.txt')
+        # Absolute ping path, same reason as the sibling case above: a bare
+        # `ping` is not resolvable by the cmd.exe grandchild here, and a
+        # grandchild that exits immediately leaves nothing for the BFS to kill.
+        $pingArg = '"' + (Join-Path $env:SystemRoot 'System32\ping.exe') + '" -n 90 127.0.0.1'
         $hostProc = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden `
             -ArgumentList @('-NoProfile', '-WindowStyle', 'Hidden', '-Command',
-                "& { `$c = Start-Process -FilePath cmd.exe -ArgumentList '/c ping -n 90 127.0.0.1' -PassThru -WindowStyle Hidden; `$c.Id | Set-Content -Path '$gcFile' -Force; Start-Sleep -Seconds 90 }",
+                "& { `$c = Start-Process -FilePath cmd.exe -ArgumentList '/c','$pingArg' -PassThru -WindowStyle Hidden; `$c.Id | Set-Content -Path '$gcFile' -Force; Start-Sleep -Seconds 90 }",
                 '-WatchMode', '-graphify-watch-wrapper')
         $childPid = $null
         try {

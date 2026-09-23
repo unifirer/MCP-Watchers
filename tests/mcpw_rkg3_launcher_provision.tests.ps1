@@ -43,7 +43,7 @@
 #
 # PS 5.1 compatible: no ?? operator, ASCII-only comments (project rule).
 
-Describe 'mcpw-rkg.3: the launcher provisions the six MCPs before spawning watchers' {
+Describe 'mcpw-rkg.3: the launcher provisions the seven MCPs before spawning watchers' {
 
     It 'dot-sources the provision module with the guarded Test-Path pattern' {
         $launcher = Join-Path (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path '###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1'

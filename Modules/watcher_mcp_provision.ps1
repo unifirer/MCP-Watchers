@@ -3,9 +3,9 @@
 #
 # WHY THIS EXISTS
 # ---------------
-# The launcher (###1.watchers_....ps1) must bring all six watched MCPs up in ANY
-# repository it is started from - a foreign repo has none of the per-repo
-# artifacts the tools need. This module runs the six init steps. It is the
+# The launcher (###1.watchers_....ps1) must bring all seven watched MCPs up in
+# ANY repository it is started from - a foreign repo has none of the per-repo
+# artifacts the tools need. This module runs the seven init steps. It is the
 # WRITE side of the pair whose READ side is Modules/watcher_mcp_detect.ps1
 # (mcpw-rkg.1): detection answers "is this repo already initialized?", provision
 # answers "then make it so, or explain why it cannot be".
@@ -28,7 +28,7 @@
 #                     non-zero exit, or an exit 0 the post-command probe refused
 #                     to confirm. There is no 'failed' status on purpose - a
 #                     provision problem degrades to a logged skip and the other
-#                     five MCPs still get their chance.
+#                     six MCPs still get their chance.
 #           'planned' -ReportOnly ONLY: this step WOULD run. No provisioning
 #                      command ran and no stamp was written. (A detection probe
 #                      may still shell out to confirm an existing artifact - see
@@ -38,7 +38,13 @@
 #                           [-TimeoutMs] [-FirstScanTimeoutMs]
 #     -> one row, callable on its own (the tests need that). Never throws.
 #        Initialize-MemtraceForRepo / -GrepaiForRepo / -GrapheniumForRepo /
-#        -GraphifyRsForRepo / -RepowiseForRepo / -GraftForRepo
+#        -GraphifyRsForRepo / -RepowiseForRepo / -GraftForRepo /
+#        -AtlasForRepo
+#
+#        Initialize-AtlasForRepo is the ONE step that takes no -ToolPath and no
+#        -TimeoutMs: it spawns nothing and writes a file itself. Passing it a
+#        -ToolPath would be dead weight, and the plan row marks it FileOnly so
+#        the callers can branch on that instead of on the function's name.
 #
 # HARD RULES ENCODED HERE
 # -----------------------
@@ -65,9 +71,10 @@
 #     reason. A provision problem can never abort the launcher.
 #   * REPO-AGNOSTIC. Every path is derived from -Path. There is no absolute
 #     reference to any particular repository (the tests assert that).
-#   * ORDERED CHEAP-FIRST: config-only steps (gm init, repowise agents add)
-#     before build steps (graphify-rs, graft) before index steps (memtrace,
-#     grepai). See Get-McpProvisionPlan.
+#   * ORDERED CHEAP-FIRST: the cheapest step of all (atlas, a single file write)
+#     first, then config-only steps (gm init, repowise agents add) before build
+#     steps (graphify-rs, graft) before index steps (memtrace, grepai). See
+#     Get-McpProvisionPlan.
 #
 # MEASURED FACTS ENCODED (2026-09-20 - do not re-derive)
 # ------------------------------------------------------
@@ -162,7 +169,7 @@ function Get-McpProvisionStateDir {
         bootstrap-to-provision rename. A repo stamped by the old launcher is
         migrated on first read - see Import-McpProvisionLegacyStamp. A bare
         rename without that migration would invalidate every existing stamp
-        and force a full six-step re-provision, including the grepai first
+        and force a full seven-step re-provision, including the grepai first
         scan.
     #>
     param([string]$Path, [string]$StateDir)
@@ -309,22 +316,35 @@ function Set-McpProvisionStamp {
 function Get-McpProvisionPlan {
     <#
     .SYNOPSIS
-        The six provision steps in the order they must run.
+        The seven provision steps in the order they must run.
     .DESCRIPTION
         Ordered CHEAP-FIRST, which is the ordering contract the launcher relies
         on (provision finishes before any watcher spawns - mcpw-rkg.3):
-          Phase 'config' - gm init, repowise agents add   (seconds, no index)
+          Phase 'config' - atlas .env (a file write), gm init, repowise agents add
           Phase 'build'  - graphify-rs (optional), graft build
           Phase 'index'  - memtrace index, grepai first scan (minutes)
         The launcher must not depend on a different order than this one.
+
+        Nothing keys off the literal Order values - the list order IS the
+        contract, and Order is a readable restatement of it. Adding atlas at the
+        front (bead mcpw-cnc.7) therefore renumbers 1-6 to 2-7 without changing
+        any behaviour that depends on the sequence.
+
+        FileOnly marks a step that spawns NO external command because it writes
+        its artifact itself. Only atlas is one. It exists so the callers can
+        branch on the row instead of on the initializer's name: a FileOnly step
+        must not be reported 'skipped: no runnable tool', which is what the
+        binary-resolution path would say about it forever. Tool is '' for such a
+        step, and honestly so - there is no binary to name.
     #>
     return @(
-        [pscustomobject]@{ Order = 1; Mcp = 'graphenium';  Phase = 'config'; Optional = $false; Tool = 'gm';          Fn = 'Initialize-GrapheniumForRepo'  }
-        [pscustomobject]@{ Order = 2; Mcp = 'repowise';    Phase = 'config'; Optional = $false; Tool = 'repowise';    Fn = 'Initialize-RepowiseForRepo'    }
-        [pscustomobject]@{ Order = 3; Mcp = 'graphify-rs'; Phase = 'build';  Optional = $true;  Tool = 'graphify-rs'; Fn = 'Initialize-GraphifyRsForRepo'  }
-        [pscustomobject]@{ Order = 4; Mcp = 'graft';       Phase = 'build';  Optional = $false; Tool = 'graft';       Fn = 'Initialize-GraftForRepo'       }
-        [pscustomobject]@{ Order = 5; Mcp = 'memtrace';    Phase = 'index';  Optional = $false; Tool = 'memtrace';    Fn = 'Initialize-MemtraceForRepo'    }
-        [pscustomobject]@{ Order = 6; Mcp = 'grepai';      Phase = 'index';  Optional = $false; Tool = 'grepai';      Fn = 'Initialize-GrepaiForRepo'      }
+        [pscustomobject]@{ Order = 1; Mcp = 'atlas';       Phase = 'config'; Optional = $false; Tool = '';            Fn = 'Initialize-AtlasForRepo';       FileOnly = $true  }
+        [pscustomobject]@{ Order = 2; Mcp = 'graphenium';  Phase = 'config'; Optional = $false; Tool = 'gm';          Fn = 'Initialize-GrapheniumForRepo';  FileOnly = $false }
+        [pscustomobject]@{ Order = 3; Mcp = 'repowise';    Phase = 'config'; Optional = $false; Tool = 'repowise';    Fn = 'Initialize-RepowiseForRepo';    FileOnly = $false }
+        [pscustomobject]@{ Order = 4; Mcp = 'graphify-rs'; Phase = 'build';  Optional = $true;  Tool = 'graphify-rs'; Fn = 'Initialize-GraphifyRsForRepo';  FileOnly = $false }
+        [pscustomobject]@{ Order = 5; Mcp = 'graft';       Phase = 'build';  Optional = $false; Tool = 'graft';       Fn = 'Initialize-GraftForRepo';       FileOnly = $false }
+        [pscustomobject]@{ Order = 6; Mcp = 'memtrace';    Phase = 'index';  Optional = $false; Tool = 'memtrace';    Fn = 'Initialize-MemtraceForRepo';    FileOnly = $false }
+        [pscustomobject]@{ Order = 7; Mcp = 'grepai';      Phase = 'index';  Optional = $false; Tool = 'grepai';      Fn = 'Initialize-GrepaiForRepo';      FileOnly = $false }
     )
 }
 
@@ -334,9 +354,16 @@ function Get-McpProvisionArgv {
         The exact argument vector for one provision step.
     .DESCRIPTION
         One place for every command line, so the non-interactive flags are
-        assertable in a test instead of being buried in six function bodies.
+        assertable in a test instead of being buried in seven function bodies.
         $Step only disambiguates grepai, which needs three different commands
         (config / scan / status).
+
+        atlas is the first step with NO command at all. Its artifact is a file
+        this module writes itself, so it returns an empty vector and is listed
+        here EXPLICITLY rather than falling through to the unknown-MCP default:
+        the empty vector is a deliberate contract for that step, not the "I do
+        not know this MCP" answer, and the two must not be confused when reading
+        a call site. The plan row's FileOnly flag is what callers branch on.
     #>
     param(
         [string]$Mcp,
@@ -344,6 +371,11 @@ function Get-McpProvisionArgv {
         [string]$Step
     )
     switch ($Mcp) {
+        'atlas' {
+            # No external command. Initialize-AtlasForRepo writes <repo>/.env
+            # directly; there is nothing to spawn.
+            return @()
+        }
         'memtrace' {
             # `memtrace index [PATH]`. --allow-non-git makes the step work in a
             # plain directory too; memtrace's own help says it does NOT change
@@ -588,6 +620,13 @@ function Start-McpProvisionStep {
         Order is deliberate and cheap-first: stamp (a file read, and the whole
         point of idempotence), then the root, then the binary. The stamp is
         checked before the binary so a second run does not even resolve a tool.
+
+        -FileOnly (bead mcpw-cnc.7) is for a step that spawns NOTHING because
+        it writes its artifact itself. It keeps everything above - the stamp,
+        the stale-stamp probe agreement, the root checks - and skips only the
+        binary resolution, which for such a step could never succeed. Without
+        it, atlas would be reported 'skipped: binary not found: atlas' on every
+        single launch, forever, and would never provision anything.
     #>
     param(
         [string]$Mcp,
@@ -595,6 +634,7 @@ function Start-McpProvisionStep {
         [string]$Path,
         [string]$StateDir,
         [string]$ToolPath,
+        [switch]$FileOnly,
         [switch]$Force
     )
     $root = Get-McpProvisionRoot -Path $Path
@@ -658,6 +698,16 @@ function Start-McpProvisionStep {
         return $out
     }
 
+    if ($FileOnly) {
+        # The step writes its own artifact and spawns no command, so there is no
+        # binary to resolve. Deliberately NOT worked around by handing the step
+        # a fake tool name: that would resolve to a real unrelated executable and
+        # put a command line in the log that never runs. Tool stays '' because
+        # there genuinely is no tool, and the row's Reason carries the meaning.
+        $out.Tool = ''
+        return $out
+    }
+
     $tool = Resolve-McpProvisionTool -Name $ToolName -ToolPath $ToolPath
     $out.Tool = $tool
     if (-not $tool) {
@@ -693,6 +743,7 @@ function Get-McpProvisionAlreadyReason {
         'graphify-rs' = 'Test-GraphifyRsInitialized'
         'repowise'    = 'Test-RepowiseInitialized'
         'graft'       = 'Test-GraftInitialized'
+        'atlas'       = 'Test-AtlasInitialized'
     }
     $fn = $probe[$Mcp]
     if (-not $fn) { return @{ Ok = $false; Answered = $false; Reason = "no probe for $Mcp" } }
@@ -1183,12 +1234,370 @@ function Initialize-GrepaiForRepo {
 }
 
 # ---------------------------------------------------------------------------
+# atlas (Neo4j knowledge graph) - Phase: config, and the one FileOnly step
+# ---------------------------------------------------------------------------
+function Get-AtlasEnvDefaults {
+    <#
+    .SYNOPSIS
+        The canonical atlas .env values, read from the compose directory.
+    .DESCRIPTION
+        ONE source of truth, not a copy. Bead mcpw-cnc.1 captured the running
+        container as docker/neo4j-atlas/, and .env.example there is the
+        documented record of all three keys. This function READS that file
+        rather than repeating the literals here, so a password rotation has
+        exactly one file to edit and the compose directory and this module
+        cannot drift apart.
+
+        Resolved relative to THIS module ($PSScriptRoot\..), so the pair travels
+        together and no absolute workspace path is hardcoded (AGENTS.md).
+
+        Returns @{ Ok = [bool]; Reason = <text>; Values = @{ KEY = value } }.
+
+        When the file is missing or short a key this returns Ok = $false and the
+        caller SKIPS. It deliberately does NOT fall back to built-in literals:
+        inventing a password here would produce a .env that cannot
+        authenticate, which is strictly worse than a visible skip naming the
+        file to restore - atlas would fail with an opaque credential error
+        instead of the operator being told what to put back.
+    #>
+    $rel  = 'docker\neo4j-atlas\.env.example'
+    $file = ''
+    if ($PSScriptRoot) {
+        $file = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) 'docker\neo4j-atlas') '.env.example'
+    }
+    if (-not (Get-Command Read-AtlasEnvFile -ErrorAction SilentlyContinue)) {
+        return @{ Ok = $false; Values = @{}
+                  Reason = 'Modules\watcher_mcp_detect.ps1 is not loaded, so the canonical atlas values cannot be parsed' }
+    }
+    if (-not $file -or -not (Test-Path -LiteralPath $file -PathType Leaf)) {
+        return @{ Ok = $false; Values = @{}
+                  Reason = "the canonical atlas values file is missing: <MCP-Watchers>\$rel" }
+    }
+    $map = Read-AtlasEnvFile -File $file
+    if ($null -eq $map) {
+        return @{ Ok = $false; Values = @{}
+                  Reason = "the canonical atlas values file could not be read: $file" }
+    }
+    $vals    = @{}
+    $missing = @()
+    foreach ($k in @(Get-AtlasEnvKeyNames)) {
+        $v = ''
+        if ($map.ContainsKey($k)) { $v = [string]$map[$k] }
+        if ($v) { $vals[$k] = $v } else { $missing += $k }
+    }
+    if ($missing.Count -gt 0) {
+        return @{ Ok = $false; Values = @{}
+                  Reason = ("the canonical atlas values file is short key(s): " + ($missing -join ', ') + " ($rel)") }
+    }
+    return @{ Ok = $true; Values = $vals; Reason = "read $rel" }
+}
+
+function Test-McpProvisionPathIgnored {
+    <#
+    .SYNOPSIS
+        Ask git whether one repository-relative path is ignored. Never throws.
+    .DESCRIPTION
+        Returns @{ Answered = [bool]; Ignored = [bool]; Reason = <text> }.
+
+        Answered separates the two ways Ignored can be $false - the same
+        distinction Get-McpProvisionAlreadyReason draws for stamps:
+          Answered = $true  -> git ran and produced a verdict, which is Ignored.
+          Answered = $false -> git could not be asked at all (no repository
+                               here, or no git binary). That is SILENCE, not
+                               evidence that the path is safe.
+
+        Callers must honour the difference: only a real "not ignored" verdict is
+        grounds to refuse a write. Reading silence as "unsafe" would make the
+        step skip on any box without git.
+    #>
+    param([string]$Root, [string]$RelPath)
+    if (-not $Root -or -not (Test-Path -LiteralPath $Root -PathType Container)) {
+        return @{ Answered = $false; Ignored = $false; Reason = 'no repository root' }
+    }
+    $git = Resolve-McpProvisionTool -Name 'git'
+    if (-not $git) {
+        return @{ Answered = $false; Ignored = $false; Reason = 'git not found on PATH' }
+    }
+    # `git check-ignore` exits 0 when the path IS ignored, 1 when it is NOT, and
+    # 128 on a hard error such as "not a git repository". So the exit code is
+    # the verdict and the output text is not needed. -q keeps it quiet; 2>$null
+    # stops a legitimate "not ignored" verdict writing to the error stream.
+    $null = & $git -C $Root check-ignore -q -- $RelPath 2>$null
+    $code = $LASTEXITCODE
+    if ($code -eq 0) { return @{ Answered = $true; Ignored = $true;  Reason = "$RelPath is ignored" } }
+    if ($code -eq 1) { return @{ Answered = $true; Ignored = $false; Reason = "$RelPath is NOT ignored" } }
+    return @{ Answered = $false; Ignored = $false; Reason = "git check-ignore exited $code for $Root" }
+}
+
+function Test-McpProvisionIgnoreRulePresent {
+    # Does this ignore-file text already carry a rule covering <Pattern>?
+    # Exact match on a trimmed, non-comment line: '.env', '/.env' and '**/.env'
+    # all cover the file, and any of the three counts. Deliberately NOT a
+    # general gitignore matcher - the caller asks git itself for the real
+    # verdict afterwards, so this only has to avoid appending a redundant line.
+    param([string]$Text, [string]$Pattern)
+    foreach ($line in @(([string]$Text) -split "`r?`n")) {
+        $s = $line.Trim()
+        if (-not $s -or $s.StartsWith('#')) { continue }
+        if ($s -eq $Pattern -or $s -eq "/$Pattern" -or $s -eq "**/$Pattern") { return $true }
+    }
+    return $false
+}
+
+function Enable-McpProvisionEnvIgnore {
+    <#
+    .SYNOPSIS
+        Make <Root>/.env un-committable, or explain why that could not be done.
+    .DESCRIPTION
+        Bead mcpw-cnc.7 acceptance: "No .env is ever committed in any repo the
+        provisioner touches." The provisioner writes a plaintext database
+        password into the single most commonly committed credential filename
+        there is, so the ignore rule is not a nicety - it is part of writing the
+        file at all.
+
+        Two records, deliberately different in scope:
+          1. <gitdir>/info/exclude - local to this clone. It is never committed,
+             so it cannot itself become a diff, and it applies even to a
+             repository that has no .gitignore. The gitdir is resolved with
+             `git rev-parse --absolute-git-dir` so a linked worktree (where .git
+             is a FILE pointing elsewhere) lands in the right place instead of a
+             path that does not exist.
+          2. <Root>/.gitignore - committed, so it protects every other clone and
+             every other machine. Created only when absent; otherwise the rule
+             is appended only when it is not already covered, under a marked
+             block so the edit is attributable.
+
+        Returns @{ Ok = [bool]; Changed = [bool]; Reason = <text> }. Never
+        throws. Ok means the rule has been recorded; it does NOT mean git has
+        confirmed it, because a later negation in the same .gitignore can
+        override an earlier rule. The caller verifies separately with
+        Test-McpProvisionPathIgnored - which is why this function does not
+        pretend to be the last word.
+    #>
+    param([string]$Root, [string]$RelPath = '.env')
+    if (-not $Root -or -not (Test-Path -LiteralPath $Root -PathType Container)) {
+        return @{ Ok = $false; Changed = $false; Reason = 'no repository root' }
+    }
+
+    # --- locate the real gitdir, and bail out cleanly when there is none -----
+    $git    = Resolve-McpProvisionTool -Name 'git'
+    $gitDir = ''
+    if ($git) {
+        $gd = & $git -C $Root rev-parse --absolute-git-dir 2>$null
+        if ($LASTEXITCODE -eq 0 -and $gd) { $gitDir = ([string]$gd).Trim() }
+    }
+    if (-not $gitDir) {
+        $cand = Join-Path $Root '.git'
+        if (Test-Path -LiteralPath $cand -PathType Container) { $gitDir = $cand }
+    }
+    if (-not $gitDir) {
+        return @{ Ok = $true; Changed = $false
+                  Reason = 'not a git repository - a .env here cannot be committed' }
+    }
+
+    $changed = $false
+    $notes   = @()
+
+    # --- 1. the clone-local exclude -----------------------------------------
+    $exclude = Join-Path (Join-Path $gitDir 'info') 'exclude'
+    try {
+        $infoDir = Join-Path $gitDir 'info'
+        if (-not (Test-Path -LiteralPath $infoDir -PathType Container)) {
+            New-Item -ItemType Directory -Path $infoDir -Force | Out-Null
+        }
+        $text = ''
+        if (Test-Path -LiteralPath $exclude -PathType Leaf) {
+            $text = [string](Get-Content -LiteralPath $exclude -Raw -ErrorAction SilentlyContinue)
+        }
+        if (-not (Test-McpProvisionIgnoreRulePresent -Text $text -Pattern $RelPath)) {
+            $block = "# MCP-Watchers provision (bead mcpw-cnc.7): never commit the atlas Neo4j credentials.`r`n$RelPath`r`n"
+            Add-Content -LiteralPath $exclude -Value $block -Encoding UTF8 -ErrorAction Stop
+            $changed = $true
+            $notes += 'added to .git/info/exclude'
+        } else {
+            $notes += 'already in .git/info/exclude'
+        }
+    } catch {
+        $notes += "could not write .git/info/exclude: $($_.Exception.Message)"
+    }
+
+    # --- 2. the committed .gitignore ----------------------------------------
+    $gi = Join-Path $Root '.gitignore'
+    try {
+        $text = ''
+        $exists = Test-Path -LiteralPath $gi -PathType Leaf
+        if ($exists) {
+            $text = [string](Get-Content -LiteralPath $gi -Raw -ErrorAction SilentlyContinue)
+        }
+        if (-not (Test-McpProvisionIgnoreRulePresent -Text $text -Pattern $RelPath)) {
+            $block = "# MCP-Watchers provision (bead mcpw-cnc.7): the atlas Neo4j credentials are`r`n# written into .env per repository and must never be committed.`r`n$RelPath`r`n"
+            if (-not $exists) {
+                Set-Content -LiteralPath $gi -Value $block -Encoding UTF8 -ErrorAction Stop
+            } else {
+                if (-not $text.EndsWith("`n")) { Add-Content -LiteralPath $gi -Value '' -Encoding UTF8 }
+                Add-Content -LiteralPath $gi -Value $block -Encoding UTF8 -ErrorAction Stop
+            }
+            $changed = $true
+            $notes += 'added to .gitignore'
+        } else {
+            $notes += 'already in .gitignore'
+        }
+    } catch {
+        $notes += "could not write .gitignore: $($_.Exception.Message)"
+    }
+
+    return @{ Ok = $true; Changed = $changed; Reason = ($notes -join '; ') }
+}
+
+function Initialize-AtlasForRepo {
+    <#
+    .SYNOPSIS
+        Write this repository's atlas (Neo4j) .env and make sure it cannot be
+        committed.
+    .DESCRIPTION
+        The one provision step that spawns NOTHING. It is the program-managed
+        form of step 3 of the atlas-mcp-server setup guide ("create your .env
+        file and set NEO4J_URI / NEO4J_USER / NEO4J_PASSWORD"), which could not
+        be done by hand because atlas is installed as the prebuilt npm global
+        package rather than a git clone - there was no project root to put one
+        in. Bead mcpw-cnc.7 makes the program do it for every target repository.
+
+        THE THREE VALUES ARE IDENTICAL IN EVERY REPO, and the header written
+        into the file says so. Neo4j 5 Community - the container's image -
+        supports exactly ONE database; SHOW DATABASES on this instance returns
+        only 'neo4j' and 'system'. Every repo writes into the same graph, so
+        this file carries connection credentials only and CANNOT isolate one
+        repository's graph from another's. Writing a per-repo password would be
+        actively harmful: a repo with a different password simply cannot
+        authenticate. See bead mcpw-cnc.8 for what real isolation would cost.
+
+        Order of operations, and why:
+          1. Start-McpProvisionStep -FileOnly - the shared prologue. It keeps
+             the stamp, the stale-stamp probe agreement and the root checks;
+             only the binary resolution is skipped, because there is no binary.
+          2. probe - already initialized? stamp it and stop. This is what makes
+             a second run a no-op.
+          3. canonical values - read from docker/neo4j-atlas/.env.example. If
+             they cannot be read, SKIP rather than invent them.
+          4. ignore rule FIRST, then the file. Writing the credential and only
+             then arranging for it to be ignored leaves a window in which a
+             `git add -A` commits it.
+          5. write, temp-then-move, so a crash mid-write cannot leave a
+             half-written .env that the probe would read as a valid artifact.
+          6. post-command gate - the same probe again. Exit codes are irrelevant
+             here (nothing exits) but the principle is not: the write is not
+             proof the file is right, so the probe still has to agree before the
+             stamp is earned (bead mcpw-0zo.1).
+
+        Takes no -ToolPath and no -TimeoutMs: there is no command to point at
+        and none to bound. The plan row marks the step FileOnly so callers
+        branch on that instead of on this function's name.
+
+        WHEN THE .env TAKES EFFECT. Not immediately. atlas reads it once at
+        startup through dotenv.config(), so an already-running atlas keeps its
+        old environment until the Toolport gateway serving this repository is
+        restarted. The launcher's own provisioning happens before the watchers
+        spawn, which is the intended moment.
+    #>
+    param(
+        [string]$Path,
+        [string]$StateDir,
+        [switch]$Force
+    )
+    $pre = Start-McpProvisionStep -Mcp 'atlas' -Path $Path -StateDir $StateDir -Force:$Force -FileOnly
+    if ($pre.Skip) { return $pre.Skip }
+
+    $d = Get-McpProvisionAlreadyReason -Mcp 'atlas' -Root $pre.Root
+    if ($d.Ok) {
+        $null = Set-McpProvisionStamp -Path $pre.Root -Mcp 'atlas' -Detail $d.Reason -Tool '' -StateDir $pre.StateDir
+        return New-McpProvisionRow -Mcp 'atlas' -Status 'stamped' `
+            -Reason "already initialized: $($d.Reason)" -Tool '' -Stamp $pre.StateDir
+    }
+
+    # --- the canonical values, or a loud skip -------------------------------
+    $def = Get-AtlasEnvDefaults
+    if (-not $def.Ok) {
+        return New-McpProvisionRow -Mcp 'atlas' -Status 'skipped' `
+            -Reason ("cannot write .env - " + $def.Reason) -Tool '' -Stamp $pre.StateDir
+    }
+
+    # --- the ignore rule, BEFORE the credential is on disk -------------------
+    $ign = Enable-McpProvisionEnvIgnore -Root $pre.Root -RelPath '.env'
+    if (-not $ign.Ok) {
+        return New-McpProvisionRow -Mcp 'atlas' -Status 'skipped' `
+            -Reason ("refusing to write a credential that could be committed - " + $ign.Reason) `
+            -Tool '' -Stamp $pre.StateDir
+    }
+    $verdict = Test-McpProvisionPathIgnored -Root $pre.Root -RelPath '.env'
+    if ($verdict.Answered -and -not $verdict.Ignored) {
+        # A real "not ignored" verdict, not silence: something in the repository
+        # (a negation later in .gitignore) overrides the rule we just recorded.
+        # Do not write the password.
+        return New-McpProvisionRow -Mcp 'atlas' -Status 'skipped' `
+            -Reason ("refusing to write a credential that could be committed - " + $verdict.Reason) `
+            -Tool '' -Stamp $pre.StateDir
+    }
+    $ignoreNote = $ign.Reason
+    if (-not $verdict.Answered) { $ignoreNote += " (unverified: $($verdict.Reason))" }
+
+    # --- write it ------------------------------------------------------------
+    $file = Join-Path $pre.Root '.env'
+    $body = @(
+        '# atlas-mcp-server (Neo4j knowledge graph) - repository connection settings.'
+        '#'
+        '# Written by the MCP-Watchers provision step (Initialize-AtlasForRepo,'
+        '# bead mcpw-cnc.7). Re-running provisioning rewrites this file; hand'
+        '# edits are lost. Change the canonical values in'
+        '# docker/neo4j-atlas/.env.example instead.'
+        '#'
+        '# THESE ARE LOCAL DATABASE CREDENTIALS, not a vendor API key: they are the'
+        '# credentials for the neo4j-atlas-mcp-server container on this machine.'
+        '#'
+        '# THE SAME THREE VALUES ARE WRITTEN INTO EVERY REPOSITORY. Neo4j 5'
+        '# Community supports exactly ONE database, so every repo writes into the'
+        '# same graph. This file carries connection credentials only and cannot'
+        '# isolate one repository from another.'
+        '#'
+        '# NEO4J_PASSWORD must equal NEO4J_AUTH in'
+        '# docker/neo4j-atlas/docker-compose.yml and the Toolport registry env'
+        '# block for server id ''atlas''. One password, three places.'
+        ''
+        "NEO4J_URI=$($def.Values['NEO4J_URI'])"
+        "NEO4J_USER=$($def.Values['NEO4J_USER'])"
+        "NEO4J_PASSWORD=$($def.Values['NEO4J_PASSWORD'])"
+        ''
+    ) -join "`r`n"
+
+    try {
+        $tmp = "$file.tmp-mcpw"
+        Set-Content -LiteralPath $tmp -Value $body -Encoding UTF8 -NoNewline -ErrorAction Stop
+        Move-Item -LiteralPath $tmp -Destination $file -Force -ErrorAction Stop
+    } catch {
+        try { if (Test-Path -LiteralPath "$file.tmp-mcpw") { Remove-Item -LiteralPath "$file.tmp-mcpw" -Force } } catch { }
+        return New-McpProvisionRow -Mcp 'atlas' -Status 'skipped' `
+            -Reason ("could not write ${file}: " + $_.Exception.Message) -Tool '' -Stamp $pre.StateDir
+    }
+
+    # --- earn the stamp ------------------------------------------------------
+    $g = Get-McpProvisionPostCommandGate -Mcp 'atlas' -Root $pre.Root -Label 'the .env write'
+    if (-not $g.Ok) {
+        return New-McpProvisionRow -Mcp 'atlas' -Status 'skipped' `
+            -Reason $g.Reason -Tool '' -Stamp $pre.StateDir
+    }
+    $null = Set-McpProvisionStamp -Path $pre.Root -Mcp 'atlas' -Detail 'wrote .env' -Tool '' -StateDir $pre.StateDir
+    return New-McpProvisionRow -Mcp 'atlas' -Status 'done' `
+        -Reason ("wrote .env with NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD from " +
+                 "docker/neo4j-atlas/.env.example; $ignoreNote") `
+        -Tool '' -Stamp $pre.StateDir
+}
+
+# ---------------------------------------------------------------------------
 # aggregate
 # ---------------------------------------------------------------------------
 function Invoke-McpProvisionForRepo {
     <#
     .SYNOPSIS
-        Provision all six watched MCPs for one repository.
+        Provision all seven watched MCPs for one repository.
     .DESCRIPTION
         Runs Get-McpProvisionPlan in order and returns a summary object. NEVER
         throws: every step is isolated, and a step that throws is recorded as a
@@ -1203,11 +1612,11 @@ function Invoke-McpProvisionForRepo {
         @{ repowise = 'C:\...\repowise.exe' }). Used by the tests to inject
         fakes, and by a caller that has a tool installed off PATH.
     .PARAMETER Only
-        Restrict the run to these MCP names. Omitted = all six.
+        Restrict the run to these MCP names. Omitted = all seven.
     .PARAMETER Force
         Ignore the stamp and re-run every step.
     .PARAMETER ReportOnly
-        Answer "what would provisioning do?" without doing it. Runs the six
+        Answer "what would provisioning do?" without doing it. Runs the seven
         detection probes and returns one row per MCP: 'stamped' when the probe
         already reports provisioned, 'skipped' when no runnable tool was found
         or an optional opt-in file is missing, and 'planned' when a step would
@@ -1264,7 +1673,12 @@ function Invoke-McpProvisionForRepo {
                 # claim it plans a step that would actually be skipped.
                 $row = New-McpProvisionRow -Mcp $step.Mcp -Status 'skipped' `
                     -Reason "report-only: optional - $gate missing (bead mcpw-01g, P3) - nothing to configure" -Tool $tool -Stamp $dir
-            } elseif (-not $tool) {
+            } elseif (-not $tool -and -not $step.FileOnly) {
+                # A FileOnly step has no tool BY DESIGN, so its absence is not a
+                # reason to skip it - it would make the report claim atlas is
+                # never planned on any repository. Such a step falls through to
+                # the probe below, which is the same ground truth the real run
+                # would consult.
                 $row = New-McpProvisionRow -Mcp $step.Mcp -Status 'skipped' `
                     -Reason "report-only: no runnable tool for $($step.Mcp) - this step would be skipped" -Tool '' -Stamp $dir
             } else {
@@ -1280,6 +1694,7 @@ function Invoke-McpProvisionForRepo {
         } else {
             try {
                 switch ($step.Mcp) {
+                    'atlas'       { $row = Initialize-AtlasForRepo       -Path $root -StateDir $dir -Force:$Force }
                     'graphenium'  { $row = Initialize-GrapheniumForRepo  -Path $root -StateDir $dir -ToolPath $tp -Force:$Force -TimeoutMs $TimeoutMs }
                     'repowise'    { $row = Initialize-RepowiseForRepo    -Path $root -StateDir $dir -ToolPath $tp -Force:$Force -TimeoutMs $TimeoutMs }
                     'graphify-rs' { $row = Initialize-GraphifyRsForRepo  -Path $root -StateDir $dir -ToolPath $tp -Force:$Force -TimeoutMs $TimeoutMs }

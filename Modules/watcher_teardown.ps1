@@ -159,7 +159,10 @@ function Stop-AllWatchers {
     #    host's own Terminate. Hosts are only tree-killed if they are in our PID
     #    scope (PID-scoped).
     if ($ourPids.Count -gt 0) {
-        $wrapperHosts = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+        # mcpw-xeu.4: host name behind $script:WatcherPaneHostName (defined in
+        # watcher_patterns.ps1); fallback preserves behavior when dot-sourced alone.
+        $__paneHost = if ($script:WatcherPaneHostName) { $script:WatcherPaneHostName } else { 'powershell.exe' }
+        $wrapperHosts = @(Get-CimInstance Win32_Process -Filter "Name='$__paneHost'" -ErrorAction SilentlyContinue |
             Where-Object { $_.CommandLine -and $_.CommandLine -match [regex]::Escape('graphify-watch-wrapper') })
         foreach ($wh in $wrapperHosts) {
             if ($ourPids.ContainsKey([uint32]$wh.ProcessId)) {

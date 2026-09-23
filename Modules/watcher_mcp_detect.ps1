@@ -3,7 +3,7 @@
 #
 # WHY THIS EXISTS
 # ---------------
-# The launcher (###1.watchers_....ps1) must provision all six watched MCPs in
+# The launcher (###1.watchers_....ps1) must provision all seven watched MCPs in
 # ANY repository it is started from, and a provision step must never re-run an
 # expensive build it does not need: `gm run`, `graphify-rs build`, `graft
 # build` and `repowise update --full` all take minutes. This module is the
@@ -11,7 +11,7 @@
 # initialized for that tool?". No probe builds, indexes, repairs or spawns
 # anything persistent. Init code lives in mcpw-rkg.2, not here.
 #
-# CONTRACT (identical shape for all six probes)
+# CONTRACT (identical shape for all seven probes)
 # --------------------------------------------
 #   Test-<Mcp>Initialized -Path <repoRoot> [-Reason ([ref]$s)] [-ProbeOutput <text>]
 #     -> [bool]   $true  = initialized, the caller may skip the build
@@ -27,7 +27,10 @@
 #     -> -ProbeOutput, when supplied, is pre-captured stdout of the tool's own
 #                 status/doctor command. It lets the caller reuse a capture it
 #                 already made instead of spawning the tool a second time. The
-#                 four probes whose signal is a file on disk ignore it.
+#                 FIVE probes whose signal is a file on disk ignore it
+#                 (memtrace, graphenium, graphify-rs, graft, atlas); only
+#                 grepai and repowise, which have a real status/doctor verb,
+#                 consume it.
 #
 # RULES EVERY PROBE OBEYS
 # -----------------------
@@ -540,12 +543,139 @@ function Test-GraftInitialized {
 }
 
 # ---------------------------------------------------------------------------
+# atlas (Neo4j knowledge graph)
+# ---------------------------------------------------------------------------
+function Get-AtlasEnvKeyNames {
+    # The three keys atlas-mcp-server needs for its Neo4j connection.
+    # dist/config/index.js validates process.env against a zod EnvSchema; these
+    # are the Neo4j group. LOG_LEVEL and BACKUP_FILE_DIR are deliberately NOT
+    # here: they are machine-global, not repository-scoped, and stay in the
+    # Toolport registry env block where they already live.
+    return @('NEO4J_URI', 'NEO4J_USER', 'NEO4J_PASSWORD')
+}
+
+function Read-AtlasEnvFile {
+    <#
+    .SYNOPSIS
+        Parse a .env file into a hashtable of KEY -> VALUE.
+    .DESCRIPTION
+        A deliberately small, strict subset of dotenv:
+          * blank lines, and lines whose first non-space character is '#', are
+            skipped;
+          * the split is on the FIRST '=' only, so a value may itself contain
+            '=';
+          * one layer of surrounding single or double quotes is stripped;
+          * a leading 'export ' is accepted, because that is the one shell idiom
+            people paste into a .env by reflex.
+
+        KEYS ARE MATCHED CASE-SENSITIVELY, mirroring dotenv exactly. `neo4j_uri`
+        would land in process.env as `neo4j_uri` and atlas would never see it,
+        so accepting it here would report a repository as initialized while
+        atlas still cannot authenticate. Strict is the honest direction.
+
+        Returns $null when the file does not exist; otherwise a hashtable, which
+        may legitimately be empty (an existing but empty .env is a real state,
+        and the caller reports it as "missing key(s)", not as "missing file").
+    #>
+    param([string]$File)
+    if (-not (Test-Path -LiteralPath $File -PathType Leaf)) { return $null }
+    $map = @{}
+    foreach ($line in @(Get-Content -LiteralPath $File -ErrorAction SilentlyContinue)) {
+        $s = ([string]$line).Trim()
+        if (-not $s) { continue }
+        if ($s.StartsWith('#')) { continue }
+        if ($s.StartsWith('export ')) { $s = $s.Substring(7).Trim() }
+        $eq = $s.IndexOf('=')
+        if ($eq -lt 1) { continue }
+        $k = $s.Substring(0, $eq).Trim()
+        $v = $s.Substring($eq + 1).Trim()
+        if ($v.Length -ge 2) {
+            $first = $v.Substring(0, 1)
+            $last  = $v.Substring($v.Length - 1, 1)
+            if (($first -eq '"' -and $last -eq '"') -or ($first -eq "'" -and $last -eq "'")) {
+                $v = $v.Substring(1, $v.Length - 2)
+            }
+        }
+        if ($k) { $map[$k] = $v }
+    }
+    return $map
+}
+
+function Test-AtlasInitialized {
+    <#
+    .SYNOPSIS
+        Does this repository carry a usable atlas (Neo4j) .env?
+    .DESCRIPTION
+        Signal: <Path>/.env exists AND defines NEO4J_URI, NEO4J_USER and
+        NEO4J_PASSWORD, each with a non-empty value.
+
+        NO BINARY CHECK, unlike every other probe here. atlas has no per-repo
+        executable to resolve - it is a machine-global npm package - so the
+        "binary not found" first step in the shared contract does not apply.
+        The machine-level precondition is the Neo4j container itself, which is
+        the launcher's job (Test-Neo4jReady / Wait-Neo4jReady, bead mcpw-cnc.3),
+        not a repository probe's.
+
+        WHY A PER-REPO FILE IS THE RIGHT ARTIFACT - verified on this box
+        2026-09-23 rather than assumed. atlas-mcp-server/dist/config/index.js:6
+        calls a BARE `dotenv.config()`, which resolves .env against
+        process.cwd(), not the module directory. The Toolport registry entry for
+        server id 'atlas' sets no `cwd`, so the child inherits the gateway's cwd
+        - and each gateway is launched from the repository it serves. Read
+        straight out of the live processes (PEB CurrentDirectory): atlas pid
+        80180 and pid 63772 both ran with cwd = J:\audio\VAD\. The repo root IS
+        the directory dotenv searches, so a per-repo .env really is read.
+
+        WHY THE THREE VALUES ARE IDENTICAL IN EVERY REPO. Neo4j 5 Community -
+        the container's image - supports exactly ONE database; SHOW DATABASES on
+        this instance returns only 'neo4j' and 'system'. Every repo therefore
+        writes into the same graph, and this file carries connection
+        credentials only. It CANNOT isolate one repository's graph from
+        another's. See bead mcpw-cnc.7, and mcpw-cnc.8 for what real isolation
+        would cost.
+
+        WHAT THIS PROBE DOES NOT CHECK. A .env whose password does not match the
+        container's NEO4J_AUTH still reports initialized - the same blind spot
+        every probe here has for a hand-edited artifact. The initializer writes
+        the canonical value read from docker/neo4j-atlas/.env.example, so the
+        two agree by construction on any repository this provisioner touches.
+
+        SECRET HYGIENE: only key NAMES are ever written into -Reason. Values
+        never appear, so a password cannot reach the launcher log.
+    #>
+    param(
+        [string] $Path,
+        [ref]    $Reason,
+        [string] $ProbeOutput   # unused: this signal is a file on disk
+    )
+    $root = Get-McpDetectRoot -Path $Path
+    $bad = Test-McpDetectRootUsable -Root $root
+    if ($bad) { Set-McpDetectReason $Reason $bad; return $false }
+
+    $map = Read-AtlasEnvFile -File (Join-Path $root '.env')
+    if ($null -eq $map) {
+        Set-McpDetectReason $Reason '.env missing (run the atlas provision step)'
+        return $false
+    }
+    $missing = @()
+    foreach ($k in @(Get-AtlasEnvKeyNames)) {
+        if (-not $map.ContainsKey($k) -or -not ([string]$map[$k])) { $missing += $k }
+    }
+    if ($missing.Count -gt 0) {
+        Set-McpDetectReason $Reason ('.env is missing key(s): ' + ($missing -join ', '))
+        return $false
+    }
+    Set-McpDetectReason $Reason ('.env present with ' + ((Get-AtlasEnvKeyNames) -join ', '))
+    return $true
+}
+
+# ---------------------------------------------------------------------------
 # aggregate
 # ---------------------------------------------------------------------------
 function Get-McpInitializationReport {
     <#
     .SYNOPSIS
-        Run all six probes against one repository and return one row per MCP.
+        Run all seven probes against one repository and return one row per MCP.
     .DESCRIPTION
         The shape the provision layer (mcpw-rkg.2) consumes: a fixed-order list
         of objects with .Mcp, .Ok and .Reason. Never throws - a probe that
@@ -561,6 +691,10 @@ function Get-McpInitializationReport {
         'graphify-rs' = 'Test-GraphifyRsInitialized'
         'repowise'    = 'Test-RepowiseInitialized'
         'graft'       = 'Test-GraftInitialized'
+        # Appended, not inserted: this list is a fixed order the launcher logs
+        # and the detect tests assert on, and atlas has no ordering dependency
+        # on any of the six above.
+        'atlas'       = 'Test-AtlasInitialized'
     }
     foreach ($name in $probes.Keys) {
         $reason = ''

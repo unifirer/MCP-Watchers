@@ -144,6 +144,28 @@ Describe 'backend sweep safety (vad-10m.3)' {
         ($src -match 'candParentIds') | Should Be $true
         ($src -match '\$cands = @\(\$cands \| Where-Object \{ -not \$candParentIds') | Should Be $true
     }
+
+    It 'raises the Start-ThreadJob throttle before the first ThreadJob' {
+        # mcpw-a5q.2 (2026-09-23): Start-ThreadJob caps one session at FIVE
+        # concurrent jobs and never revisits the queue while a long-running job
+        # holds a slot. This launcher starts four long-running ThreadJobs before
+        # the backend supervisor block (grepai supervisor, litellm supervisor,
+        # gm-semantic loop, memtrace heal), leaving one free slot - so only the
+        # FIRST backend supervisor ever ran and headroom-proxy / neo4j never
+        # executed at all.
+        $launcher = Join-Path $repo '###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1'
+        $src = Get-Content -LiteralPath $launcher -Raw
+        ($src -match "PSDefaultParameterValues\['Start-ThreadJob:ThrottleLimit'\]") | Should Be $true
+
+        # The default has to be assigned BEFORE the first Start-ThreadJob call,
+        # otherwise the first five jobs are still capped.
+        $lines = Get-Content -LiteralPath $launcher
+        $throttleIdx = ($lines | Select-String -SimpleMatch 'Start-ThreadJob:ThrottleLimit' | Select-Object -First 1).LineNumber
+        $firstJobIdx = ($lines | Select-String -SimpleMatch 'Start-ThreadJob -ScriptBlock' | Select-Object -First 1).LineNumber
+        $throttleIdx | Should Not Be $null
+        $firstJobIdx | Should Not Be $null
+        ($throttleIdx -lt $firstJobIdx) | Should Be $true
+    }
 }
 
 if (-not $env:BACKEND_SWEEP_TEST_RAN) {

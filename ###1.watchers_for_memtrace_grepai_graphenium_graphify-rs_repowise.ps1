@@ -1157,6 +1157,24 @@ $ollamaGateScript = {
         Write-Warning "Ollama prerequisite check failed: $($_.Exception.Message). Continuing without Ollama."
     }
 }
+# mcpw-a5q.2: Start-ThreadJob throttles to FIVE CONCURRENT JOBS per session and
+# never re-checks the queue once a slot is held by a long-running job. Measured
+# 2026-09-23 (temp/threadjob-throttle-probe.ps1): 8 long-running ThreadJobs were
+# started from 8 separate calls - jobs 1-5 reached Running, jobs 6-8 stayed
+# NotStarted indefinitely.
+#
+# This launcher starts four long-running ThreadJobs before it reaches the backend
+# supervisor block at the bottom of this script: the grepai supervisor, the
+# litellm supervisor, the gm-semantic loop, and the memtrace heal job. That
+# leaves exactly one free slot, so of the six backend supervisors only the FIRST
+# one ever runs. Observed consequence: headroom-proxy and neo4j (registered 5th
+# and 6th) have never once executed - no %LOCALAPPDATA%\headroom\supervisor.log
+# and no %LOCALAPPDATA%\neo4j-atlas\supervisor.log exist.
+#
+# Raising the session default before the first Start-ThreadJob call lifts the
+# cap for every job in this session. Verified: with ThrottleLimit=32 all 8 probe
+# jobs reach Running (temp/threadjob-throttle-fix-probe.ps1).
+$PSDefaultParameterValues['Start-ThreadJob:ThrottleLimit'] = 32
 if (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue) {
     $ollamaGateJob = Start-ThreadJob -ScriptBlock $ollamaGateScript -ArgumentList $ollamaUrls
 } else {

@@ -5130,6 +5130,16 @@ $backendSupervisorScript = {
     . $JobHelpersModule
     function Write-BackendSupLog {
         param([string]$Msg)
+        # mcpw-hzh: Out-File creates the FILE but never the parent directory, so
+        # a backend whose log dir did not exist yet (neo4j-atlas) threw on the
+        # very first write and the supervisor threadjob died before it could emit
+        # a single line - no log, no pane, no console hint. Create the dir first,
+        # here, so EVERY backend supervisor is immune (option (b)), not just the
+        # one backend whose directory happens to be missing today.
+        $supLogDir = Split-Path -Parent $SupervisorLog
+        if ($supLogDir -and -not (Test-Path -LiteralPath $supLogDir)) {
+            New-Item -ItemType Directory -Path $supLogDir -Force -ErrorAction SilentlyContinue | Out-Null
+        }
         Limit-LogSize -Path $SupervisorLog
         $ts = Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'
         "[$ts] $Msg" | Out-File -FilePath $SupervisorLog -Append -Encoding UTF8

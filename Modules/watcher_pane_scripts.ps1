@@ -296,10 +296,13 @@ function Invoke-GrapheniumAutoFix {
         # skipped heal leaves the needs_update marker in place for a later retry
         # instead of losing the flag.
         $gmSemOn = Test-GmSemanticMode -RepoRoot $repo
+        $gmProxyPort = 11436
+        if ($env:LLM_PROXY_PORT) { $gmProxyPort = $env:LLM_PROXY_PORT }
         if ($gmSemOn -and -not (Test-GmPaneLlmProxyReady)) {
-            # Deliberately NOT silently downgrading to AST-only: that silent
-            # downgrade is exactly the bug this bead fixes. Say why and stop.
-            Write-Host "[graphenium AUTO-FIX] semantic mode is ON but the LLM fallback proxy is not reachable - skipping the heal; the needs_update marker is left in place for a later retry. Start the proxy, or switch semantic off."
+            # mcpw-b81.4 choice: SKIP the heal (not AST-only fallback) when
+            # semantic is ON but the proxy is down. Silently downgrading to
+            # AST-only is exactly the bug this bead fixes, so say why and stop.
+            Write-Host ("[graphenium AUTO-FIX] semantic mode is ON but the LLM fallback proxy is not reachable on 127.0.0.1:" + $gmProxyPort + " - skipping the heal; the needs_update marker is left in place for a later retry. Start the proxy, or switch semantic off.")
             return
         }
         Write-Host ("[graphenium AUTO-FIX] stale-graph flag detected - running a full gm rebuild (semantic " + $(if ($gmSemOn) { 'ON' } else { 'OFF' }) + ")...")

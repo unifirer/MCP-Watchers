@@ -103,7 +103,7 @@ function Install-AutoFixHeal {
     return {
         . ([scriptblock]::Create((Get-TailFunctionText -TailScript $gmTailScript -Name 'Test-GmSemanticMode')))
         . ([scriptblock]::Create((Get-TailFunctionText -TailScript $gmTailScript -Name 'Test-GmPaneLlmProxyReady')))
-        . (Install-AutoFixHeal)
+        . ([scriptblock]::Create((Get-TailFunctionText -TailScript $gmTailScript -Name 'Invoke-GrapheniumAutoFix')))
     }
 }
 
@@ -223,18 +223,19 @@ Describe 'Invoke-GrapheniumAutoFix behavior (generated tail, stubbed processes)'
         $prov = Join-Path $repo '.mcpw-provision'
         New-Item -ItemType Directory -Path $prov -Force | Out-Null
         Set-Content -LiteralPath (Join-Path $prov 'gm-semantic.mode') -Value 'on' -Encoding ASCII
-        # Port 1: nothing listens, so the bounded probe fails fast and deterministically.
-        $savedPort = $env:LLM_PROXY_PORT
-        $env:LLM_PROXY_PORT = '1'
         $script:lastGmAutoFixTicks = 0; $script:gmHealUntilTick = 0
         . (Install-AutoFixStubs) 'C:\fake\bin\gm.exe'
         . (Install-AutoFixHeal)
+        # Override the proxy probe with a constant "down" so this case never
+        # touches a socket: the heal's skip decision is what is under test, not
+        # the probe. (Pointing LLM_PROXY_PORT at a dead port would also work but
+        # makes the suite depend on real network behaviour.)
+        function Test-GmPaneLlmProxyReady { return $false }
         try {
             { Invoke-GrapheniumAutoFix } | Should Not Throw
             $script:spCalls.Count | Should Be 0            # no build was spawned
             Test-Path -LiteralPath $fx.Marker | Should Be $true   # marker preserved
         } finally {
-            if ($savedPort) { $env:LLM_PROXY_PORT = $savedPort } else { Remove-Item env:LLM_PROXY_PORT -ErrorAction SilentlyContinue }
             Remove-Item -LiteralPath $repo -Recurse -Force -ErrorAction SilentlyContinue
         }
     }

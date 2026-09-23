@@ -478,6 +478,9 @@ function Invoke-McpProvisionCommand {
           * stdout and stderr are drained CONCURRENTLY before WaitForExit -
             WaitForExit before ReadToEnd deadlocks once a child writes past the
             ~4 KB pipe buffer.
+        A fourth, added 2026-09-24 (mcpw-jt5.1 follow-up): the timeout kills the
+        whole process TREE, not just the direct child. See the comment at the
+        kill site for the measurement.
     #>
     param(
         [string]   $FilePath,
@@ -540,7 +543,30 @@ function Invoke-McpProvisionCommand {
         $errTask = $proc.StandardError.ReadToEndAsync()
         if (-not $proc.WaitForExit($TimeoutMs)) {
             $result.TimedOut = $true
-            try { $proc.Kill() } catch { }
+            # Kill the WHOLE TREE, not just the direct child (mcpw-jt5.1 follow-up).
+            # A .cmd/.bat shim is launched as cmd.exe and the real work is a
+            # GRANDCHILD (npm shim -> node/python, exactly how memtrace and graft
+            # are installed here). Killing only the direct child orphans that
+            # grandchild: it runs out its full duration with the working
+            # directory still held, which (a) blocks any later delete of that
+            # directory and (b) is the orphan-sprawl class tracked by mcpw-nzc.
+            # Measured 2026-09-24 (temp/_kill_probe.ps1): cmd.exe -> ping.exe -n 60,
+            # plain Kill() left ping.exe alive and the sandbox directory
+            # undeletable; Kill($true) left 0 survivors and the directory deleted
+            # cleanly. The plain-Kill fallback below exists only for a host
+            # without the Kill(bool) overload (.NET Framework / Windows
+            # PowerShell 5.1, reachable via the .bat's powershell.exe branch).
+            $treeKilled = $false
+            try { $proc.Kill($true); $treeKilled = $true } catch { }
+            if (-not $treeKilled) {
+                try { $proc.Kill() } catch { }
+                try {
+                    $taskkill = Join-Path $env:SystemRoot 'System32\taskkill.exe'
+                    if (Test-Path -LiteralPath $taskkill) {
+                        & $taskkill /T /F /PID $proc.Id 2>&1 | Out-Null
+                    }
+                } catch { }
+            }
             try { $proc.WaitForExit(5000) | Out-Null } catch { }
         } else {
             # Documented .NET requirement: after a TIMED WaitForExit returns
@@ -550,8 +576,9 @@ function Invoke-McpProvisionCommand {
         }
         # Only touch .Result when the task is COMPLETE - .Result on an
         # incomplete task BLOCKS, and after a kill the reader may never finish
-        # (a killed shim can leave a grandchild holding the write end). Losing
-        # the tail of a timed-out command's output is fine; hanging is not.
+        # (a descendant that outlived the tree kill, or a handle released late,
+        # can still hold the write end). Losing the tail of a timed-out
+        # command's output is fine; hanging is not.
         try { if ($outTask.IsCompleted) { $result.Output = [string]$outTask.Result } } catch { }
         try { if ($errTask.IsCompleted) { $result.Error  = [string]$errTask.Result } } catch { }
         if (-not $result.TimedOut) {

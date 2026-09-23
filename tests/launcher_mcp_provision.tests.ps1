@@ -870,6 +870,13 @@ Describe 'watcher_mcp_provision: idempotent, non-interactive, degrading init' {
             # bound so a loaded box cannot false-fail this.
             ($sw.Elapsed.TotalSeconds -lt 30) | Should -BeTrue -Because 'the runner must not wait for the child'
         } finally {
+            # This delete is also the assertion that the timeout kill took the
+            # whole TREE. cmd.exe -> ping.exe is a two-level tree whose CWD is
+            # this sandbox; if the runner kills only the direct child, the
+            # orphaned ping.exe holds the directory and this Remove-Item throws
+            # "being used by another process". A failure here means the tree
+            # kill in Modules/watcher_mcp_provision.ps1 (Invoke-McpProvisionCommand)
+            # regressed - not that the sandbox is dirty.
             Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
         }
     }

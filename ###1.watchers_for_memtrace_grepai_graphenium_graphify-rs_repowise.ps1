@@ -1693,6 +1693,8 @@ if ($grepaiOk) {
         . $JobHelpersModule
         function Write-SupLog {
             param([string]$Msg)
+            # mcpw-p83: Out-File never creates the parent dir - guard it first.
+            New-LogParentDir -Path $SupervisorLog
             Limit-LogSize -Path $SupervisorLog
             $ts = Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'
             "[$ts] $Msg" | Out-File -FilePath $SupervisorLog -Append -Encoding UTF8
@@ -1755,6 +1757,9 @@ if ($grepaiOk) {
 
         function Write-WatchersLog {
             param([string]$Msg)
+            # mcpw-p83: same missing-parent guard as Write-SupLog (this one is
+            # inside try/catch, so a missing dir silently drops the line).
+            New-LogParentDir -Path $WatchersLog
             Limit-LogSize -Path $WatchersLog
             try {
                 $ts = Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'
@@ -3419,6 +3424,8 @@ if ($litellmExe -and (Test-Path -LiteralPath $litellmConfig)) {
         . $JobHelpersModule
         function Write-LitellmSupLog {
             param([string]$Msg)
+            # mcpw-p83: Out-File never creates the parent dir - guard it first.
+            New-LogParentDir -Path $SupervisorLog
             Limit-LogSize -Path $SupervisorLog
             $ts = Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'
             "[$ts] $Msg" | Out-File -FilePath $SupervisorLog -Append -Encoding UTF8
@@ -3940,13 +3947,21 @@ $ollamaReindexBase = if ($env:OLLAMA_BASE_URL) { $env:OLLAMA_BASE_URL }
     else { "http://127.0.0.1:12134" }
 $ollamaReindexBase = ([string]$ollamaReindexBase).TrimEnd('/')
 $repowiseReindexScript = {
-    param($Exe, $Root, $Log, $Minutes, $OllamaBase)
+    param($Exe, $Root, $Log, $Minutes, $OllamaBase, $JobHelpersModule)
+    # mcpw-p83: Start-Job gives this a fresh runspace, so the shared log-dir
+    # guard is dot-sourced from the module (the same THREAD-JOB SCOPE RULE every
+    # other job scriptblock follows) instead of being copy-pasted here.
+    . $JobHelpersModule
     $mins = 10
     try { if ($Minutes -and ([int]$Minutes) -gt 0) { $mins = [int]$Minutes } } catch {}
     while ($true) {
         Start-Sleep -Seconds ($mins * 60)
         try {
             $stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+            # mcpw-p83: the four Out-File appends below never create the parent
+            # dir; a missing one would throw out of this loop and stop the
+            # reindex job silently. Create it once per cycle.
+            New-LogParentDir -Path $Log
             # vad-3ka.7: pause while repowise's ollama endpoint is unreachable -
             # each run otherwise spends ~40min failing 852/852 then Aborts.
             # Skipped runs auto-resume when it answers. mcpw-0io: probe the
@@ -3979,7 +3994,7 @@ if ($repowiseExe -and (Test-Path -LiteralPath $repowiseExe)) {
     try {
         # Start-Job runs in a fresh runspace/process, so the resolved endpoint
         # must be forwarded explicitly (mcpw-0io) rather than read from $env.
-        $script:repowiseReindexJob = Start-Job -Name "repowise-reindex" -ScriptBlock $repowiseReindexScript -ArgumentList @($repowiseExe, ".", $repowiseReindexLog, $env:REPOWISE_REINDEX_MINUTES, $ollamaReindexBase)
+        $script:repowiseReindexJob = Start-Job -Name "repowise-reindex" -ScriptBlock $repowiseReindexScript -ArgumentList @($repowiseExe, ".", $repowiseReindexLog, $env:REPOWISE_REINDEX_MINUTES, $ollamaReindexBase, $jobHelpersModule)
         Write-Host "repowise embedding reindex loop started (ollama $ollamaReindexBase, log: $repowiseReindexLog)."
     } catch {
         Write-Warning "repowise: failed to start embedding reindex loop: $($_.Exception.Message)"
@@ -4496,6 +4511,9 @@ $memtraceHealScript = {
     }
     function Write-HealLog {
         param([string]$Msg)
+        # mcpw-p83: same missing-parent guard as Write-SupLog (this one is
+        # inside try/catch, so a missing dir silently drops the line).
+        New-LogParentDir -Path $HealLog
         Limit-LogSize -Path $HealLog
         try {
             $ts = Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'

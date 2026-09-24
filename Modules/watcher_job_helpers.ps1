@@ -450,6 +450,26 @@ function Limit-LogSize {
     } catch { }
 }
 
+# mcpw-p83 (2026-09-24): Out-File -Append (and Add-Content / Set-Content) create
+# the FILE but never the parent DIRECTORY. A log writer whose target directory
+# does not exist yet therefore throws "Could not find a part of the path" on its
+# first write, and with the default $ErrorActionPreference = 'Continue' that
+# throw kills the runspace/job doing the writing - silently (no log, no pane, no
+# console hint). mcpw-hzh hardened the backend supervisor writer inline; this is
+# the shared guard for every OTHER append-style log writer, so the sibling call
+# sites route through ONE function instead of repeating the block. Call it
+# immediately before the write. Never throws: a blank path (no parent to derive)
+# is a no-op, and a failed New-Item is swallowed so logging can never take a job
+# down. PS 5.1 compatible, ASCII-only.
+function New-LogParentDir {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return }
+    $dir = Split-Path -Parent $Path
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force -ErrorAction SilentlyContinue | Out-Null
+    }
+}
+
 # Returns $true while the launcher that wrote the lock file at $Path is still
 # alive. The lock file is JSON { Pid, StartedAt, Launcher }; StartedAt guards
 # against PID reuse and the Launcher token guards against a same-PID process

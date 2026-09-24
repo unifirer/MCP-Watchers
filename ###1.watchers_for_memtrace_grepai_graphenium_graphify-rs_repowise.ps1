@@ -3897,31 +3897,62 @@ if (-not $cgLaunch) {
 } else {
     Write-Host "codegraph watch skipped (see warning above). Queries still work from the last build."
 }
+# -- graft backend daemon: graftd.exe (mcpw-qxj.3) --
+# heimdall's reconciler projects into the Graft backend, whose daemon binary is
+# graftd.exe. Until it is listening, reconciliation has nowhere to land. graftd
+# has NO keeper of its own -- the old ~/.graft/start-graftd.bat had no supervisor
+# and an unreliable shell redirect -- so THIS launcher is its ONE supervised
+# starter. Never add a second launcher for it (ONE-STARTER rule, learned from the
+# memtrace two-owner flap).
+# On Windows graftd MUST run with --foreground: its default daemonize mode loads
+# the model and then exits silently with no socket. It also needs NATIVE Windows
+# paths (mcpw-qxj.1), which is why the config path below is not POSIX.
+# DISAMBIGUATION (mcpw-qxj.6): this Graft is NOT the repo's graft/ directory nor
+# the npm `graft` CLI (v0.18.0, per-repo context graph: build/ask/mcp) -- same
+# word, unrelated program.
+$graftdLog = Join-Path $logsDir 'graftd.log'
+$script:graftdProc = $null
+$graftdExe = Join-Path $env:USERPROFILE '.local\bin\graftd.exe'
+$graftdCfg = Join-Path $env:USERPROFILE '.graft\config.yaml'
+if (-not (Test-Path -LiteralPath $graftdExe)) {
+    Write-Host "graftd.exe not found at $graftdExe. The Graft backend stays down; heimdall reconciliation is degraded."
+} else {
+    try {
+        $script:graftdProc = Start-WatcherDetached 'graftd' 'graftd' @('--config', $graftdCfg, '--foreground') $graftdLog -ExePath $graftdExe -WorkingDirectory (Split-Path $graftdExe -Parent) -SkipStaleKill
+    } catch { Write-Warning ("graftd did not start: " + $_.Exception.Message) }
+    if (-not $script:graftdProc) { Write-Warning "graftd did not start. heimdall's Graft backend is down; reconciliation is degraded." }
+}
+
 # -- heimdall: knowledge-base reconciler (headless process, OWN pane in the 3x2 grid) --
 # mcpw-qxj.4: heimdall is the 6th managed watcher and takes over the reserved cell.
 # `heimdall daemon` is the SINGLE WRITER to the KB and holds an O_EXCL lock for
 # its lifetime, so this launcher is its ONE starter: do not also run it
 # manually, and never let the sweep adopt a foreign reconciler.
-# PREREQUISITE (mcpw-qxj.3): GRAFT must already be listening. Graft is
-# heimdall's backend (~/.heimdall/config.json reads "backend": "graft"); the
-# binary is just its daemon, graftd.exe. On Windows that daemon needs
-# --foreground -- its default daemonize mode loads the model and then exits
-# silently with no socket.
-# DISAMBIGUATION (mcpw-qxj.6): this Graft is NOT the graft/ directory or the
-# `graft` MCP in this repo. Those are the npm graft CLI (v0.18.0, per-repo
-# context graph: build/ask/mcp). Same word, unrelated tool.
+# PREREQUISITE (mcpw-qxj.3): the Graft backend above must already be listening.
 $heimdallLog = Join-Path $logsDir 'heimdall.log'
 $script:heimdallProc = $null
 $heimdallJs = $null
 $hdCmd = Get-Command 'heimdall' -ErrorAction SilentlyContinue
 if ($hdCmd -and $hdCmd.Source) {
-    # npm's Windows shim is a shell script, not an .exe. Walk up from the global
-    # bin dir to the global root so we can launch the entry JS under node.exe
-    # directly -- that gives an attributable, sweepable process and keeps the
-    # command line carrying 'heimdall.js daemon' (see watcher_patterns.ps1).
-    $hdRoot = Split-Path (Split-Path $hdCmd.Source -Parent) -Parent
-    $hdCand = Join-Path $hdRoot 'node_modules\@arihantdeva\heimdall\bin\heimdall.js'
-    if (Test-Path -LiteralPath $hdCand) { $heimdallJs = $hdCand }
+    # npm's shim is a script, not an .exe, so resolve the entry JS and launch it
+    # under node.exe directly -- that gives an attributable, sweepable process
+    # whose command line carries 'heimdall.js daemon' (see watcher_patterns.ps1).
+    # The shim's location differs by platform: npm on Windows drops it straight
+    # into the global prefix (<prefix>\heimdall.ps1, so the JS is
+    # <prefix>\node_modules\...), whereas the classic Unix layout keeps it in
+    # <prefix>/bin. Walk BOTH the shim's own dir and its parent and take the
+    # first that resolves. The previous two-parents-up-only walk overshot to
+    # J:\Programs on this box (the real prefix is J:\Programs\npm-global) and so
+    # silently skipped the daemon on every launch (mcpw-qxj.3).
+    $hdRel = 'node_modules\@arihantdeva\heimdall\bin\heimdall.js'
+    $hdDirs = @(
+        (Split-Path $hdCmd.Source -Parent),
+        (Split-Path (Split-Path $hdCmd.Source -Parent) -Parent)
+    ) | Where-Object { $_ } | Select-Object -Unique
+    foreach ($hdDir in $hdDirs) {
+        $hdCand = Join-Path $hdDir $hdRel
+        if (Test-Path -LiteralPath $hdCand) { $heimdallJs = $hdCand; break }
+    }
 }
 if (-not $heimdallJs) {
     Write-Host "heimdall not resolvable (no 'heimdall' on PATH or bin/heimdall.js missing). KB reconciliation skipped; the pane cell is held."

@@ -46,6 +46,13 @@ $script:WatcherSweepPatterns = @(
     # MCP backend for every session on this box. 'heimdall.js daemon' matches
     # only the reconciler.
     @{ Name = 'node.exe';        Pattern = 'heimdall.js daemon' },
+    # mcpw-qxj.3: graftd.exe is heimdall's Graft backend daemon, started detached
+    # by this launcher (the ONE supervised starter). Match by IMAGE NAME with an
+    # empty pattern (same shape as graphify-rs.exe), NOT by a 'graft' token: the
+    # two unrelated programs also called "graft" -- the npm `graft` CLI and this
+    # repo's graft MCP -- both run as node.exe, so an image-name match on
+    # graftd.exe can never reach them (see the qxj.6 invariant test).
+    @{ Name = 'graftd.exe';      Pattern = '' },
     @{ Name = 'python.exe';      Pattern = 'mcp_agent_mail'; Persistent = $true }, # vad-10m.3: mail singleton (:8765), token-scoped
     @{ Name = 'python.exe';      Pattern = 'embed_server'; Persistent = $true }, # graphiti embed proxy (:8003), token-scoped
     @{ Name = 'pwsh.exe';        Pattern = 'vad-grepai-sup' },

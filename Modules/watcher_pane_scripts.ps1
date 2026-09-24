@@ -852,6 +852,24 @@ function Invoke-GrepaiHealthCheck {
 }
 Write-Host "=== __LABEL__ live log === (Ctrl+C in the launcher window stops all watchers)"
 while ($true) {
+    # graphenium semantic-mode indicator (bead mcpw-b81.10): SHOW the active mode
+    # in the pane so an operator never has to grep gm.log for the [gm-semantic]
+    # line - that line is written into this very pane and scrolls away. Reads the
+    # SAME per-repo switch the build daemon and the stale-graph auto-fix obey
+    # (Test-GmSemanticMode, defined above), so this status line can never
+    # disagree with what a rebuild will do. Re-read on every poll tick, printed
+    # only at startup and on a CHANGE: one tiny Test-Path + Get-Content per tick,
+    # no new timer, no second writer, and a flip surfaces within one tick.
+    # Deliberately ahead of the liveness / heartbeat block below so the pane's
+    # liveness contract is never delayed.
+    if ('__LABEL__' -eq 'graphenium') {
+        $semNow = [bool](Test-GmSemanticMode -RepoRoot $repo)
+        if (($null -eq $script:semModeShown) -or ($script:semModeShown -ne $semNow)) {
+            $script:semModeShown = $semNow
+            $semModeLabel = if ($semNow) { 'on (LLM enrichment)' } else { 'off (AST-only)' }
+            Write-Host ("=== graphenium | semantic: " + $semModeLabel + " ===")
+        }
+    }
     try {
         if (Test-Path -LiteralPath $log) {
             # LEAK FIX (2026-09-06): read only the bytes appended since the last

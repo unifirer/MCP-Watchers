@@ -12,10 +12,12 @@ Import-Module Pester -RequiredVersion 3.4.0 -ErrorAction Stop
 #   1. static wiring: ###1 owns Invoke-GmSemanticBuild (no ###5 file remains),
 #      arms a FileSystemWatcher (gm-sem-changed) and a live incremental loop
 #      (gm run . --update), and stops cleanly via Stop-GmSemanticLive.
-#   2. cloud-only config: the launcher sends gm directly to the Nous endpoint
-#      (no local Ollama bridge) and refuses to build when NOUS_API_KEY is
-#      missing (graceful AST-only degradation).
-#   3. execution smoke: with NOUS_API_KEY unset the inline build degrades
+#   2. proxy-gated config: the launcher sends gm to the LOCAL LLM fallback proxy
+#      (127.0.0.1:$env:LLM_PROXY_PORT, default 11436) as an OpenAI-compatible
+#      endpoint, and refuses to enrich when Test-LlmProxyReady is false
+#      (graceful AST-only degradation). The former Nous cloud endpoint is
+#      retired - see the mcpw-b81.8 note in the second case below.
+#   3. execution smoke: with the proxy not ready the inline build degrades
 #      gracefully (no crash) instead of hanging or erroring.
 
 $repo = Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')
@@ -48,19 +50,40 @@ Describe 'gm semantic build inline live daemon' {
         $c | Should Not Match 'function Start-LlmFallbackProxy'
     }
 
-    It 'inline build targets the Nous cloud endpoint and needs the API key' {
+    It 'inline build targets the local fallback proxy and needs it ready' {
+        # mcpw-b81.8: this case used to assert NOUS_API_KEY / NOUS_BASE_URL /
+        # 'openai-compatible' as the build's contract. Two of those three are
+        # retired. NOUS_API_KEY survives in exactly ONE comment (~3061) that says
+        # it is no longer consulted, and NOUS_BASE_URL survives only as an unused
+        # env default (~3643) that the build never reads. Both assertions
+        # therefore passed on strings that no longer participate in the behaviour
+        # they claimed to lock - the rot dev_tools/scan_stale_anchors.py exists to
+        # catch. Assert the contract the build actually implements.
         $c = Get-Content -LiteralPath $launcher -Raw
-        $c | Should Match 'NOUS_API_KEY'
-        $c | Should Match 'NOUS_BASE_URL'
-        $c | Should Match 'openai-compatible'
+        # Comments must never be able to satisfy a check, so strip them first.
+        $code = $c -replace '(?m)#.*$', ''
+        # The gate: no proxy, no LLM enrichment.
+        $c | Should Match 'function Test-LlmProxyReady'
+        $c | Should Match 'if \(\$semanticOn -and -not \(Test-LlmProxyReady\)\)'
+        # The target: the LOCAL proxy, port env-driven with a 11436 default.
+        $code | Should Match '\$proxyPort = if \(\$env:LLM_PROXY_PORT\)'
+        $code | Should Match '\$proxyBase = "http://127\.0\.0\.1:\$proxyPort/v1"'
+        $code | Should Match '--api-base'
+        # The provider name is still live - keep locking it.
+        $code | Should Match 'openai-compatible'
+        # The retired Nous key must not be consulted anywhere in executable code.
+        $code | Should Not Match 'NOUS_API_KEY'
     }
 
-    It 'NOUS_API_KEY unset degrades gracefully (no build, no hang)' {
+    It 'proxy not ready degrades gracefully (no build, no hang)' {
         # Dot-source just the build function in a scratch harness with a stub
-        # gm.exe and no API key; it must return without throwing or hanging.
-        # The build now gates on (NOUS_API_KEY OR Test-LlmProxyReady); the
-        # harness stubs Test-LlmProxyReady to a constant $false so the
-        # degradation path stays deterministic (no live proxy needed).
+        # gm.exe and no proxy; it must return without throwing or hanging.
+        # The build gates on Test-LlmProxyReady; the harness stubs it to a
+        # constant $false so the degradation path stays deterministic (no live
+        # proxy needed). mcpw-b81.8: this case was named for NOUS_API_KEY, which
+        # the build no longer consults - the gate is the proxy, not the key.
+        # ($env:NOUS_API_KEY is still cleared below; harmless, but it is not what
+        # makes this case deterministic.)
         $src = Get-Content -LiteralPath $launcher -Raw
         # Extract the Invoke-GmSemanticBuild function body verbatim.
         if ($src -notmatch '(?s)function Invoke-GmSemanticBuild \{.*?\n\}') {

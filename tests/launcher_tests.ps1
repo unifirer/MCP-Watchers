@@ -1925,7 +1925,24 @@ try {
     $tailer23 = Start-Process -FilePath 'powershell.exe' `
         -ArgumentList @('-NoProfile', '-File', ('"' + $t23tail + '"')) `
         -WindowStyle Hidden -RedirectStandardOutput $t23out -PassThru
-    Start-Sleep -Seconds 2          # let it seed the 40-line backlog (offLog = byte length)
+    # Wait until the tailer has actually READ the 40-line seed backlog before
+    # truncating (mcpw-3vn). A bare Start-Sleep races the tailer's startup: on a
+    # slow start (PowerShell cold start + the tail-module dot-source) the
+    # tailer's FIRST read lands AFTER the truncation below, so it never observes
+    # the log shrink, never prints 'resuming from tail', and the run fails on a
+    # tailer that behaved correctly. Measured before this wait: 4 failures in 12
+    # runs, every one with the output missing the seed backlog entirely (161
+    # bytes vs 786). Waiting for the last seed line makes the seed observable
+    # rather than assumed, so the truncation is always a genuine shrink.
+    $t23seedDeadline = (Get-Date).AddSeconds(20)
+    $t23seeded = $false
+    while ((Get-Date) -lt $t23seedDeadline) {
+        Start-Sleep -Milliseconds 250
+        $t23seedNow = ''
+        try { $t23seedNow = Get-Content -LiteralPath $t23out -Raw -ErrorAction SilentlyContinue } catch {}
+        if ($t23seedNow -match 'seed-line-40') { $t23seeded = $true; break }
+    }
+    Assert ($t23seeded) 'T23 tailer seeded the pre-truncation backlog' ('seed-timeout')
     # Truncate below the watermark, then append a marker line.
     Set-Content -LiteralPath $t23log -Value @('post-trunc-a','post-trunc-b','post-trunc-c') -Encoding UTF8
     Start-Sleep -Seconds 1

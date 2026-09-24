@@ -52,7 +52,7 @@ Modules\watcher_log_tail.ps1                                           increment
 Modules\watcher_pane_scripts.ps1                                       pane script builder
 Modules\watcher_patterns.ps1                                           regex patterns
 Modules\watcher_teardown.ps1                                           tree-kill and sweep
-tests\                                                                 25 Pester suites, 17 Python tests
+tests\                                                                 50 Pester suites, 31 pytest files
 docs\                                                                  guides, reviews, plans, changelogs
 ```
 
@@ -200,19 +200,27 @@ A stale shim whose entrypoint no longer exists is refused rather than spawned.
 
 ## Tests
 
-Pester gate (canonical, no pytest needed):
+Two gates, and **both are required** — neither is a superset of the other, so a
+green run of one says nothing about the other. mcpw-xeu.11: this section used to
+call the Pester gate "canonical, no pytest needed" while documenting the pytest
+run twenty lines later, which read as "pytest is optional". It is not.
+
+**Pester is authoritative for the PowerShell launcher** — `###1...ps1`,
+`Modules\*.ps1`, and every `tests\*.tests.ps1` suite:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\run_launcher_tests.ps1
 ```
 
-Exit code 0 means all checks pass.
+Exit code 0 means all checks pass for that gate.
 
-Python shims:
+**pytest is authoritative for the Python modules** — `Modules\*.py`,
+`dev_tools\*.py`, and the `tests\test_*.py` files. Use the pinned repo venv;
+bare `python` has no pytest here:
 
 ```powershell
 cd tests
-python -m pytest -c pytest.ini test_launcher.py -q
+..\.venv\Scripts\python.exe -m pytest -c pytest.ini test_launcher.py -q
 ```
 
 `tests\pytest.ini` is intentionally minimal. It does not inherit the VAD audio

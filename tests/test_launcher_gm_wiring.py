@@ -158,14 +158,33 @@ def test_semantic_build_key_never_in_argumentlist():
     assert 'Remove-Item env:GRAPHENIUM_API_KEY' in src, (
         "The staged GRAPHENIUM_API_KEY must be cleaned up after spawning gm."
     )
-    # The key must never be logged: the gm-semantic Write-Host line shows only
-    # base + model.
+    # The key must never be logged. These are the lines that announce a
+    # semantic build about to run, and each must name only the base / model /
+    # mode - never the credential:
+    #   [gm-semantic] running FULL non-destructive gm rebuild - semantic mode <label>
+    #   [gm-semantic] semantic mode changed <was> -> <now>; rebuilding.
+    # The needle is matched with `in` against the raw source, so it MUST track
+    # the literal the launcher actually prints. It previously read
+    # "running incremental", which no line has ever contained, so the loop body
+    # never executed and this guard was inert while the suite still reported
+    # green (mcpw-b81.9). The match counter below is what stops that recurring.
+    launch_needles = (
+        'gm-semantic] running FULL non-destructive gm rebuild',
+        'gm-semantic] semantic mode changed',
+    )
+    matched = 0
     for line in src.splitlines():
-        if 'gm-semantic] running incremental' in line:
+        if any(needle in line for needle in launch_needles):
+            matched += 1
             assert '$proxyKey' not in line and 'GRAPHENIUM_API_KEY' not in line, (
                 "The gm-semantic launch log line must not include the key: %r"
                 % line.strip()
             )
+    assert matched >= 1, (
+        "The gm-semantic launch log-line guard matched no line at all. Its "
+        "needle has drifted from the launcher's actual log line, which turns "
+        "this check into a silent no-op - exactly the mcpw-b81.9 failure."
+    )
 
 
 def test_cleanlogline_strips_graphenium_log_level_tag():

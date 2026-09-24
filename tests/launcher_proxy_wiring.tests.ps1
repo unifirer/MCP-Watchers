@@ -82,7 +82,7 @@ Describe 'startup readiness gate overlap (VAD-7m1y)' {
     It 'litellm readiness probe starts as a job and is joined before the pane grid' {
         $probeIdx = $c.IndexOf('$script:litellmProbeJob = Start-')
         $joinIdx = $c.IndexOf('Wait-Job -Job $script:litellmProbeJob')
-        $paneIdx = $c.IndexOf('Combined watcher view: Windows Terminal 3x2 pane grid')
+        $paneIdx = $c.IndexOf('Combined watcher view: Windows Terminal 4x2 pane grid')
         $probeIdx | Should BeGreaterThan -1
         $joinIdx | Should BeGreaterThan $probeIdx
         $paneIdx | Should BeGreaterThan -1

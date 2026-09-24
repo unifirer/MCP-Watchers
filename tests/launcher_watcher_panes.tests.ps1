@@ -1,10 +1,11 @@
 # tests/launcher_watcher_panes.tests.ps1
 # Pester 3.4.0 team idiom. Run via:
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/launcher_watcher_panes.tests.ps1
-# Proves the 3x2 pane grid created by
+# Proves the 4x2 pane grid created by
 # "###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1" shows
 # info for all five pane-backed watchers (grepai, graphenium, graphify-rs,
-# repowise, codegraph) plus the reserved empty cell. mcpw-0sp.
+# repowise, codegraph) plus heimdall, atlas, and the blocker holder cell.
+# mcpw-0sp (3x2) then mcpw-qxj.8 (heimdall 6th) then mcpw-cnc.4 (4x2).
 # memtrace is intentionally pane-less and is NOT covered.
 $launcher = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')).Path '###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1'
 $paneModule = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')).Path 'Modules\watcher_pane_scripts.ps1'
@@ -41,7 +42,7 @@ Describe 'pane tailer generation' {
         finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
     }
 
-    It 'bakes the correct Label + LogPath + ErrPath into each of the 6 tailers' {
+    It 'bakes the correct Label + LogPath + ErrPath into each of the 8 tailers' {
         $src = Extract-FunctionAst -Path $paneModule -Name 'New-WatcherPaneScript'
         $tmp = Join-Path $env:TEMP ('fn_' + [guid]::NewGuid().ToString('N') + '.ps1')
         Set-Content -LiteralPath $tmp -Value $src -Encoding utf8
@@ -49,7 +50,7 @@ Describe 'pane tailer generation' {
         New-Item -ItemType Directory -Path $wtPaneDir -Force | Out-Null
         try {
             . $tmp
-            $labels = @('grepai', 'graphenium', 'graphify-rs', 'repowise', 'codegraph', 'heimdall')
+            $labels = @('grepai', 'graphenium', 'graphify-rs', 'repowise', 'codegraph', 'heimdall', 'atlas', 'blocker')
             foreach ($lbl in $labels) {
                 $log = Join-Path $env:TEMP ("log_$lbl.txt")
                 $err = "$log.err"
@@ -75,7 +76,7 @@ Describe 'pane tailer generation' {
 }
 
 Describe 'pane grid wiring' {
-    It 'generates exactly one tailer per pane-backed watcher (grepai/graphenium/graphify-rs/repowise/codegraph/heimdall)' {
+    It 'generates exactly one tailer per pane (grepai/graphenium/graphify-rs/repowise/codegraph/heimdall/atlas/blocker)' {
         $c = Get-Content -LiteralPath $launcher -Raw
         $c | Should Match 'New-WatcherPaneScript -Label "grepai"'
         $c | Should Match 'New-WatcherPaneScript -Label "graphenium"'
@@ -83,6 +84,8 @@ Describe 'pane grid wiring' {
         $c | Should Match 'New-WatcherPaneScript -Label "repowise"'
         $c | Should Match 'New-WatcherPaneScript -Label "codegraph"'
         $c | Should Match 'New-WatcherPaneScript -Label "heimdall"'
+        $c | Should Match 'New-WatcherPaneScript -Label "atlas"'
+        $c | Should Match 'New-WatcherPaneScript -Label "blocker"'
     }
 
     It 'wires each watcher to the correct log path' {
@@ -97,7 +100,7 @@ Describe 'pane grid wiring' {
         $c | Should Match 'New-WatcherPaneScript -Label "grepai"\s+-LogPath \$logFile\s+-ErrPath ""'
     }
 
-    It 'wt 3x2 grid references all 6 tailer scripts and a --title per pane' {
+    It 'wt 4x2 grid references all 8 tailer scripts and a --title per pane' {
         $c = Get-Content -LiteralPath $launcher -Raw
         $c | Should Match '\$tailGrepai'
         $c | Should Match '\$tailGraphenium'
@@ -105,14 +108,18 @@ Describe 'pane grid wiring' {
         $c | Should Match '\$tailRepowise'
         $c | Should Match '\$tailCodegraph'
         $c | Should Match '\$tailHeimdall'
-        # one --title per watcher, quoted token form used by the wt args
+        $c | Should Match '\$tailAtlas'
+        $c | Should Match '\$tailBlocker'
+        # one --title per pane, quoted token form used by the wt args
         $c | Should Match "'grepai'"
         $c | Should Match "'graphenium'"
         $c | Should Match "'graphify-rs'"
         $c | Should Match "'repowise'"
         $c | Should Match "'codegraph'"
         $c | Should Match "'heimdall'"
-        (($c | Select-String -Pattern "--title" -AllMatches).Matches.Count) | Should BeGreaterThan 5
+        $c | Should Match "'atlas'"
+        $c | Should Match "'blocker'"
+        (($c | Select-String -Pattern "--title" -AllMatches).Matches.Count) | Should BeGreaterThan 7
     }
 }
 
@@ -189,12 +196,12 @@ Describe 'pane tailer shows watcher info at runtime' {
 }
 
 Describe 'reserved and optional panes stay open (mcpw-0sp)' {
-    # The 3x2 grid is only stable if these two cells never close themselves: a
+    # The 4x2 grid is only stable if these cells never close themselves: a
     # pane whose command exits is closed by Windows Terminal (closeOnExit) and
     # the surviving panes re-flow into a ragged layout. Before mcpw-0sp the
     # template's liveness chain fell through to "else { $alive = $false }" for
-    # any label it did not recognise, so BOTH panes exited on their first tick.
-    It 'the heimdall cell and a PID-less codegraph pane never self-close' {
+    # any label it did not recognise, so those panes exited on their first tick.
+    It 'the heimdall/atlas/blocker cells and a PID-less codegraph pane never self-close' {
         $src = Extract-FunctionAst -Path $paneModule -Name 'New-WatcherPaneScript'
         $tmp = Join-Path $env:TEMP ('fn_' + [guid]::NewGuid().ToString('N') + '.ps1')
         Set-Content -LiteralPath $tmp -Value $src -Encoding utf8
@@ -202,7 +209,7 @@ Describe 'reserved and optional panes stay open (mcpw-0sp)' {
         New-Item -ItemType Directory -Path $wtPaneDir -Force | Out-Null
         . $tmp
         try {
-            foreach ($lbl in @('heimdall', 'codegraph')) {
+            foreach ($lbl in @('heimdall', 'codegraph', 'atlas', 'blocker')) {
                 $log = Join-Path $env:TEMP ("log_$lbl.txt")
                 Set-Content -LiteralPath $log -Value 'seed line' -Encoding utf8
                 # NO -WatchPid: exactly how the launcher builds these two panes

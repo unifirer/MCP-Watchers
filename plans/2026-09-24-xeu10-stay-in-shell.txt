@@ -1,0 +1,17 @@
+mcpw-xeu.10 DECISION 2026-09-24: STAY in shell host, no port.
+
+Pane tailer scripts (Modules/watcher_pane_scripts.ps1, New-WatcherPaneScript)
+and the wt grid builder (###1 launcher Build-GridStep) stay in PowerShell.
+
+Reasons:
+- Tailers are process-lifecycle + WT constructs (Get-CimInstance probes,
+  heartbeat files, closeOnExit slot-hold, 500ms poll loop) with no Python
+  equivalent benefit; a port would reimplement PS host semantics in Python.
+- Grid builder shells wt.exe via Start-Process arrays; Python adds no value
+  over the working PS array form and forces host re-keying to finish first.
+- Half-porting leaves a hybrid harder to reason about than either pure form.
+- Both are thin and already correct; port cost exceeds benefit.
+
+Recorded in Modules/watcher_pane_scripts.ps1 header per bead acceptance.
+No code change (stay = no port). Step 5 rides along: keep the .bat
+double-click entry, change only what it launches.

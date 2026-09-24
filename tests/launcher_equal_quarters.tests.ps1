@@ -1,14 +1,18 @@
 Import-Module Pester -ErrorAction Stop
 
-# Regression guard for the 3x2 watcher grid in ###1.
+# Regression guard for the 4x2 watcher grid in ###1.
 # Prevents the recurring "unequal quarters" bug by locking the wt-arg structure.
 # Comments are stripped before assertions so the documented "-w 0 is bad" note
 # in the comment block does not trip the "never -w 0" guard.
 #
 # mcpw-0sp: the grid went 2x2 (4 panes) -> 3x2 (6 panes: 5 watchers + 1 reserved
-# empty cell). Equal thirds are NOT dyadic, so the two column splits per row use
-# -s 0.6667 (new pane = 2/3) followed by -s 0.5 (halve the 2/3 into two thirds).
-# Every split still carries an explicit -s; none is left to the default.
+# empty cell). mcpw-qxj.8 gave the reserved cell to heimdall. mcpw-cnc.4 grows
+# to 4x2 (8 panes: 6 watchers + atlas + blocker). Equal quarters via sequential
+# splits on the newest pane: -s 0.75 (1/4 + 3/4) then -s 0.6667 (1/4 + 1/2)
+# then -s 0.5 (halve the 1/2 into quarters). Keeps the 0.6667/0.5 thirds
+# arithmetic. Every split still carries an explicit -s; none is left to default.
+# Counts below derive from the grid builder (mcpw-i15 precedent): the pane-step
+# count follows Build-GridStep lines carrying a pane (-File), anchors carry none.
 
 $launcher = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')).Path '###1.watchers_for_memtrace_grepai_graphenium_graphify-rs_repowise.ps1'
 
@@ -17,7 +21,7 @@ function Get-LauncherCode {
         Where-Object { $_.TrimStart().StartsWith('#') -eq $false }
 }
 
-Describe '###1 3x2 pane grid enforces EQUAL cells' {
+Describe '###1 4x2 pane grid enforces EQUAL cells' {
 
     It 'routes through a dedicated NAMED window, never -w 0 (which collapses two cells into one)' {
         $code = Get-LauncherCode | Out-String
@@ -25,28 +29,34 @@ Describe '###1 3x2 pane grid enforces EQUAL cells' {
         $code | Should -Not -Match '\-w[\s,]+0\b'
     }
 
-    It 'splits the rows in half and the columns in thirds: 3 x -s 0.5 plus 2 x -s 0.6667, and no split without an explicit -s' {
+    It 'splits the rows in half and the columns in quarters: 3 x -s 0.5 plus 2 x -s 0.6667 plus 2 x -s 0.75, and no split without an explicit -s' {
         $code = Get-LauncherCode | Out-String
-        # Rows: one -H 0.5 (two equal rows). Columns: per row one -V 0.6667
-        # (new pane = 2/3, leaving the source pane 1/3) then one -V 0.5 to halve
-        # that 2/3 into two more thirds. mcpw-0sp.
+        # Rows: one -H 0.5 (two equal rows). Columns per row: -V 0.75 (1/4 + 3/4)
+        # then -V 0.6667 (1/4 + 1/2) then -V 0.5 (halve the 1/2 into quarters).
+        # mcpw-cnc.4 keeps the 0.6667/0.5 thirds arithmetic. Pane steps derive
+        # from the builder (mcpw-i15): splits = panes - 1 (new-tab is not a split).
+        $paneSteps = @((Get-LauncherCode) | Where-Object { $_ -match 'Build-GridStep @\(' -and $_ -match "'-File'" })
         $halves   = [regex]::Matches($code, "'split-pane',\s*'-[HV]',\s*'-s',\s*'0\.5'")
         $thirds   = [regex]::Matches($code, "'split-pane',\s*'-[HV]',\s*'-s',\s*'0\.6667'")
+        $quarters = [regex]::Matches($code, "'split-pane',\s*'-[HV]',\s*'-s',\s*'0\.75'")
         $halves.Count | Should -Be 3
         $thirds.Count | Should -Be 2
+        $quarters.Count | Should -Be 2
         # Guard: no split is left to wt's default size.
         $allSplits = [regex]::Matches($code, "'split-pane',\s*'-[HV]'")
         $sized     = [regex]::Matches($code, "'split-pane',\s*'-[HV]',\s*'-s',\s*'0\.\d+'")
-        $allSplits.Count | Should -Be 5
-        $sized.Count     | Should -Be 5
+        $allSplits.Count | Should -Be ($paneSteps.Count - 1)
+        $sized.Count     | Should -Be ($paneSteps.Count - 1)
     }
 
-    It 'builds the 3x2 as SEPARATE wt invocations with DIRECTIONAL move-focus anchors BETWEEN the row splits (no numeric pane ids): new-tab; split -H; move-focus up; split -V; split -V; move-focus down; split -V; split -V' {
+    It 'builds the 4x2 as SEPARATE wt invocations with DIRECTIONAL move-focus anchors BETWEEN the row splits (no numeric pane ids): new-tab; split -H; move-focus up; split -V; split -V; split -V; move-focus down; split -V; split -V; split -V' {
         $code = Get-LauncherCode | Out-String
         # Every grid step targets the named window so pane targeting stays scoped
-        # to the single 3x2 tab.
+        # to the single 4x2 tab. Step count derives from the builder (mcpw-i15):
+        # pane steps (carry -File) plus exactly 2 anchor steps (no pane, no -File).
+        $paneSteps = @((Get-LauncherCode) | Where-Object { $_ -match 'Build-GridStep @\(' -and $_ -match "'-File'" })
         $namedWin = [regex]::Matches($code, "Build-GridStep @\('-w', [$]wtWindowName")
-        $namedWin.Count | Should -Be 8
+        $namedWin.Count | Should -Be ($paneSteps.Count + 2)
         # Exactly two DIRECTIONAL anchors (top then bottom row), each its OWN
         # invocation so it resolves against a settled layout. Numeric
         # "focus-pane -t <id>" anchors are BANNED: they carry window-global
@@ -59,37 +69,45 @@ Describe '###1 3x2 pane grid enforces EQUAL cells' {
         $upCount   | Should -Be 1
         $downCount | Should -Be 1
         $code | Should -Not -Match "'focus-pane'"
-        # Canonical 3x2 order: new-tab -> split -H -> move up -> split -V ->
-        # split -V -> move down -> split -V -> split -V
+        # Canonical 4x2 order: new-tab -> split -H -> move up -> 3 x split -V ->
+        # move down -> 3 x split -V
         $iNewTab = $code.IndexOf("'new-tab'")
         $iH      = $code.IndexOf("'split-pane', '-H'")
         $iUp     = $code.IndexOf("'move-focus', 'up'")
         $iV1     = $code.IndexOf("'split-pane', '-V'")
         $iDown   = $code.IndexOf("'move-focus', 'down'")
         $iV2     = $code.IndexOf("'split-pane', '-V'", $iV1 + 1)
-        # 3x2: the two row-1 column splits both precede the single move-focus
-        # down, then the two row-2 column splits follow it.
+        # 4x2: the three row-1 column splits all precede the single move-focus
+        # down, then the three row-2 column splits follow it.
         $iV3     = $code.IndexOf("'split-pane', '-V'", $iV2 + 1)
         $iV4     = $code.IndexOf("'split-pane', '-V'", $iV3 + 1)
-        @($iNewTab, $iH, $iUp, $iV1, $iV2, $iDown, $iV3, $iV4) | ForEach-Object { $_ | Should -BeGreaterThan -1 }
+        $iV5     = $code.IndexOf("'split-pane', '-V'", $iV4 + 1)
+        $iV6     = $code.IndexOf("'split-pane', '-V'", $iV5 + 1)
+        @($iNewTab, $iH, $iUp, $iV1, $iV2, $iV3, $iDown, $iV4, $iV5, $iV6) | ForEach-Object { $_ | Should -BeGreaterThan -1 }
         $iNewTab -lt $iH    | Should -Be $true
         $iH      -lt $iUp   | Should -Be $true
         $iUp     -lt $iV1   | Should -Be $true
         $iV1     -lt $iV2   | Should -Be $true
-        $iV2     -lt $iDown | Should -Be $true
-        $iDown   -lt $iV3   | Should -Be $true
-        $iV3     -lt $iV4   | Should -Be $true
+        $iV2     -lt $iV3   | Should -Be $true
+        $iV3     -lt $iDown | Should -Be $true
+        $iDown   -lt $iV4   | Should -Be $true
+        $iV4     -lt $iV5   | Should -Be $true
+        $iV5     -lt $iV6   | Should -Be $true
         # A settle wait must follow every step (the race was in-chained focus/split;
         # serializing + waiting is what makes each anchor resolve deterministically).
         $code | Should -Match 'Start-Sleep -Milliseconds'
     }
 
-    It 'targets exactly 6 panes (6 watchers; heimdall owns the 6th) each with a --title' {
+    It 'targets exactly 8 panes (6 watchers + atlas + blocker) each with a --title' {
         $code = Get-LauncherCode | Out-String
-        $titles = [regex]::Matches($code, "'--title', '(grepai|graphenium|graphify-rs|repowise|codegraph|heimdall)'")
-        $titles.Count | Should -Be 6
-        # Every one of the six cells is titled exactly once.
-        foreach ($lbl in @('grepai', 'graphenium', 'graphify-rs', 'repowise', 'codegraph', 'heimdall')) {
+        # Pane count derives from the builder (mcpw-i15): one titled pane step
+        # per -File tailer. The 4x2 contract is 8 titled steps.
+        $paneSteps = @((Get-LauncherCode) | Where-Object { $_ -match 'Build-GridStep @\(' -and $_ -match "'-File'" })
+        $paneSteps.Count | Should -Be 8
+        $titles = [regex]::Matches($code, "'--title', '(grepai|graphenium|graphify-rs|repowise|codegraph|heimdall|atlas|blocker)'")
+        $titles.Count | Should -Be $paneSteps.Count
+        # Every one of the eight cells is titled exactly once.
+        foreach ($lbl in @('grepai', 'graphenium', 'graphify-rs', 'repowise', 'codegraph', 'heimdall', 'atlas', 'blocker')) {
             [regex]::Matches($code, "'--title', '$lbl'").Count | Should -Be 1
         }
     }
@@ -146,7 +164,7 @@ Describe '###1 3x2 pane grid enforces EQUAL cells' {
     }
 }
 
-Describe '###1 3x2 grid survives a COLD START (WT not already running)' {
+Describe '###1 4x2 grid survives a COLD START (WT not already running)' {
 
     It 'builds each grid step through a named GridStep helper that does bounded polling (not a blind fixed sleep)' {
         $code = Get-LauncherCode | Out-String
@@ -187,12 +205,14 @@ Describe '###1 3x2 grid survives a COLD START (WT not already running)' {
         # so a slow spawn degrades instead of stalling the launch.
         $fnBody | Should -Match '\$gridStableMs'
         $fnBody | Should -Match '\$gridWaitDeadline'
-        # Every one of the 8 grid steps must pass its expected tailer count,
-        # and the counts must run 1..6 (one new tailer per pane-creating step).
+        # Every grid step must pass its expected tailer count (pane steps + 2
+        # anchors, derived from the builder per mcpw-i15), and the counts run
+        # 1..8 (one new tailer per pane-creating step, anchors repeat the count).
+        $paneSteps = @((Get-LauncherCode) | Where-Object { $_ -match 'Build-GridStep @\(' -and $_ -match "'-File'" })
         $countArgs = [regex]::Matches($code, 'Build-GridStep @\([^)]*\) \d+')
-        $countArgs.Count | Should -Be 8
+        $countArgs.Count | Should -Be ($paneSteps.Count + 2)
         $counts = @($countArgs | ForEach-Object { [int]([regex]::Match($_.Value, '(\d+)$').Groups[1].Value) })
-        ($counts -join ',') | Should -Be '1,2,2,3,4,4,5,6'
+        ($counts -join ',') | Should -Be '1,2,2,3,4,5,5,6,7,8'
     }
 
     It 'treats a still-running wt process as success on cold start (the host stays alive) and only fails on a real non-zero exit' {

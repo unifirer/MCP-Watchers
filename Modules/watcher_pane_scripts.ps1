@@ -13,6 +13,13 @@
 # before dot-sourcing this module. No $wtPaneDir is created here on purpose.
 #
 # PS 5.1 compatible: no ?? operator, ASCII-only comments/hyphens (project rule).
+# mcpw-xeu.10 (DECIDED 2026-09-24, STAY): pane tailer scripts + wt grid builder
+# stay in the shell host, no Python port. Tailers are process-lifecycle + WT
+# constructs (Get-CimInstance probes, heartbeat files, closeOnExit slot-hold)
+# with no Python equivalent benefit, and the grid builder shells wt.exe.
+# Half-porting leaves a hybrid harder to reason about than either pure form.
+# mcpw-cnc.4 (4x2): labels atlas (Neo4j-gated, holds slot) + blocker (8th cell,
+# always holds slot so WT never closes the window) join codegraph/heimdall/empty.
 function New-WatcherPaneScript {
     param(
         [string]$Label,
@@ -229,6 +236,36 @@ function Test-RepowiseWatcherAlive {
             Where-Object { $_.CommandLine -and $_.CommandLine -match 'watch' })
         return ($w.Count -gt 0)
     } catch { return $false }
+}
+# mcpw-cnc.4: pane-local Neo4j readiness gate for the atlas cell. The launcher
+# owns Test-Neo4jReady (:580, BOTH 7474 HTTP + 7687 Bolt), but a generated pane
+# dot-sources nothing, so this is the same two-signal rule embedded here. A
+# pane tailing atlas pre-readiness just displays the ECONNRESET the gate exists
+# to prevent, so the atlas tailer waits (bounded) before seeding its backlog.
+function Test-AtlasHttpReady {
+    param([string]$Address = '127.0.0.1', [int]$Port = 7474, [int]$TimeoutMs = 3000)
+    $resp = $null
+    try {
+        $req = [System.Net.WebRequest]::Create(('http://' + $Address + ':' + $Port + '/'))
+        $req.Timeout = $TimeoutMs
+        $resp = $req.GetResponse()
+        return $true
+    } catch { return $false }
+    finally { if ($resp) { try { $resp.Close() } catch {} } }
+}
+function Test-AtlasNeo4jReady {
+    param([string]$Address = '127.0.0.1', [int]$HttpPort = 7474, [int]$BoltPort = 7687, [int]$TimeoutMs = 3000)
+    if (-not (Test-AtlasHttpReady -Address $Address -Port $HttpPort -TimeoutMs $TimeoutMs)) { return $false }
+    $sock = $null
+    try {
+        $sock = New-Object System.Net.Sockets.TcpClient
+        $iar = $sock.BeginConnect($Address, $BoltPort, $null, $null)
+        if (-not $iar.AsyncWaitHandle.WaitOne($TimeoutMs)) { return $false }
+        if (-not $sock.Connected) { return $false }
+        [void]$sock.EndConnect($iar)
+        return $true
+    } catch { return $false }
+    finally { if ($sock) { try { $sock.Close() } catch {} } }
 }
 # --- graphenium stale-graph AUTO-FIX (beads VAD-be9, 2026-08-25) ------------
 # `gm` prints "Flag: .\graphenium-out\needs_update" when the persisted
@@ -700,6 +737,22 @@ function Show-ChangedFiles {
         return
     }
 }
+# mcpw-cnc.4: atlas waits for Neo4j (BOTH 7474 HTTP + 7687 Bolt) BEFORE seeding
+# its backlog. Tailing pre-readiness just displays the ECONNRESET the launcher
+# gate exists to prevent. Bounded (40 x 3s = 120s, matches Wait-Neo4jReady) so
+# a down backend parks instead of stalling the pane forever. Other labels skip.
+if ('__LABEL__' -eq 'atlas') {
+    $atlasReady = Test-AtlasNeo4jReady
+    if (-not $atlasReady) {
+        Write-Host "[atlas] waiting for Neo4j (7474 HTTP + 7687 Bolt) ..."
+        for ($i = 0; $i -lt 40 -and -not $atlasReady; $i++) {
+            Start-Sleep -Seconds 3
+            $atlasReady = Test-AtlasNeo4jReady
+        }
+    }
+    if ($atlasReady) { Write-Host "[atlas] Neo4j ready - tailing atlas log." }
+    else { Write-Host "[atlas] Neo4j not ready after wait - parking on current log (no ECONNRESET tail)." }
+}
 # Seed offsets to show a small recent backlog on open, then only NEW lines after.
 # Reads go through Read-WatcherLogTail (UTF-8, byte offsets), so gm's real em
 # dash (E2 80 94) shows as "-" instead of mojibake and only NEW bytes are read
@@ -973,20 +1026,25 @@ while ($true) {
     elseif ('__LABEL__' -eq 'graphenium') { $alive = Test-GrapheniumWatcherAlive }
     elseif ('__LABEL__' -eq 'graphify-rs') { $alive = Test-GraphifyRsWatcherAlive }
     elseif ('__LABEL__' -eq 'repowise') { $alive = Test-RepowiseWatcherAlive }
-    # mcpw-0sp: these two panes are CELLS of a fixed 3x2 grid, so they never
-    # self-close -- a closed pane makes the remaining five re-flow into a ragged
+    # mcpw-0sp: these two panes are CELLS of a fixed grid, so they never
+    # self-close -- a closed pane makes the remaining panes re-flow into a ragged
     # layout. codegraph is optional (it may legitimately never start: no `watch`
     # verb, not installed, or skipped by Test-CodegraphReady), so an empty PID
     # means "hold the slot", not "the watcher died". The empty cell has nothing
     # to watch at all. Both stay open for the whole session.
     elseif ('__LABEL__' -eq 'codegraph') { $alive = $true }
     # mcpw-qxj.8: heimdall takes over the reserved 6th cell. It is a grid CELL,
-    # so it must never self-close -- WT closing it re-flows the other five into
+    # so it must never self-close -- WT closing it re-flows the others into
     # a ragged layout. The reconciler is OPTIONAL (it needs graftd up and holds
     # an O_EXCL lock, so it may legitimately never start), exactly like
     # codegraph: an absent process means "hold the slot", not "the watcher died".
     elseif ('__LABEL__' -eq 'heimdall') { $alive = $true }
     elseif ('__LABEL__' -eq 'empty') { $alive = $true }
+    # mcpw-cnc.4 (4x2): atlas holds its slot even when Neo4j is down (the gate
+    # above parks instead of exiting), and blocker is the 8th cell whose ONLY
+    # job is to stay open so WT never closes the window with its last cell.
+    elseif ('__LABEL__' -eq 'atlas') { $alive = $true }
+    elseif ('__LABEL__' -eq 'blocker') { $alive = $true }
     else { $alive = $false }   # tracked pane with no watcher PID and no probe: close immediately
     # graphenium heal grace (beads VAD-be9): right after Invoke-GrapheniumAutoFix
     # kills the old watcher, the respawn may take a moment to surface via CIM;

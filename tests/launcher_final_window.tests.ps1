@@ -36,29 +36,35 @@ function Get-TailerTemplateBody {
 
 Describe 'final split window (repowise BR) shows correct info, not grepai' {
 
-    It 'six pane tailers map label to correct log variable (grepai->logFile, codegraph->codegraphLog)' {
+    It 'eight pane tailers map label to correct log variable (grepai->logFile, codegraph->codegraphLog)' {
         $code = Get-LauncherCode | Out-String
         $code | Should Match 'New-WatcherPaneScript -Label "grepai".*-LogPath \$logFile'
         $code | Should Match 'New-WatcherPaneScript -Label "repowise".*-LogPath \$repowiseLog'
         $code | Should Match 'New-WatcherPaneScript -Label "graphenium".*-LogPath \$gmLog'
         $code | Should Match 'New-WatcherPaneScript -Label "graphify-rs".*-LogPath \$graphifyLog'
         # mcpw-0sp: codegraph owns the 5th cell. mcpw-qxj.8: heimdall owns the
-        # 6th, which used to be the reserved-empty placeholder.
+        # 6th, which used to be the reserved-empty placeholder. mcpw-cnc.4: atlas
+        # 7th + blocker 8th grow the grid to 4x2.
         $code | Should Match 'New-WatcherPaneScript -Label "codegraph".*-LogPath \$codegraphLog'
         $code | Should Match 'New-WatcherPaneScript -Label "heimdall".*-LogPath \$heimdallLog'
+        $code | Should Match 'New-WatcherPaneScript -Label "atlas".*-LogPath \$atlasLog'
+        $code | Should Match 'New-WatcherPaneScript -Label "blocker".*-LogPath \$blockerLog'
     }
 
-    It 'final Build-GridStep is the heimdall cell (BR); grepai is still first, 8 steps total' {
+    It 'final Build-GridStep is the blocker cell (BR); grepai is still first, 10 steps total' {
         $code = Get-LauncherCode | Out-String
+        # Pane-step count derives from the builder (mcpw-i15): titled steps carry
+        # a -File tailer. The 4x2 contract is 8 titled steps + 2 anchors.
+        $paneSteps = @((Get-LauncherCode) | Where-Object { $_ -match 'Build-GridStep @\(' -and $_ -match "'-File'" })
         $titleSteps = [regex]::Matches($code, "Build-GridStep @\('-w',.*?'--title', '(.*?)'")
-        $titleSteps.Count | Should Be 6
+        $titleSteps.Count | Should Be $paneSteps.Count
         $last = $titleSteps[$titleSteps.Count - 1]
-        $last.Groups[1].Value | Should Be 'heimdall'
+        $last.Groups[1].Value | Should Be 'blocker'
         $first = $titleSteps[0]
         $first.Groups[1].Value | Should Be 'grepai'
-        # mcpw-0sp: 3x2 = new-tab + 5 splits (1 x -H, 4 x -V) + 2 focus moves.
+        # mcpw-cnc.4: 4x2 = new-tab + 7 splits (1 x -H, 6 x -V) + 2 focus moves.
         $allSteps = [regex]::Matches($code, "Build-GridStep @\(")
-        $allSteps.Count | Should Be 8
+        $allSteps.Count | Should Be ($paneSteps.Count + 2)
     }
 
     It 'tailer template defines any-watch probes for all four watchers' {

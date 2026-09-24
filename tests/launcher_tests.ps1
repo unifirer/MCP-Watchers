@@ -316,7 +316,7 @@ try {
 }
 }
 
-Write-Host "=== T8: wt pane block opens exactly ONE window with SIX panes (3x2: 5 watchers + 1 empty) ==="
+Write-Host "=== T8: wt pane block opens exactly ONE window with EIGHT panes (4x2: 6 watchers + atlas + blocker) ==="
 # Skip T8 when a real ###1 launcher session is active. Like the Python tests
 # (test_launcher_watcher_live_tracking.py / test_launcher_teardown_state_live.py)
 # which skip via _launcher_session_active(), T8 must NOT run its own live watcher
@@ -638,11 +638,11 @@ public class Win32Placement {
     # so the delta is empty whenever the user already has a WT window open --
     # that unsound PID-scoping WAS the T8 flake. Window ownership is now proven
     # by the CASCADIA HWND set-difference in T8b below.
-    # The launcher's pane block writes exactly SIX tailer scripts (one per pane)
+    # The launcher's pane block writes exactly EIGHT tailer scripts (one per pane)
     # via New-WatcherPaneScript with labels grepai / graphenium / graphify-rs /
-    # repowise / codegraph / heimdall (mcpw-0sp: the grid is 3x2 = 6 watchers;
-    # mcpw-qxj.8 gave the formerly reserved cell to heimdall). Those six
-    # distinct files are the deterministic artifact
+    # repowise / codegraph / heimdall / atlas / blocker (mcpw-0sp: 3x2 = 6;
+    # mcpw-qxj.8 gave the reserved cell to heimdall; mcpw-cnc.4 grows to 4x2).
+    # Those eight distinct files are the deterministic artifact
     # the launcher guarantees. ALSO assert the pane tailers are actually RUNNING
     # as live powershell.exe processes -- this is the genuine runtime signal that
     # the grid truly spawned. The previous test counted only the files, which
@@ -651,20 +651,21 @@ public class Win32Placement {
     # exposes no pane geometry to the CLI or to UI Automation (only 2 Pane
     # controls: tab strip + content). Equal-size geometry is guarded structurally
     # by T15 + tests/launcher_equal_quarters.tests.ps1.
-    $expectedTailers = @('tail_grepai.ps1', 'tail_graphenium.ps1', 'tail_graphify-rs.ps1', 'tail_repowise.ps1', 'tail_codegraph.ps1', 'tail_heimdall.ps1')
+    $expectedTailers = @('tail_grepai.ps1', 'tail_graphenium.ps1', 'tail_graphify-rs.ps1', 'tail_repowise.ps1', 'tail_codegraph.ps1', 'tail_heimdall.ps1', 'tail_atlas.ps1', 'tail_blocker.ps1')
     $foundTailers = @(Get-ChildItem -LiteralPath $panesDir -Filter 'tail_*.ps1' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
     $missing = @($expectedTailers | Where-Object { $_ -notin $foundTailers })
-    Assert ($missing.Count -eq 0) 'T8 all six pane tailer scripts written' ("missing=" + ($missing -join ','))
-    Assert ($foundTailers.Count -eq 6) 'T8 exactly six panes (3x2)' ("count=" + $foundTailers.Count)
-    # mcpw-0sp: the two non-watcher cells must be live too -- a closed pane is
-    # what lets the remaining five re-flow out of the rectangle. They are checked
+    Assert ($missing.Count -eq 0) 'T8 all eight pane tailer scripts written' ("missing=" + ($missing -join ','))
+    Assert ($foundTailers.Count -eq 8) 'T8 exactly eight panes (4x2)' ("count=" + $foundTailers.Count)
+    # mcpw-0sp: the non-watcher cells must be live too -- a closed pane is
+    # what lets the remaining panes re-flow out of the rectangle. They are checked
     # separately from the watcher panes below because they have no watcher
     # process to guard them. (The cell used to be "empty"; mcpw-qxj.8 gave it to
-    # heimdall, whose reconciler is also optional like codegraph.)
-    Assert (('codegraph' -in $liveAllLabels) -and ('heimdall' -in $liveAllLabels)) 'T8 codegraph + heimdall panes live' ("live=" + ($liveAllLabels -join ','))
+    # heimdall, whose reconciler is also optional like codegraph. mcpw-cnc.4 adds
+    # atlas + blocker, both slot-holders by design.)
+    Assert (('codegraph' -in $liveAllLabels) -and ('heimdall' -in $liveAllLabels) -and ('atlas' -in $liveAllLabels) -and ('blocker' -in $liveAllLabels)) 'T8 codegraph + heimdall + atlas + blocker panes live' ("live=" + ($liveAllLabels -join ','))
 
     # --- T8 runtime signal: all the watchers are actually running ---
-    # The user-facing contract of T8 is "the launcher brings up a 3x2 watcher
+    # The user-facing contract of T8 is "the launcher brings up a 4x2 watcher
     # grid, auto-starting any watcher that was undetected this session". The
     # deterministic check is therefore that all the WATCHER PROCESSES are live
     # (grepai / gm / graphify-rs / repowise). This is what the auto-start logic
@@ -1039,17 +1040,17 @@ $m4 = [regex]::Match('Files changed (4)', '\d+')
 Assert ($m8.Success -and [int]$m8.Value -eq 8) 'T14 regex reads N=8 (not 1)' ("val=" + $m8.Value)
 Assert ($m4.Success -and [int]$m4.Value -eq 4) 'T14 regex reads N=4 (not 1)' ("val=" + $m4.Value)
 
-# T15: regression test for the equal-cell 3x2 pane geometry (mcpw-0sp: this
-# used to be the "4 equal quarters" 2x2 geometry).
+# T15: regression test for the equal-cell 4x2 pane geometry (mcpw-0sp: this
+# used to be the "4 equal quarters" 2x2 geometry, then 3x2 thirds).
 # The equal-quarter guarantee lives in the DETERMINISTIC build: SEPARATE wt
 # invocations (one per grid step, each followed by a settle wait) instead of the
 # OLD single chained ";" call. In the old chained call, focus-pane -t 0 / -t 1
 # could resolve against a not-yet-finalized layout so both -V splits landed in
 # the same half. Splitting the build means focus-pane resolves against a settled
-# layout. T8 only counts "6 panes in 1 window", which a broken layout (e.g. a
+# layout. T8 only counts "8 panes in 1 window", which a broken layout (e.g. a
 # -V split landing in the wrong row) still passes. T15 statically asserts the
 # structural sequence, so this regression is caught.
-Write-Host "=== T15: wt pane block keeps the 3x2 EQUAL-CELL split sequence ==="
+Write-Host "=== T15: wt pane block keeps the 4x2 EQUAL-CELL split sequence ==="
 function Find-InOrder {
     param([string]$Text, [string[]]$Tokens)
     $pos = 0; $idxs = @()
@@ -1064,11 +1065,11 @@ function Find-InOrder {
 $t15psi = $src.IndexOf('$wtPaneDir = Join-Path $scratchRoot "vad-watchers')
 $t15pei = $src.IndexOf('# Controller loop (WT panes open)')
 $t15block = $src.Substring($t15psi, $t15pei - $t15psi)
-# Counts (3x2): exactly one horizontal split (two rows), exactly FOUR vertical
-# splits (each row is cut into thirds: -s 0.6667 then -s 0.5), exactly two
-# DIRECTIONAL move-focus anchors (each row's pair of -V splits is anchored by
-# moving focus to that row, with no pane id), and EIGHT Build-GridStep
-# invocations (new-tab, -H split, move up, -V, -V, move down, -V, -V).
+# Counts (4x2): exactly one horizontal split (two rows), exactly SIX vertical
+# splits (each row is cut into quarters: -s 0.75 then -s 0.6667 then -s 0.5),
+# exactly two DIRECTIONAL move-focus anchors (each row's triple of -V splits is
+# anchored by moving focus to that row, with no pane id), and TEN Build-GridStep
+# invocations (new-tab, -H split, move up, -V, -V, -V, move down, -V, -V, -V).
 $t15hCount = (@([regex]::Matches($t15block, '''-H''')).Count)
 $t15vCount = (@([regex]::Matches($t15block, '''-V''')).Count)
 $t15upCount   = (@([regex]::Matches($t15block, "'move-focus', 'up'")).Count)
@@ -1076,26 +1077,28 @@ $t15downCount = (@([regex]::Matches($t15block, "'move-focus', 'down'")).Count)
 $t15focusPaneCount = (@([regex]::Matches($t15block, '''focus-pane''')).Count)
 $t15steps = (@([regex]::Matches($t15block, 'Build-GridStep @\(')).Count)
 Assert ($t15hCount -eq 1) 'T15 exactly one horizontal split (-H)' ("count=$t15hCount")
-Assert ($t15vCount -eq 4) 'T15 exactly four vertical splits (-V): two rows cut into thirds' ("count=$t15vCount")
+Assert ($t15vCount -eq 6) 'T15 exactly six vertical splits (-V): two rows cut into quarters' ("count=$t15vCount")
 Assert (($t15upCount -eq 1) -and ($t15downCount -eq 1)) 'T15 exactly two directional move-focus anchors (rows split independently)' ("up=$t15upCount down=$t15downCount")
 Assert ($t15focusPaneCount -eq 0) 'T15 NO numeric focus-pane anchors (stale-id regression source)' ("count=$t15focusPaneCount")
-Assert ($t15steps -eq 8) 'T15 eight separate Build-GridStep wt invocations (serialized build)' ("steps=$t15steps")
-# Ordering: new-tab -> split-pane -H -> move-focus up -> split-pane -V -V ->
-# move-focus down -> split-pane -V -V. Each -V pair must follow its row's
-# directional anchor so the two rows are cut into thirds independently (the
+Assert ($t15steps -eq 10) 'T15 ten separate Build-GridStep wt invocations (serialized build)' ("steps=$t15steps")
+# Ordering: new-tab -> split-pane -H -> move-focus up -> 3 x split-pane -V ->
+# move-focus down -> 3 x split-pane -V. Each -V triple must follow its row's
+# directional anchor so the two rows are cut into quarters independently (the
 # "equal cells" invariant), and no anchor may depend on a numeric pane id.
 $t15order = @('''new-tab''', '''split-pane''', '''-H''', '''move-focus''', '''up''',
-               '''split-pane''', '''-V''', '''split-pane''', '''-V''',
-               '''move-focus''', '''down''', '''split-pane''', '''-V''', '''split-pane''', '''-V''')
+               '''split-pane''', '''-V''', '''split-pane''', '''-V''', '''split-pane''', '''-V''',
+               '''move-focus''', '''down''', '''split-pane''', '''-V''', '''split-pane''', '''-V''', '''split-pane''', '''-V''')
 $t15idxs = Find-InOrder $t15block $t15order
 Assert ($null -ne $t15idxs) 'T15 equal-cell split sequence present (order-correct)' ("missing-from-sequence")
-# Equal thirds need a non-dyadic ratio: each row's first column split is 0.6667
-# (new pane = 2/3, leaving the source pane 1/3) and the second is 0.5 (halve the
-# 2/3). Assert both ratios are present exactly twice, once per row. mcpw-0sp.
+# Equal quarters via 0.75 then 0.6667 then 0.5 per row (mcpw-cnc.4 keeps the
+# 0.6667/0.5 thirds arithmetic). Assert 0.75 and 0.6667 twice each (once per
+# row) and 0.5 three times (row split + one final quarter split per row).
 $t15thirds = (@([regex]::Matches($t15block, "'-s', '0.6667'")).Count)
 $t15halves = (@([regex]::Matches($t15block, "'-s', '0.5'")).Count)
-Assert ($t15thirds -eq 2) 'T15 two 0.6667 third splits (one per row)' ("count=$t15thirds")
+$t15quarters = (@([regex]::Matches($t15block, "'-s', '0.75'")).Count)
+Assert ($t15thirds -eq 2) 'T15 two 0.6667 splits (one per row)' ("count=$t15thirds")
 Assert ($t15halves -eq 3) 'T15 three 0.5 splits (row split + one per row)' ("count=$t15halves")
+Assert ($t15quarters -eq 2) 'T15 two 0.75 quarter splits (one per row)' ("count=$t15quarters")
 # A settle wait must follow every step (the race was in-chained focus/split;
 # serializing + waiting is what makes each focus-pane resolve deterministically).
 Assert ($t15block -match 'Start-Sleep -Milliseconds') 'T15 every grid step followed by a settle wait' ("missing-settle")
@@ -1104,7 +1107,7 @@ Assert ($t15block -match 'Start-Sleep -Milliseconds') 'T15 every grid step follo
 # The -w target must be a DEDICATED NAMED window ('-w', $wtWindowName) - NOT
 # '-w', '0' (most-recently-focused window). With -w 0 the pane ids can leak into
 # the controller tab and a -V split can land in the wrong tab, collapsing two
-# cells into one. A fixed named window scopes the pane IDs to the 3x2
+# cells into one. A fixed named window scopes the pane IDs to the 4x2
 # tab.
 # Match the '-w' token then its partner arg (literal like '0' OR the variable
 # $wtWindowName). Reject the literal '0' target specifically.
@@ -1119,9 +1122,9 @@ Assert $t15wNamed 'T15 -w target is the dedicated named window ($wtWindowName)' 
 # the same "tail_.ps1"; the last call (repowise) overwrote the rest, so all four
 # panes loaded the repowise tailer and showed "=== repowise live log ===".
 # Guard the invariant two ways: (a) the source line must use $Label, never the
-# dead $safeLabel; (b) the six REAL labels must resolve to six DISTINCT,
+# dead $safeLabel; (b) the eight REAL labels must resolve to eight DISTINCT,
 # filesystem-safe filenames.
-Write-Host "=== T16: six pane tailers emit DISTINCT files (no `$safeLabel collision) ==="
+Write-Host "=== T16: eight pane tailers emit DISTINCT files (no `$safeLabel collision) ==="
 $t16fnLine = ($tplSrc -split "`n" | Where-Object { $_ -match '\$scriptPath = Join-Path \$wtPaneDir' } | Select-Object -First 1)
 Assert ($null -ne $t16fnLine) 'T16 found tailer filename line' ("line=$t16fnLine")
 Assert ($t16fnLine -match '\$Label') 'T16 filename uses $Label param' ("line=$t16fnLine")
@@ -1129,7 +1132,7 @@ Assert ($t16fnLine -notmatch '\$safeLabel') 'T16 no dead $safeLabel reference' (
 # Execute the REAL filename expression against the four actual labels.
 $t16dir = Join-Path $env:TEMP ('t16_' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $t16dir -Force | Out-Null
-$t16labels = @('grepai', 'graphenium', 'graphify-rs', 'repowise', 'codegraph', 'heimdall')
+$t16labels = @('grepai', 'graphenium', 'graphify-rs', 'repowise', 'codegraph', 'heimdall', 'atlas', 'blocker')
 $t16paths = @()
 foreach ($l in $t16labels) {
     $p = Join-Path $t16dir ("tail_$l.ps1")
@@ -1137,7 +1140,7 @@ foreach ($l in $t16labels) {
     $t16paths += $p
 }
 $t16distinct = ($t16paths | Sort-Object -Unique).Count
-Assert ($t16distinct -eq 6) 'T16 six distinct tailer files' ("distinct=$t16distinct")
+Assert ($t16distinct -eq 8) 'T16 eight distinct tailer files' ("distinct=$t16distinct")
 try { Remove-Item -LiteralPath $t16dir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
 
 # cleanup

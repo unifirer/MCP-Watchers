@@ -5601,11 +5601,11 @@ if ($script:litellmProbeJob) {
     else { Write-Warning "litellm proxy did not become ready within 20s - check $litellmLog." }
 }
 
-# --- Combined watcher view: Windows Terminal 3x2 pane grid --------------------
-# A single PowerShell console owns ONE linear buffer and CANNOT show six
+# --- Combined watcher view: Windows Terminal 4x2 pane grid --------------------
+# A single PowerShell console owns ONE linear buffer and CANNOT show eight
 # independent scroll regions. So instead of tailing all logs into this window,
-# we open ONE Windows Terminal window with a 3x2 pane grid: each pane tails its
-# own watcher's log live (Get-Content -Wait), giving six true cells. This
+# we open ONE Windows Terminal window with a 4x2 pane grid: each pane tails its
+# own watcher's log live (Get-Content -Wait), giving eight true cells. This
 # launcher's console becomes the controller: it reports status and waits until
 # Ctrl+C (the trap below still kills the detached watchers + stops grepai).
 # Each pane runs a tiny per-watcher tailer script so the command line stays
@@ -5694,6 +5694,20 @@ if (-not $logFile) {
     $lfLate = Get-ChildItem -Path $grepaiLogsDir -Filter 'grepai-worktree-*.log' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if ($lfLate) { $logFile = $lfLate.FullName }
 }
+# 2026-09-24: a worktree log is the live view only while a daemon is writing
+# it. This launcher spawns `grepai watch` in FOREGROUND (stdout redirected to
+# $grepaiLaunchLog), and a foreground watcher writes no worktree log at all -
+# so the glob above can only return dead history from an earlier `--background`
+# daemon. Ungated, that made the pane open on 2026-09-20's teardown-cancel
+# noise while grepai was healthy, and the operator chased a failure that was
+# four days old. Resolve-GrepaiPaneLog prefers a FRESH worktree log, else the
+# newer of the candidate and our own redirect log. The launch-error log is
+# deliberately excluded: when grepai failed to start, that file holds the
+# reason and must not be swapped for a log that is merely newer.
+if ($logFile -and $logFile -ne $grepaiLaunchLog -and $logFile -ne $grepaiLaunchErr -and
+        (Get-Command Resolve-GrepaiPaneLog -ErrorAction SilentlyContinue)) {
+    $logFile = Resolve-GrepaiPaneLog -WorktreeLog $logFile -LauncherLog $grepaiLaunchLog
+}
 if (-not $logFile) { $logFile = $grepaiLaunchLog }
 # grepai heals at the INDEX dir ($scriptDir, where .grepai/ lives and where
 # `grepai watch` + the supervisor run), NOT at $watchersWorkspaceRoot. The pane
@@ -5706,8 +5720,9 @@ $tailGraphenium  = New-WatcherPaneScript -Label "graphenium"  -LogPath $gmLog   
 $tailGraphifyRs  = New-WatcherPaneScript -Label "graphify-rs" -LogPath $graphifyLog        -ErrPath "$graphifyLog.err" -RepoRoot $watchersWorkspaceRoot -HeartbeatPath (Join-Path $hbDir "graphify-rs.hb") -WatchPid $graphifyWatchPid
 $tailRepowise    = New-WatcherPaneScript -Label "repowise"    -LogPath $repowiseLog        -ErrPath "$repowiseLog.err" -RepoRoot $watchersWorkspaceRoot -HeartbeatPath (Join-Path $hbDir "repowise.hb")   -WatchPid $repowiseWatchPid
 # mcpw-0sp: codegraph gets its own pane (it is a managed watcher since
-# 2026-09-19 - see the launch site above), and heimdall fills the sixth cell
-# (mcpw-qxj.8), which keeps the grid a true 3x2 rectangle.
+# 2026-09-19 - see the launch site above), heimdall fills the sixth cell
+# (mcpw-qxj.8), and mcpw-cnc.4 grows the grid to a true 4x2 rectangle
+# (atlas 7th + blocker 8th).
 # WatchPid is the launched `codegraph watch` PID when it started, and '' when it
 # did not (not installed / no `watch` verb / Test-CodegraphReady skipped it).
 # The template treats an empty PID on this label as "hold the slot", so the pane
@@ -5715,19 +5730,34 @@ $tailRepowise    = New-WatcherPaneScript -Label "repowise"    -LogPath $repowise
 $codegraphWatchPid = if ($script:codegraphProc) { $script:codegraphProc.Id } else { '' }
 $tailCodegraph   = New-WatcherPaneScript -Label "codegraph"   -LogPath $codegraphLog       -ErrPath ""                  -RepoRoot $watchersWorkspaceRoot -HeartbeatPath (Join-Path $hbDir "codegraph.hb")  -WatchPid $codegraphWatchPid
 # The reserved cell must run a BLOCKING tailer: a pane whose command exits is
-# closed by Windows Terminal (closeOnExit) and the other five panes re-flow.
+# closed by Windows Terminal (closeOnExit) and the other seven panes re-flow.
 # It tails a one-line placeholder log, so the cell opens showing why it is
 # blank. The path still contains 'panes\tail_', so the pre-grid reset and the
 # Stop-AllWatchers sweep adopt it like every other pane.
 # mcpw-qxj.8: the 6th cell used to be a reserved "empty" placeholder running a
 # BLOCKING tailer over a one-line log, because a pane whose command exits is
-# closed by Windows Terminal (closeOnExit) and the other five panes re-flow.
+# closed by Windows Terminal (closeOnExit) and the other panes re-flow.
 # heimdall now owns that cell, and its tailer is blocking too, so the slot is
 # still held -- and it is held even when the reconciler never started, because
 # the pane template treats heimdall like codegraph: hold the slot, never
 # self-close (Modules/watcher_pane_scripts.ps1).
 $heimdallWatchPid = if ($script:heimdallProc) { $script:heimdallProc.Id } else { '' }
 $tailHeimdall   = New-WatcherPaneScript -Label "heimdall"   -LogPath $heimdallLog       -ErrPath ""                  -RepoRoot $watchersWorkspaceRoot -HeartbeatPath (Join-Path $hbDir "heimdall.hb")  -WatchPid $heimdallWatchPid
+# mcpw-cnc.4 (4x2): atlas is the 7th pane. Atlas itself is owned by Toolport
+# (stdio node .../atlas-mcp-server/dist/index.js), so there is no atlas proc to
+# track here -- the pane tails a workspace-keyed log and gates INSIDE the pane
+# on Test-AtlasNeo4jReady (BOTH 7474 HTTP + 7687 Bolt) before seeding, so a
+# pre-readiness tail never just displays the ECONNRESET the gate prevents.
+$atlasLog = Join-Path $logsDir 'atlas.log'
+if (-not (Test-Path -LiteralPath $atlasLog)) { try { Set-Content -LiteralPath $atlasLog -Value 'atlas pane - waiting for Neo4j (7474 HTTP + 7687 Bolt).' -Encoding UTF8 } catch {} }
+$tailAtlas = New-WatcherPaneScript -Label "atlas" -LogPath $atlasLog -ErrPath "" -RepoRoot $watchersWorkspaceRoot -HeartbeatPath (Join-Path $hbDir "atlas.hb") -WatchPid ''
+# mcpw-cnc.4 (4x2): the 8th cell is a BLOCKING tailer over a one-line log. A
+# pane whose command exits is closed by WT (closeOnExit) and the window closes
+# with its last cell, so this cell holds the rectangle even though it watches
+# nothing. Path keeps 'panes\tail_' so reset + sweep adopt it like the rest.
+$blockerLog = Join-Path $logsDir 'blocker.log'
+if (-not (Test-Path -LiteralPath $blockerLog)) { try { Set-Content -LiteralPath $blockerLog -Value 'grid holder - this cell stays open so the window never closes.' -Encoding UTF8 } catch {} }
+$tailBlocker = New-WatcherPaneScript -Label "blocker" -LogPath $blockerLog -ErrPath "" -RepoRoot $watchersWorkspaceRoot -HeartbeatPath (Join-Path $hbDir "blocker.hb") -WatchPid ''
 # Collect the heartbeat paths so the controller loop can watch any of them.
 $script:hbPaths = @(
     (Join-Path $hbDir "grepai.hb"),
@@ -5735,26 +5765,30 @@ $script:hbPaths = @(
     (Join-Path $hbDir "graphify-rs.hb"),
     (Join-Path $hbDir "repowise.hb"),
     (Join-Path $hbDir "codegraph.hb"),
-    (Join-Path $hbDir "heimdall.hb")
+    (Join-Path $hbDir "heimdall.hb"),
+    (Join-Path $hbDir "atlas.hb"),
+    (Join-Path $hbDir "blocker.hb")
 )
 
 Write-Host ""
-Write-Host "All watchers running. Opening a Windows Terminal window with 6 panes (3x2):"
-Write-Host "  Row 1: grepai | graphenium | graphify-rs"
-Write-Host "  Row 2: repowise | codegraph | heimdall"
+Write-Host "All watchers running. Opening a Windows Terminal window with 8 panes (4x2):"
+Write-Host "  Row 1: grepai | graphenium | graphify-rs | atlas"
+Write-Host "  Row 2: repowise | codegraph | heimdall | blocker"
 Write-Host "  grepai      : tracked background, stop: 'grepai watch --stop'"
 Write-Host "  graphenium  : detached, kill gm.exe"
 Write-Host "  graphify-rs : detached, kill graphify-rs.exe"
 Write-Host "  repowise    : detached, kill repowise.exe"
 Write-Host "  codegraph   : detached, kill the node.exe running 'codegraph watch'"
 Write-Host "  heimdall    : detached reconciler, kill the node.exe running 'heimdall.js daemon'"
+Write-Host "  atlas       : Neo4j-gated (7474 + 7687), tails atlas.log"
+Write-Host "  blocker     : grid holder, stays open so the window never closes"
 Write-Host "Press Ctrl+C here to stop everything."
 
-# GOAL: one Windows Terminal window with 6 independent live-tailing panes in a
-# 3x2 grid (3 columns x 2 rows) - six watchers; heimdall owns the 6th cell.
+# GOAL: one Windows Terminal window with 8 independent live-tailing panes in a
+# 4x2 grid (4 columns x 2 rows) - six watchers plus atlas plus a blocker cell.
 # The exact cell each watcher lands in is incidental, not a requirement; what
-# matters is that all 6 tailers end up as separate panes in ONE window rather
-# than six separate windows or a broken, ragged layout.
+# matters is that all 8 tailers end up as separate panes in ONE window rather
+# than eight separate windows or a broken, ragged layout.
 #
 # Built per the windows-terminal (wt-panes-tabs) skill rules:
 #   - "-w $wtWindowName"  target a DEDICATED, NAMED window that is (re)used on
@@ -5780,26 +5814,28 @@ Write-Host "Press Ctrl+C here to stop everything."
 # the wrong half (live failure measured 2026-08-26). Anchors are therefore
 # directional "move-focus up/down" moves, which carry NO pane ids.
 #
-# Build order (deterministic 3x2: two rows of three equal columns). Anchors are
+# Build order (deterministic 4x2: two rows of four equal columns). Anchors are
 # DIRECTIONAL move-focus commands, never numeric pane ids:
 #   new-tab grepai                      -> row 1 col 1 (full window);  focus = grepai
 #   split-pane -H -s 0.5 repowise       -> row 2, FULL WIDTH;          focus = row 2
 #   move-focus up                       -> row 1 (only pane above)
-#   split-pane -V -s 0.6667 graphenium  -> row 1 = 1/3 | 2/3;          focus = graphenium
-#   split-pane -V -s 0.5 graphify-rs    -> row 1 = thirds;             focus = graphify-rs
+#   split-pane -V -s 0.75 graphenium    -> row 1 = 1/4 | 3/4;          focus = graphenium
+#   split-pane -V -s 0.6667 graphify-rs -> row 1 = 1/4 | 1/4 | 1/2;    focus = graphify-rs
+#   split-pane -V -s 0.5 atlas          -> row 1 = quarters;           focus = atlas
 #   move-focus down                     -> row 2 (full-width repowise)
-#   split-pane -V -s 0.6667 codegraph   -> row 2 = 1/3 | 2/3;          focus = codegraph
-#   split-pane -V -s 0.5 heimdall       -> row 2 = thirds
-# Cell map: row 1 = grepai | graphenium | graphify-rs
-#           row 2 = repowise | codegraph | heimdall
-# WHY 0.6667 AND NOT 0.5: equal thirds are not dyadic - no sequence of even
-# splits produces them. Per the wt-panes-tabs skill, "-s <ratio>" is the size
-# of the NEW pane as a fraction of the pane being split (Microsoft's doc: "the
-# portion of the parent pane to use"), so -s 0.6667 leaves the existing pane
-# 1/3 and gives the new one 2/3; halving that 2/3 then yields two more 1/3
-# cells. The -H row split stays 0.5 (two equal rows). Steps 5 and 8 need no
-# anchor: after a split the focus is already on the new pane, which is exactly
-# the 2/3 cell the next -V has to halve.
+#   split-pane -V -s 0.75 codegraph     -> row 2 = 1/4 | 3/4;          focus = codegraph
+#   split-pane -V -s 0.6667 heimdall    -> row 2 = 1/4 | 1/4 | 1/2;    focus = heimdall
+#   split-pane -V -s 0.5 blocker        -> row 2 = quarters
+# Cell map: row 1 = grepai | graphenium | graphify-rs | atlas
+#           row 2 = repowise | codegraph | heimdall | blocker
+# WHY 0.75 THEN 0.6667 THEN 0.5: equal quarters via sequential splits on the
+# newest pane: 0.75 leaves 1/4 + 3/4, 0.6667 of that 3/4 leaves 1/4 + 1/2,
+# 0.5 halves the 1/2 into two 1/4 cells. Keeps the 0.6667/0.5 thirds arithmetic
+# (mcpw-cnc.4). Per the wt-panes-tabs skill, "-s <ratio>" is the size of the
+# NEW pane as a fraction of the pane being split. The -H row split stays 0.5
+# (two equal rows). Only the two move-focus steps need anchors: after a split
+# the focus is already on the new pane, which is exactly the cell the next -V
+# has to halve.
 # Each step is a SEPARATE wt invocation with a settle/poll wait, so each
 # anchor resolves against a SETTLED layout and the -V splits anchor to
 # DISTINCT rows -- they can never both land in the same half (the older
@@ -5871,7 +5907,7 @@ if (Get-Command "wt" -ErrorAction SilentlyContinue) {
     # static suites lock wt argument structure but cannot see the REALIZED
     # geometry. This probe enumerates the vadwatchers window's TermControl
     # rectangles via UI Automation AFTER the build and warns when any pane
-    # deviates >15% from its expected 3x2 cell share (1/3 width x 1/2 height).
+    # deviates >15% from its expected 4x2 cell share (1/4 width x 1/2 height).
     # Measured live on the 2026-08-26 failure: graphenium spanned 50% width and
     # graphify-rs 100% -- this probe would have surfaced it in the controller
     # log. It is also the only check that can catch a wrong -s direction on the
@@ -5891,7 +5927,7 @@ if (Get-Command "wt" -ErrorAction SilentlyContinue) {
             $classCond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'CASCADIA_HOSTING_WINDOW_CLASS')
             $wins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $classCond)
             $termCond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'TermControl')
-            $want = @('grepai', 'graphenium', 'graphify-rs', 'repowise', 'codegraph', 'heimdall')
+            $want = @('grepai', 'graphenium', 'graphify-rs', 'repowise', 'codegraph', 'heimdall', 'atlas', 'blocker')
             $win = $null; $panes = $null
             foreach ($w in $wins) {
                 $tp = $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, $termCond)
@@ -5901,7 +5937,7 @@ if (Get-Command "wt" -ErrorAction SilentlyContinue) {
             }
             if (-not $win) { Write-Host "[grid-probe] watcher grid window not found - skipping"; return }
             Start-Sleep -Milliseconds 800   # let WT finalize pane layout before measuring
-            if ($panes.Count -ne 6) { Write-Warning "[grid-probe] expected 6 terminal panes, found $($panes.Count) - layout NOT verified"; return }
+            if ($panes.Count -ne 8) { Write-Warning "[grid-probe] expected 8 terminal panes, found $($panes.Count) - layout NOT verified"; return }
             $rects = @(); foreach ($p in $panes) { $rects += $p.Current.BoundingRectangle }
             $minX = ($rects | ForEach-Object { $_.X } | Measure-Object -Minimum).Minimum
             $minY = ($rects | ForEach-Object { $_.Y } | Measure-Object -Minimum).Minimum
@@ -5913,15 +5949,15 @@ if (Get-Command "wt" -ErrorAction SilentlyContinue) {
             foreach ($p in $panes) {
                 $r = $p.Current.BoundingRectangle
                 $wPct = $r.Width / $clientW; $hPct = $r.Height / $clientH
-                # 3x2: every cell is 1/3 of the width and 1/2 of the height.
-                if (([Math]::Abs($wPct - (1.0 / 3.0)) -gt 0.15) -or ([Math]::Abs($hPct - 0.50) -gt 0.15)) {
+                # 4x2: every cell is 1/4 of the width and 1/2 of the height.
+                if (([Math]::Abs($wPct - (1.0 / 4.0)) -gt 0.15) -or ([Math]::Abs($hPct - 0.50) -gt 0.15)) {
                     $bad += ("{0} ({1:p0} x {2:p0})" -f $p.Current.Name, $wPct, $hPct)
                 }
             }
             if ($bad.Count -gt 0) {
                 Write-Warning "[grid-probe] UNEQUAL CELLS detected - check these panes: $($bad -join ', ')"
             } else {
-                Write-Host "[grid-probe] 3x2 layout verified: 6 near-equal cells (1/3 x 1/2)."
+                Write-Host "[grid-probe] 4x2 layout verified: 8 near-equal cells (1/4 x 1/2)."
             }
         } catch { Write-Host "[grid-probe] skipped: $($_.Exception.Message)" }
     }
@@ -5961,7 +5997,7 @@ if (Get-Command "wt" -ErrorAction SilentlyContinue) {
     # (pattern-scoped, never the whole window) keeps that fix and preserves the
     # user's other vadwatchers tabs.
     try {
-        # Build the 3x2 grid as SEPARATE wt invocations, each followed by a short
+        # Build the 4x2 grid as SEPARATE wt invocations, each followed by a short
         # settle wait. Two fixes shaped this: (a) SEPARATE invocations instead of
         # ONE chained ";" call, so each anchor resolves against a settled layout;
         # (b) 2026-08-26: anchors are directional move-focus up/down, NOT numeric
@@ -5972,7 +6008,7 @@ if (Get-Command "wt" -ErrorAction SilentlyContinue) {
         # -V re-split the TL pane -> 25/25/50 top + full-width bottom).
         # Directional moves have no ids to go stale. -w targets the dedicated
         # named window. Every split carries an EXPLICIT -s (0.5 for the row
-        # split, 0.6667 then 0.5 for each row's thirds) and is guarded by
+        # split, 0.75 then 0.6667 then 0.5 for each row's quarters) and is guarded by
         # tests/launcher_equal_quarters.tests.ps1 so the "unequal quarters"
         # regression cannot sneak back in. NEVER change -w to '-w 0'
         # here: -w 0 routes the -V splits into the wrong half and collapses two
@@ -6068,23 +6104,26 @@ if (Get-Command "wt" -ErrorAction SilentlyContinue) {
         # selects the top (grepai) pane. A numeric focus-pane -t id went stale
         # across rebuilds here and mis-anchored the following -V split.
         Build-GridStep @('-w', $wtWindowName, 'move-focus', 'up') 2
-        # row 1 col 2: -s 0.6667 gives the NEW pane 2/3 of the row, leaving
-        # grepai 1/3. Focus lands on the new 2/3 pane, which the next step halves.
-        Build-GridStep @('-w', $wtWindowName, 'split-pane', '-V', '-s', '0.6667', '-d', $watchersWorkspaceRoot, '--title', 'graphenium', 'powershell', '-NoProfile', '-File', $tailGraphenium) 3
-        # row 1 col 3: halve the 2/3 pane -> two more 1/3 cells. Row 1 is now
-        # grepai | graphenium | graphify-rs. No anchor needed: the focus is
-        # already on the 2/3 pane this split has to halve.
-        Build-GridStep @('-w', $wtWindowName, 'split-pane', '-V', '-s', '0.5', '-d', $watchersWorkspaceRoot, '--title', 'graphify-rs', 'powershell', '-NoProfile', '-File', $tailGraphifyRs) 4
+        # row 1 col 2: -s 0.75 gives the NEW pane 3/4 of the row, leaving
+        # grepai 1/4. Focus lands on the new 3/4 pane, which the next steps cut.
+        Build-GridStep @('-w', $wtWindowName, 'split-pane', '-V', '-s', '0.75', '-d', $watchersWorkspaceRoot, '--title', 'graphenium', 'powershell', '-NoProfile', '-File', $tailGraphenium) 3
+        # row 1 col 3: -s 0.6667 of the 3/4 leaves 1/4 + 1/2. Focus lands on the
+        # new 1/2 pane, which the next step halves into quarters.
+        Build-GridStep @('-w', $wtWindowName, 'split-pane', '-V', '-s', '0.6667', '-d', $watchersWorkspaceRoot, '--title', 'graphify-rs', 'powershell', '-NoProfile', '-File', $tailGraphifyRs) 4
+        # row 1 col 4: atlas. Row 1 is now grepai | graphenium | graphify-rs | atlas.
+        Build-GridStep @('-w', $wtWindowName, 'split-pane', '-V', '-s', '0.5', '-d', $watchersWorkspaceRoot, '--title', 'atlas', 'powershell', '-NoProfile', '-File', $tailAtlas) 5
         # focus the BOTTOM row before its column splits. Focus currently sits on
-        # the just-created row 1 col 3 pane; "down" uniquely selects the
+        # the just-created row 1 col 4 pane; "down" uniquely selects the
         # full-width bottom (repowise) pane, which the next -V has to split.
-        Build-GridStep @('-w', $wtWindowName, 'move-focus', 'down') 4
-        # row 2 col 2: same 1/3 + 2/3 shape as row 1.
-        Build-GridStep @('-w', $wtWindowName, 'split-pane', '-V', '-s', '0.6667', '-d', $watchersWorkspaceRoot, '--title', 'codegraph', 'powershell', '-NoProfile', '-File', $tailCodegraph) 5
-        # row 2 col 3: heimdall. Row 2 is now repowise | codegraph | heimdall.
-        Build-GridStep @('-w', $wtWindowName, 'split-pane', '-V', '-s', '0.5', '-d', $watchersWorkspaceRoot, '--title', 'heimdall', 'powershell', '-NoProfile', '-File', $tailHeimdall) 6
+        Build-GridStep @('-w', $wtWindowName, 'move-focus', 'down') 5
+        # row 2 col 2: same 1/4 + 3/4 shape as row 1.
+        Build-GridStep @('-w', $wtWindowName, 'split-pane', '-V', '-s', '0.75', '-d', $watchersWorkspaceRoot, '--title', 'codegraph', 'powershell', '-NoProfile', '-File', $tailCodegraph) 6
+        # row 2 col 3: heimdall leaves 1/4 + 1/2. Row 2 is now repowise | codegraph | heimdall | 1/2.
+        Build-GridStep @('-w', $wtWindowName, 'split-pane', '-V', '-s', '0.6667', '-d', $watchersWorkspaceRoot, '--title', 'heimdall', 'powershell', '-NoProfile', '-File', $tailHeimdall) 7
+        # row 2 col 4: blocker holds the 8th cell so WT never closes the window.
+        Build-GridStep @('-w', $wtWindowName, 'split-pane', '-V', '-s', '0.5', '-d', $watchersWorkspaceRoot, '--title', 'blocker', 'powershell', '-NoProfile', '-File', $tailBlocker) 8
         $wtOk = $true
-        # Self-hide the controller console. The 3x2 Windows Terminal window
+        # Self-hide the controller console. The 4x2 Windows Terminal window
         # (vadwatchers) is already open and is where the user reads the watcher
         # logs, so this window's only remaining job is to host Ctrl+C / [X]
         # teardown. Hiding it removes the redundant, empty controller window
@@ -6178,7 +6217,7 @@ if (-not $wtOk) {
 # Controller loop (WT panes open): keep this window alive as the controller.
 # Ctrl+C triggers the trap above which kills watchers + stops grepai.
 Write-Host "=================================================================="
-Write-Host "6-pane (3x2) Windows Terminal window is open. This window is the controller."
+Write-Host "8-pane (4x2) Windows Terminal window is open. This window is the controller."
 Write-Host "Press Ctrl+C to stop all watchers and close everything."
 # Persist tracked root PIDs so the PowerShell.Exiting handler (separate
 # runspace, no script scope) can tree-kill them on window [X] close. Use

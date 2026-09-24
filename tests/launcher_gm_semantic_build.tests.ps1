@@ -75,6 +75,17 @@ Describe 'gm semantic build inline live daemon' {
         $code | Should Not Match 'NOUS_API_KEY'
     }
 
+    It 'semantic switch is conditional, never hardcoded off (mcpw-b81.5 lock)' {
+        $c = Get-Content -LiteralPath $launcher -Raw
+        $code = $c -replace '(?m)#.*$', ''
+        $c | Should Match 'function Test-GmSemanticEnabled'
+        # OFF appends the flag; ON omits it. One conditional site, order intact.
+        $code | Should Match 'if \(-not \$semanticOn\) \{ \$runArgs \+= "--no-semantic" \}'
+        # Every build logs which mode it ran in.
+        $c | Should Match 'OFF \(AST-only\)'
+        $c | Should Match 'ON \(LLM enrichment'
+    }
+
     It 'proxy not ready degrades gracefully (no build, no hang)' {
         # Dot-source just the build function in a scratch harness with a stub
         # gm.exe and no proxy; it must return without throwing or hanging.

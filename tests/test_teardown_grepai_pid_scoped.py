@@ -65,11 +65,13 @@ def test_all_daemon_pids_tracked_or_documented(launcher_src):
         "memtrace start job must be captured, not piped to Out-Null"
     )
     assert "MemtraceStatePath" in launcher_src
-    # Singleton persistent services keep their start-job handles and document
-    # intentional exclusion from WatcherChildren/teardown.
+    # Singleton persistent services keep their job handles and document
+    # intentional exclusion from WatcherChildren/teardown. mail (:8765) has no
+    # start job since mcpw-ymo.2 removed it as a second starter - its owner is
+    # the 'mail' backend supervisor, whose job handle must still be captured.
     for var in (
         "$script:claudeMcpStartJob",
-        "$script:mailMcpStartJob",
+        "$script:mailSupJob",
     ):
         assert var in launcher_src, f"{var} must be captured, not Out-Null"
     assert "teardown-state.json" in launcher_src

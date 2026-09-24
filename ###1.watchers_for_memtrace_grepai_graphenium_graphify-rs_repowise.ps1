@@ -432,15 +432,16 @@ if ($null -eq $global:LauncherLock) { exit 0 }
 #   daemon PID lives in .memdb/daemon-state.json, whose path persists to
 #   teardown-state.json MemtraceStatePath (Stop-AllWatchers step 4 kills by
 #   recorded pid). Start-job handle kept in $script:memtraceStartJob.
-# - claude-mcp-server (:8080), mail (:8765),
-#   graphiti-embed (:8003): port-singleton
+# - claude-mcp-server (:8080), graphiti-embed (:8003): port-singleton
 #   persistent services, deduped by in-job port probe and REUSED across
 #   launchers/logon sessions. They PERSIST after launcher exit and are
 #   intentionally NOT added to $global:WatcherChildren / teardown (same rule
 #   as the mail block below). Start-job handles kept in
-#   $script:claudeMcpStartJob / $script:mailMcpStartJob
-#   / $script:graphitiEmbedStartJob
+#   $script:claudeMcpStartJob / $script:graphitiEmbedStartJob
 #   so no daemon job is fire-and-forget (Out-Null discarded).
+#   mail (:8765) is the exception: mcpw-ymo.2 removed its start job (it was a
+#   SECOND starter); it is now owned solely by the 'mail' backend supervisor
+#   (Start-BackendSupervisor -Name 'mail' -Port 8765), registered below.
 #   graphiti-mcp (:8002) is a Docker container (restart: always), NOT a
 #   launcher child - never spawned or supervised here. Toolport talks to :8002
 #   directly - the host-side :8004 mcp_proxy.py adapter was retired 2026-09-20.
@@ -452,7 +453,6 @@ if ($null -eq $global:LauncherLock) { exit 0 }
 $global:WatcherChildren = @()
 $script:memtraceStartJob = $null
 $script:claudeMcpStartJob = $null
-$script:mailMcpStartJob = $null
 $script:graphitiEmbedStartJob = $null
 
 # PORT CONFLICT FAIL-FAST: before starting memtrace, check whether the
@@ -528,8 +528,8 @@ function Test-PortHeldByLauncherDaemon {
 # Test-PortHeldByLauncherDaemon already requires.
 #
 # :8765 (mcp_agent_mail) has no call site here at all. Its process is
-# python.exe, too broad a name match; the in-job port dedup covers it. See the
-# comment at the mail block.
+# python.exe, too broad a name match; the supervisor's own liveness probe /
+# dedup covers it. See the comment at the mail block.
 # ---------------------------------------------------------------------------
 # Liveness probe: TCP connect plus a short HTTP GET. ANY HTTP status line
 # (200/401/404/405...) proves an application is behind the socket and
@@ -4901,95 +4901,27 @@ if (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue) {
 # --- MCP Agent Mail (persistent HTTP MCP server on :8765) -----
 # HTTP-based MCP server for agent-mail (the Toolport gateway entry id
 # `mcp-agent-mail`). It listens on http://127.0.0.1:8765 (aliases /api and /mcp)
-# and is required for agent-mail MCP client connections to work. Deduped against
-# an already-listening :8765 so a manually-started instance (e.g. the logon
-# Startup shortcut `MCPAgentMailServer.lnk`, or a prior ###1 run) is REUSED
-# instead of spawning a second daemon on the same port. This service PERSISTS
-# after the launcher exits (like claude-mcp-server), so it is intentionally NOT
-# added to $global:WatcherChildren / teardown. NOTE: it is NOT covered by
-# Exit-IfPortHeldByLauncherDaemon because its process is python.exe (too broad a
-# name match); the in-job port dedup below is sufficient and avoids a false
-# FIRST-WINS exit that would abort the whole launcher when a mail server is up.
-$mailMcpJobScript = {
-    param($ScriptDir)
-    $backendPort = 8765
-    $launchLog   = Join-Path $env:LOCALAPPDATA "mcp-agent-mail\serve.log"
-    $launchErr   = Join-Path $env:LOCALAPPDATA "mcp-agent-mail\serve.log.err"
-    try { New-Item -ItemType Directory -Path (Split-Path $launchLog) -Force | Out-Null } catch {}
-
-    # Dedup: reuse an already-listening :8765 server (e.g. the logon Startup shortcut).
-    $alreadyUp = $false
-    try {
-        $sock = New-Object System.Net.Sockets.TcpClient
-        $iar = $sock.BeginConnect("127.0.0.1", $backendPort, $null, $null)
-        if ($iar.AsyncWaitHandle.WaitOne(1000) -and $sock.Connected) {
-            $sock.EndConnect($iar)
-            $alreadyUp = $true
-        }
-    } catch {} finally { if ($sock) { try { $sock.Close() } catch {} } }
-    if ($alreadyUp) {
-        Write-Host "MCP Agent Mail server already listening on 127.0.0.1:$backendPort - reusing it."
-        return
-    }
-
-    $mailMcpCmd = $null
-    foreach ($cand in @(
-        (Join-Path $env:USERPROFILE ".local\mcp-agent-mail\run_server.cmd"),
-        (Join-Path $env:LOCALAPPDATA "mcp-agent-mail\run_server.cmd")
-    )) {
-        if ($cand -and (Test-Path -LiteralPath $cand)) { $mailMcpCmd = $cand; break }
-    }
-    if (-not $mailMcpCmd) {
-        $mailMcpResolved = Get-Command "run_server.cmd" -ErrorAction SilentlyContinue
-        if ($mailMcpResolved) { $mailMcpCmd = $mailMcpResolved.Source }
-    }
-    if (-not $mailMcpCmd -or -not (Test-Path -LiteralPath $mailMcpCmd)) {
-        Write-Warning "mcp-agent-mail run_server.cmd not found under %USERPROFILE%\.local or %LOCALAPPDATA%. Skipping MCP Agent Mail start."
-        return
-    }
-
-    try {
-        Write-Host "Starting MCP Agent Mail server (port $backendPort)..."
-        $p = Start-Process -FilePath "cmd.exe" `
-            -ArgumentList "/c", "`"$mailMcpCmd`"" `
-            -WindowStyle Hidden `
-            -RedirectStandardOutput $launchLog -RedirectStandardError $launchErr -PassThru
-        # Readiness gate: wait until :8765 listens (up to ~25s).
-        $deadline = (Get-Date).AddSeconds(25)
-        $ready = $false
-        while ((Get-Date) -lt $deadline) {
-            $s2 = $null
-            try {
-                $s2 = New-Object System.Net.Sockets.TcpClient
-                $iar2 = $s2.BeginConnect("127.0.0.1", $backendPort, $null, $null)
-                if ($iar2.AsyncWaitHandle.WaitOne(1000) -and $s2.Connected) {
-                    $s2.EndConnect($iar2)
-                    $ready = $true
-                }
-            } catch {} finally { if ($s2) { try { $s2.Close() } catch {} } }
-            if ($ready) { break }
-            if ($p -and $p.HasExited) {
-                Write-Warning "MCP Agent Mail server exited during startup (exit $($p.ExitCode)) - see $launchErr"
-                break
-            }
-            Start-Sleep -Milliseconds 750
-        }
-        if ($ready) {
-            Write-Host "MCP Agent Mail server ready on 127.0.0.1:$backendPort - safe for MCP clients to attach."
-        } else {
-            Write-Warning "MCP Agent Mail server did NOT become ready on 127.0.0.1:$backendPort within timeout. See $launchLog / $launchErr."
-        }
-    } catch {
-        Write-Warning "Failed to launch MCP Agent Mail server: $($_.Exception.Message). Continuing without it."
-    }
-}
-Write-Host "Starting MCP Agent Mail server (background)..."
-# VAD-v14z.4: mail job handle tracked (see intentional-persistence note above).
-if (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue) {
-    $script:mailMcpStartJob = Start-ThreadJob -ScriptBlock $mailMcpJobScript -ArgumentList $scriptDir
-} else {
-    $script:mailMcpStartJob = Start-Job -ScriptBlock $mailMcpJobScript -ArgumentList $scriptDir
-}
+# and is required for agent-mail MCP client connections to work. This service
+# PERSISTS after the launcher exits (like claude-mcp-server), so it is
+# intentionally NOT added to $global:WatcherChildren / teardown. NOTE: it is NOT
+# covered by Exit-IfPortHeldByLauncherDaemon because its process is python.exe
+# (too broad a name match); the supervisor's own liveness probe suffices and
+# avoids a false FIRST-WINS exit that would abort the whole launcher when a mail
+# server is already up.
+#
+# mcpw-ymo.2 SINGLE OWNER: :8765 is started and healed by EXACTLY ONE starter,
+# `Start-BackendSupervisor -Name 'mail' -Port 8765` (registered with the other
+# backends below; its relaunch path is Start-MailBackend). This block USED to
+# ALSO launch the daemon from a start job ($mailMcpJobScript) - the two-starter
+# shape behind the 9,657 relaunches / 4,624 duplicate reaps of 2026-09-15..22.
+# The supervisor sleeps 30s before its first probe, so a job that launched
+# immediately let a slow bind look like "down", and the supervisor then started
+# a SECOND daemon on the same port. The launch is gone; the supervisor still
+# REUSES an already-listening :8765 (its Test-BackendAlive probe) instead of
+# respawning, so a manually-started instance (logon shortcut, prior ###1 run,
+# sibling repo) is adopted, not duplicated. The supervisor's duplicate reaper
+# remains the safety net. Do NOT re-add a launcher here - see the SINGLE-OWNER
+# INVARIANT comment by $backendSupervisorScript below.
 
 # --- Graphiti embed proxy (persistent OpenAI-compatible :8003) -----
 # The graphiti Docker container's embedder points at http://host.docker.internal:8003/v1
@@ -5132,9 +5064,12 @@ try {
 # via Limit-LogSize. PS 5.1 compatible, ASCII-only.
 # SINGLE-OWNER INVARIANT (mcpw-ymo.2): exactly ONE supervised starter owns each
 # port below - Start-BackendSupervisor -Name 'mail' owns :8765, 'claude-mcp'
-# owns :8080, 'graphiti-embed' owns :8003, 'headroom-proxy' owns :8787. The
-# headroom proxy must NOT also be registered as a headroom persistent deployment
-# (`headroom install apply`): two managers for one daemon is the memtrace flap
+# owns :8080, 'graphiti-embed' owns :8003, 'headroom-proxy' owns :8787. mcpw-ymo.2
+# ENFORCED this for :8765: the old mail start job ($mailMcpJobScript) was a second
+# starter and has been removed - the supervisor is the only mail launcher now.
+# The headroom proxy must NOT also be registered as a headroom persistent
+# deployment (`headroom install apply`): two managers for one daemon is the
+# memtrace flap
 # class. Its Toolport stdio registration is a DIFFERENT process (`headroom mcp
 # serve`) and stays untouched (mcpw-a5q). The periodic duplicate reaper is a
 # last-resort safety net, NOT a second starter: it must never terminate a
@@ -6220,12 +6155,12 @@ Write-Host "Press Ctrl+C to stop all watchers and close everything."
 # VAD-v14z.4 daemon coverage: RootPids carries Start-WatcherDetached children
 # (incl. $script:litellmProc); GrepaiPid carries $script:GrepaiPid;
 # MemtraceStatePath carries the memtrace daemon PID via .memdb/daemon-state.json
-# ($script:memtraceStartJob); claude-mcp-server / mail /
-# graphiti-embed / lean-ctx / headroom-proxy are
+# ($script:memtraceStartJob); claude-mcp-server /
+# graphiti-embed / lean-ctx / headroom-proxy / mail are
 # intentionally persistent singletons (see blocks above,
 # $script:claudeMcpStartJob /
-# $script:mailMcpStartJob / $script:graphitiEmbedStartJob /
-# $script:leanCtxSupJob / $script:headroomSupJob)
+# $script:graphitiEmbedStartJob /
+# $script:leanCtxSupJob / $script:headroomSupJob / $script:mailSupJob)
 # and are excluded from RootPids by design. The graphiti-mcp CONTAINER (:8002)
 # is Docker-owned, also excluded by design; its host-side :8004 session adapter
 # was retired on 2026-09-20 (Toolport connects to :8002 directly).

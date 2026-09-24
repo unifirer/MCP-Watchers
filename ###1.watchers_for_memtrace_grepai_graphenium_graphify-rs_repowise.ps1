@@ -3166,7 +3166,7 @@ function Invoke-GmSemanticBuild {
         }
         $ec = $gmRun.ExitCode
         if ($null -eq $ec -or $ec -ne 0) {
-            Write-Warning "[gm-semantic] gm semantic build failed (exit $ec). Nous may be unreachable or rejected the request. Graphenium stays AST-only for this build."
+            Write-Warning "[gm-semantic] gm semantic build failed (exit $ec). The fallback proxy may be unreachable or rejected the request. Graphenium stays AST-only for this build."
             return
         }
         Write-Host "[gm-semantic] full rebuild complete (graph.json rewritten in full)."

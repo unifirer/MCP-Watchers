@@ -62,6 +62,44 @@ environment launcher states this reasoning in its own comments
 [@launcher-1-bat]. Any new launcher meant for double-click use should copy that
 exact shape rather than inventing a variant.
 
+## The Graphenium Semantic Toggle
+
+Graphenium's semantic analysis (LLM enrichment on top of the AST graph) has a
+live on/off switch, so an operator does not have to edit the launcher and
+restart it to change modes [@launcher-1].
+
+**Control file.** `<repo>\.mcpw-provision\gm-semantic.mode`, containing `on` or
+`off`. The reader is `Test-GmSemanticEnabled` in the launcher [@launcher-1]. The
+mode is re-read on **every** rebuild, so a flip takes effect from the next
+rebuild onward — there is no restart, and no watcher is disturbed.
+
+**Default is off.** If the file is absent, blank, or unparseable, semantic
+analysis is OFF and the rebuild is pure AST extraction. The environment variable
+`MCPW_GM_SEMANTIC` supplies the launch default only when the file is absent; it
+does not override a file that says `off`.
+
+**Flipping it.** Use `dev_tools/gm-semantic-toggle.ps1`, which writes the control
+file. Do not hand-edit the launcher's `--no-semantic` literal — the launcher
+remains the single source of truth for that flag, and the test suite matches the
+literal [@launcher-1].
+
+**What it costs.** Semantic ON means the rebuild makes **LLM chat-completion
+calls through the local fallback proxy** (`###2.llm_fallback_proxy.py`, port
+11436). Semantic OFF issues no tokens and no cloud calls, and the rebuild is
+cheap. The proxy gate is conditional on the mode for exactly this reason: with
+semantic OFF an unreachable proxy no longer blocks the structural rebuild, which
+it used to [@launcher-1].
+
+**Constraint (mcpw-96y).** The semantic path is **chat-completions only**. It
+rides the fallback proxy and **cannot** be served by an embedding model. This is
+the most re-litigated dead end in this area — do not propose an embedding
+endpoint for it.
+
+**Seeing the current mode.** The graphenium pane prints a status line
+(`=== graphenium | semantic: on (LLM enrichment) ===` / `off (AST-only)`) at
+startup and whenever the value changes, read from the same control file, so the
+pane can never disagree with what a rebuild will do [@launcher-1].
+
 ## Recovering From A Bad State
 
 If a watcher appears dead but its port is still held, do not simply relaunch —

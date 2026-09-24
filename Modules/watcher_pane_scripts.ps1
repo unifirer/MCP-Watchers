@@ -291,6 +291,33 @@ function Invoke-GrapheniumAutoFix {
         $nowTicks = [datetime]::UtcNow.Ticks
         $cooldownTicks = ([TimeSpan]::FromMinutes(10)).Ticks
         if ($script:lastGmAutoFixTicks -and ($nowTicks - $script:lastGmAutoFixTicks) -lt $cooldownTicks) { return }
+        # mcpw-b81.7: take the SAME machine-wide mutex the ###1 live rebuild daemon
+        # takes - Global\VAD_GmSemanticBuild_0, matching the daemon's $BuildKey = 0.
+        # Before this, the daemon's guard protected it from itself and from nothing
+        # else: THIS function is a second full `gm run` site and took no mutex, so a
+        # needs_update heal landing mid-build gave two concurrent full re-extractions
+        # racing on the same graphenium-out/ cleanup. With semantic ON both racers
+        # also issue paid LLM calls, and a heal that won could overwrite a semantic
+        # graph with an AST-only one.
+        # WaitOne(0) = fail-fast, never queue: the pane must not block. Acquired
+        # BEFORE the cooldown is burned, so contention does not cost the next 10
+        # minutes - the needs_update marker stays set and the heal retries on a
+        # later poll instead of the flag being lost.
+        $gmBuildMutex = $null
+        $gmBuildLockHeld = $false
+        try {
+            $gmBuildMutex = New-Object System.Threading.Mutex($false, 'Global\VAD_GmSemanticBuild_0')
+            $gmBuildLockHeld = $gmBuildMutex.WaitOne(0)
+        } catch { $gmBuildLockHeld = $false }
+        if (-not $gmBuildLockHeld) {
+            Write-Host "[graphenium AUTO-FIX] a gm build is already running (Global\VAD_GmSemanticBuild_0 is held) - skipping the heal; the needs_update marker is left in place for a later retry."
+            if ($gmBuildMutex) { try { $gmBuildMutex.Dispose() } catch {} }
+            return
+        }
+        # Everything below runs under the mutex. The body keeps its original
+        # indentation on purpose: re-indenting ~60 lines of this template would bury
+        # the actual change in the diff, and the autofix suites anchor on this file.
+        try {
         $script:lastGmAutoFixTicks = $nowTicks
         # mcpw-b81.4: obey the live semantic switch BEFORE touching anything, so a
         # skipped heal leaves the needs_update marker in place for a later retry
@@ -354,6 +381,14 @@ function Invoke-GrapheniumAutoFix {
         # need a moment to surface via CIM; keep the pane open for 45 s regardless.
         $script:gmHealUntilTick = ([datetime]::UtcNow + [TimeSpan]::FromSeconds(45)).Ticks
         Write-Host "[graphenium AUTO-FIX] full gm rebuild launched; post-heal output continues below."
+        } finally {
+            # Release on EVERY exit path under the mutex - the success path, each of
+            # the graceful skips above (semantic ON with the proxy down, gm.exe
+            # missing, empty repo path), and the throw path. A leaked mutex would
+            # block the daemon's own builds indefinitely.
+            try { if ($gmBuildLockHeld -and $gmBuildMutex) { $gmBuildMutex.ReleaseMutex() } } catch {}
+            try { if ($gmBuildMutex) { $gmBuildMutex.Dispose() } } catch {}
+        }
     } catch {
         Write-Host ("[graphenium AUTO-FIX] heal failed: " + $_.Exception.Message)
     }

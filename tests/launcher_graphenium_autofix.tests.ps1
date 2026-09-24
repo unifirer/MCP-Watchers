@@ -170,6 +170,26 @@ Describe 'graphenium AUTO-FIX template contract (beads VAD-be9)' {
         $gmTailText | Should Match 'FromMinutes\(10\)'
     }
 
+    It 'takes the daemon build mutex, before the cooldown, and keeps the marker on contention (mcpw-b81.7)' {
+        # The pane heal is a SECOND full `gm run` site. Before b81.7 it took no
+        # mutex, while the launcher's Invoke-GmSemanticBuild takes
+        # Global\VAD_GmSemanticBuild_<BuildKey> - so a needs_update heal landing
+        # mid-build gave two concurrent full re-extractions racing on the same
+        # graphenium-out/ cleanup.
+        $healText = Get-TailFunctionText -TailScript $gmTailScript -Name 'Invoke-GrapheniumAutoFix'
+        # Same name the daemon builds from $BuildKey = 0.
+        $healText | Should Match ([regex]::Escape("'Global\VAD_GmSemanticBuild_0'"))
+        $healText | Should Match 'WaitOne\(0\)'    # fail fast, never queue
+        $healText | Should Match 'ReleaseMutex'    # released on every exit path
+        # Acquired BEFORE the cooldown is burned: a contested heal must not cost
+        # the next 10 minutes, or the marker sits stale with nothing to retry it.
+        $healText.IndexOf('VAD_GmSemanticBuild_0') |
+            Should BeLessThan $healText.IndexOf('$script:lastGmAutoFixTicks = $nowTicks')
+        # The skip returns before the marker is cleared, so the flag survives.
+        $healText.IndexOf('skipping the heal') |
+            Should BeLessThan $healText.IndexOf('Remove-Item -LiteralPath $marker')
+    }
+
     It 'detection reads RAW log lines, not cleaned output' {
         $pin = [regex]::Escape('$line -match ''Flag''')
         $gmTailText | Should Match $pin
@@ -236,6 +256,96 @@ Describe 'Invoke-GrapheniumAutoFix behavior (generated tail, stubbed processes)'
             $script:spCalls.Count | Should Be 0            # no build was spawned
             Test-Path -LiteralPath $fx.Marker | Should Be $true   # marker preserved
         } finally {
+            Remove-Item -LiteralPath $repo -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'mcpw-b81.7: with a build in progress the heal logs a skip and starts nothing' {
+        # The heal must LOSE to the launcher's build, not race it. The holder has
+        # to live on ANOTHER THREAD: System.Threading.Mutex is RECURSIVE on its
+        # owning thread, so a holder acquired in THIS thread would let the heal's
+        # own WaitOne(0) succeed and the case would pass while proving nothing
+        # (probed 2026-09-24: same-thread double WaitOne(0) -> True, True;
+        # cross-thread -> False).
+        $fx = New-AutoFixFixture
+        $repo = $fx.Repo; $log = $fx.Log; $err = $fx.Err
+        $script:lastGmAutoFixTicks = 0; $script:gmHealUntilTick = 0
+        . (Install-AutoFixStubs) 'C:\fake\bin\gm.exe'
+        . (Install-AutoFixHeal)
+
+        $name  = 'Global\VAD_GmSemanticBuild_0'
+        $ready = New-Object System.Threading.ManualResetEventSlim($false)
+        $go    = New-Object System.Threading.ManualResetEventSlim($false)
+        $rs = [runspacefactory]::CreateRunspace(); $rs.Open()
+        $ps = [powershell]::Create(); $ps.Runspace = $rs
+        $h = $null
+        try {
+            $null = $ps.AddScript({
+                param($n, $r, $g)
+                $m = New-Object System.Threading.Mutex($false, $n)
+                $held = $m.WaitOne(0)
+                $r.Set()                       # the mutex is held BEFORE this signal
+                $null = $g.Wait(15000)
+                try { if ($held) { $m.ReleaseMutex() } } catch {}
+                $m.Dispose()
+            }).AddArgument($name).AddArgument($ready).AddArgument($go)
+            $h = $ps.BeginInvoke()
+            # Positive control: if the holder never took the mutex, the skip
+            # asserted below would be vacuous - fail loudly instead.
+            $ready.Wait(5000) | Should Be $true
+
+            { Invoke-GrapheniumAutoFix } | Should Not Throw
+
+            $script:spCalls.Count             | Should Be 0      # no build spawned
+            Test-Path -LiteralPath $fx.Marker | Should Be $true   # flag preserved
+            $script:lastGmAutoFixTicks        | Should Be 0       # cooldown NOT burned
+        } finally {
+            try { $go.Set() } catch {}
+            try { if ($h) { $ps.EndInvoke($h) | Out-Null } } catch {}
+            try { $ps.Dispose() } catch {}
+            try { $rs.Close(); $rs.Dispose() } catch {}
+            try { $ready.Dispose(); $go.Dispose() } catch {}
+            Remove-Item -LiteralPath $repo -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'mcpw-b81.7: with no build in progress the heal behaves as today and releases the mutex' {
+        $fx = New-AutoFixFixture
+        $repo = $fx.Repo; $log = $fx.Log; $err = $fx.Err
+        $script:lastGmAutoFixTicks = 0; $script:gmHealUntilTick = 0
+        . (Install-AutoFixStubs) 'C:\fake\bin\gm.exe'
+        . (Install-AutoFixHeal)
+
+        $name = 'Global\VAD_GmSemanticBuild_0'
+        $probe = $null; $created = $false; $wasFree = $false
+        try {
+            $probe = New-Object System.Threading.Mutex($false, $name)
+            $created = $true
+            $wasFree = $probe.WaitOne(0)
+            if ($wasFree) { $probe.ReleaseMutex() }
+        } catch { }
+        # Positive control: if the mutex could not even be created, every branch
+        # below is meaningless.
+        $created | Should Be $true
+        try {
+            { Invoke-GrapheniumAutoFix } | Should Not Throw
+            if ($wasFree) {
+                Test-Path -LiteralPath $fx.Marker | Should Be $false   # healed
+                $script:spCalls.Count             | Should Be 1
+                # Released on the success path: the daemon's next build must be
+                # able to take it, so a lock leaked here is a dead daemon.
+                $probe.WaitOne(0) | Should Be $true
+                $probe.ReleaseMutex()
+            } else {
+                # The suite runs on the same machine as the launcher, so a REAL
+                # build may own the mutex. Then the free path cannot be exercised
+                # here and the honest assertion is the skip path - never a
+                # manufactured failure.
+                $script:spCalls.Count             | Should Be 0
+                Test-Path -LiteralPath $fx.Marker | Should Be $true
+            }
+        } finally {
+            try { $probe.Dispose() } catch {}
             Remove-Item -LiteralPath $repo -Recurse -Force -ErrorAction SilentlyContinue
         }
     }

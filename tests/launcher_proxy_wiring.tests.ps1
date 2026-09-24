@@ -4,8 +4,25 @@ $launcher = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')).Path '###1.w
 Describe 'fallback proxy wiring' {
     It 'Invoke-GmSemanticBuild uses proxy api-base (11436) not NOUS_BASE_URL' {
         $c = Get-Content -LiteralPath $launcher -Raw
-        ($c | Select-String -Pattern 'function Invoke-GmSemanticBuild[\s\S]{0,3000}--api-base.*127\.0\.0\.1.*11436' -AllMatches).Matches.Count | Should BeGreaterThan 0
-        $block = [regex]::Match($c, 'function Invoke-GmSemanticBuild[\s\S]{0,4000}?\$runArgs\s*=\s*@\([^)]*\)')
+        # Match EXECUTABLE code, never a comment. This check used to run against
+        # the raw source, where it was satisfied by the "wiring test anchor"
+        # COMMENT that spells out
+        #   function Invoke-GmSemanticBuild --api-base http://127.0.0.1:11436/v1
+        # mcpw-b81 inserted the live-mode read plus its explanatory comments,
+        # pushing the REAL `--api-base` in $runArgs to ~3794 chars from the
+        # function head - past this 3000-char window - so the raw-source match
+        # could only ever hit that comment (it re-anchored on the comment's own
+        # "function Invoke-GmSemanticBuild" text, 32 chars before its --api-base).
+        # Comment-stripped, the real `--api-base` sits ~2796 chars in: inside the
+        # window again, and the comment can no longer satisfy the check.
+        $code = $c -replace '(?m)#.*$', ''
+        ($code | Select-String -Pattern 'function Invoke-GmSemanticBuild[\s\S]{0,3000}--api-base' -AllMatches).Matches.Count | Should BeGreaterThan 0
+        # ...and that api-base resolves to the LOCAL proxy: 127.0.0.1, env-driven
+        # port, default 11436 (the trailing comment that used to carry these two
+        # literals is stripped, so assert the real code that builds them).
+        $code | Should Match ([regex]::Escape('$proxyBase = "http://127.0.0.1:$proxyPort/v1"'))
+        $code | Should Match '"11436"'
+        $block = [regex]::Match($code, 'function Invoke-GmSemanticBuild[\s\S]{0,4000}?\$runArgs\s*=\s*@\([^)]*\)')
         $block.Success | Should Be $true
         $block.Value | Should Not Match 'NOUS_BASE_URL'
     }
